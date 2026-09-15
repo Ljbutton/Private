@@ -415,6 +415,36 @@ td.team { font-weight: 600; }
   border-left: 2px solid var(--border-strong); padding-left: 8px; line-height: 1.45;
 }
 
+/* ----------------------------------------------------------- folding panels */
+#view { display: flex; flex-direction: column; gap: 14px; }
+
+.panel.fold { padding: 0; }
+.panel.fold > summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 18px; cursor: pointer; list-style: none;
+  border-radius: var(--radius);
+  transition: background var(--fast) var(--ease);
+}
+.panel.fold > summary::-webkit-details-marker { display: none; }
+.panel.fold > summary:hover { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
+.panel.fold > summary h2 { font-size: 15px; }
+.panel.fold > summary .hint { margin-left: auto; text-align: right; }
+.panel.fold .chev {
+  width: 15px; height: 15px; flex: none; fill: none;
+  stroke: var(--text-muted); stroke-width: 2.2;
+  stroke-linecap: round; stroke-linejoin: round;
+  transition: transform var(--fast) var(--ease);
+}
+.panel.fold[open] > summary .chev { transform: rotate(90deg); }
+.panel.fold[open] > summary { border-bottom: 1px solid var(--grid); border-radius: var(--radius) var(--radius) 0 0; }
+.fold-body { padding: 15px 18px 17px; }
+.fold-body > .tiles:first-child,
+.fold-body > .grid-2:first-child { margin-top: 2px; }
+/* Spacing between stacked sections comes from the view's own gap, not from
+   sibling margins. An adjacent-sibling margin also fires between the two
+   panels of a side-by-side grid, which pushed the right-hand one 14px lower
+   than the left for no reason visible in either panel. */
+
 /* ------------------------------------------------------------------ alerts */
 .alerts {
   background: var(--surface); border: 1px solid var(--border);
@@ -585,8 +615,11 @@ td.team { font-weight: 600; }
 .legend .key i { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
 .legend .key i.dash { height: 0; border-top: 2px dashed currentColor; }
 
+/* Visible overflow is deliberate -- series labels sit just outside the plot --
+   but it means a point outside the domain escapes the panel entirely. The
+   charts keep their domains honest; this is the backstop. */
 .chart { width: 100%; display: block; overflow: visible; }
-.chart-wrap { position: relative; }
+.chart-wrap { position: relative; overflow: hidden; }
 .tooltip {
   position: absolute; pointer-events: none; z-index: 20; opacity: 0;
   transition: opacity var(--fast) linear;
@@ -623,7 +656,10 @@ dialog .dialog-head {
 }
 dialog .dialog-body { padding: 18px 20px 24px; }
 
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* align-items: start so a short panel is not stretched to match a tall one.
+   The cumulative-units chart was being padded out with an inch of empty space
+   to match a calibration panel that happens to carry a table. */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 .pickem-list { display: grid; gap: 4px; }
 .pick-row {
   display: grid; grid-template-columns: 40px 1fr auto auto; gap: 12px; align-items: center;

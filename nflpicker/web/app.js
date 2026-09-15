@@ -176,6 +176,71 @@ function kickoffShort(iso) {
     d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+/* Fold the panels on a page into collapsible sections.
+   Home and the Scoreboard are boards: everything on them is meant to be read
+   at once. Every other page is reference material you consult one question at
+   a time, and four full tables stacked down a page turns finding the one you
+   came for into a scrolling exercise.
+
+   Done to the rendered DOM rather than in each template. The panels are built
+   inside nested template literals, and rewriting those to emit <details> meant
+   re-quoting markup that already contains its own backticks -- a transformation
+   with nothing to catch a mistake except the page going blank. Restructuring
+   afterwards touches one function and cannot corrupt a template it never
+   parses. <details> is used so keyboard support, find-in-page and open state
+   all come for free. */
+const FOLDING_TABS = new Set(["teams", "picks", "news", "edge", "performance", "games"]);
+
+function foldPanels(root) {
+  if (!FOLDING_TABS.has(state.tab)) return;
+  const panels = $$(":scope > .panel, :scope > .grid-2 > .panel", root);
+  panels.forEach((panel, index) => {
+    const header = $("header", panel);
+    if (!header || panel.closest("details")) return;
+
+    const details = document.createElement("details");
+    details.className = panel.className + " fold";
+    const summary = document.createElement("summary");
+    // The first section on a page opens; the rest are a click away. Reopening
+    // everything on each refresh would undo the point, so a section the reader
+    // has opened is remembered for the session.
+    const key = `${state.tab}:${index}`;
+    // Open the first section on a page the reader has not touched yet. Keyed
+    // per tab: a set shared across tabs meant opening something on one page
+    // left every other page fully closed.
+    details.open = openFolds.has(key)
+      || (index === 0 && !touchedTabs.has(state.tab));
+    // Recorded from the click rather than the toggle event, because setting
+    // `open` above fires toggle too -- the page would mark itself as read by
+    // the reader before they had done anything.
+    summary.addEventListener("click", () => {
+      touchedTabs.add(state.tab);
+      setTimeout(() => {
+        if (details.open) openFolds.add(key); else openFolds.delete(key);
+      }, 0);
+    });
+
+    summary.innerHTML =
+      '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M9 6l6 6-6 6"/></svg>';
+    while (header.firstChild) summary.appendChild(header.firstChild);
+    header.remove();
+
+    const body = document.createElement("div");
+    body.className = "fold-body";
+    while (panel.firstChild) body.appendChild(panel.firstChild);
+
+    details.append(summary, body);
+    panel.replaceWith(details);
+  });
+}
+
+/* Which sections the reader has opened, kept for the session so a refresh does
+   not fold the thing they are reading, and which tabs they have touched at all
+   -- an untouched page still opens its first section. */
+const openFolds = new Set();
+const touchedTabs = new Set();
+
 // ------------------------------------------------------------------ alerts
 /* Alerts are per-game and live inside the game's own dialog rather than in a
    strip over the board. They are something you go looking for once a game has
@@ -184,7 +249,7 @@ function kickoffShort(iso) {
    about two games. */
 function alertList(rows) {
   if (!rows || !rows.length) return "";
-  return `<div class="panel" style="margin-top:14px">
+  return `<div class="panel">
     <header><h2>What changed</h2>
       <span class="hint">${rows.length} for this game</span></header>
     ${rows.map((a) => `<div class="alert ${esc(a.severity)}">
@@ -241,7 +306,7 @@ async function renderScoreboard() {
     </table>
   </div>
 
-  <div class="panel" style="margin-top:16px">
+  <div class="panel">
     <header><h2>By team</h2>
       <span class="hint">how often each picker called that team's games right ·
         sorted by our model, best first</span></header>
@@ -263,7 +328,7 @@ async function renderScoreboard() {
     </table></div>
   </div>
 
-  <div class="panel" style="margin-top:16px">
+  <div class="panel">
     <header><h2>Week by week</h2><span class="hint">correct out of picked</span></header>
     <table class="slate">
       <thead><tr><th>Week</th>${pickers.map((p) =>
@@ -980,7 +1045,7 @@ async function renderPicks() {
         team now can cost more later than it gains today, so the optimiser solves the whole
         remaining path — the cost column is what deviating actually costs over that path.</p>
     ` : `<div class="empty">${esc(survivor.note || "No survivor plan available.")}</div>`}
-    <div style="margin-top:14px">
+    <div>
       <h3 style="font-size:12px;margin-bottom:6px">Teams you have already used</h3>
       <div class="controls">
         <input type="text" id="used-teams" style="flex:1;min-width:220px"
@@ -1168,7 +1233,7 @@ async function renderEdge() {
     root.innerHTML = `<div class="panel">
       <header><h2>Does the line move toward us?</h2></header>
       <div class="empty">${esc(m.note || "Not enough observations yet.")}</div>
-      <div class="tiles" style="margin-top:14px">
+      <div class="tiles">
         <div class="tile"><div class="label">Games with a line</div>
           <div class="value">${cov.games_with_any_line ?? 0}</div></div>
         <div class="tile"><div class="label">Games with movement</div>
@@ -1262,6 +1327,7 @@ async function render() {
   if (state.meta) renderHero(state.meta);
   try {
     await view();
+    foldPanels($("#view"));
   } catch (err) {
     $("#view").innerHTML = `<div class="panel"><div class="empty">
       Could not load this view: ${esc(err.message)}</div></div>`;

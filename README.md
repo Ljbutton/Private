@@ -653,6 +653,15 @@ easy to get silently wrong:
 
 ---
 
+## Reading the pages
+
+Home and the Scoreboard are boards: everything on them is meant to be taken in
+at once, so nothing on them folds. Every other page is reference material you
+consult one question at a time, and four full tables stacked down a page turns
+finding the one you came for into a scrolling exercise — so those pages open to
+their headings, with the first section expanded. What you open stays open for
+the session, per page.
+
 ## Seasons
 
 The season selector sits beside the week. It lists the seasons the app has games

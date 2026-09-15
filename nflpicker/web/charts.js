@@ -285,13 +285,27 @@ export function calibrationChart(wrap, buckets, opts = {}) {
   const W = opts.width || wrap.clientWidth || 420;
   const H = opts.height || 240;
   const m = { top: 12, right: 14, bottom: 30, left: 40 };
-  const lo = 0.4, hi = 1.0;
+
+  /* The axis has to cover the data, not a range someone expected the data to
+     sit in. This was pinned to 0.4-1.0, which is where *predicted* confidence
+     lives -- but `observed` is a hit rate over a handful of games and is
+     routinely 0. Those points were drawn far below the plot, and because the
+     svg does not clip they landed in the table underneath, reading as stray
+     marks in a column of numbers rather than as data that did not fit. */
+  const values = buckets.flatMap((b) => [b.predicted, b.observed])
+    .filter((v) => v !== null && v !== undefined && isFinite(v));
+  const floor = Math.min(0.4, ...values);
+  const ceil = Math.max(1.0, ...values);
+  const lo = Math.max(0, Math.floor(floor * 10) / 10);
+  const hi = Math.min(1, Math.ceil(ceil * 10) / 10);
   const px = (v) => m.left + ((v - lo) / (hi - lo)) * (W - m.left - m.right);
   const py = (v) => m.top + (1 - (v - lo) / (hi - lo)) * (H - m.top - m.bottom);
 
   const svg = el("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`,
     role: "img", "aria-label": "calibration chart" }, wrap);
-  for (const t of [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]) {
+  const ticks = [];
+  for (let t = lo; t <= hi + 1e-9; t += 0.1) ticks.push(Math.round(t * 10) / 10);
+  for (const t of ticks) {
     el("line", { x1: m.left, x2: W - m.right, y1: py(t), y2: py(t),
       stroke: cssVar("--grid"), "stroke-width": 1 }, svg);
     const lab = el("text", { x: m.left - 6, y: py(t) + 3, "text-anchor": "end",
