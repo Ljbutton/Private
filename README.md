@@ -283,6 +283,52 @@ Set `PREDICTION_MARKETS_ENABLED=0` to turn the panel off.
 
 ---
 
+## Teasers: a real edge, mostly eaten by the price
+
+`nflpicker teasers` backtests 6-point teasers through the key numbers over every
+game since 1999. This is the one strategy in the project that needs nothing from
+our model — only closing spreads and final scores.
+
+The mechanism is real. NFL margins are not smooth: **3 happens in 15.0% of games
+and 7 in 9.1%**, more than any other margin. Teasing a 7.5-to-8.5-point
+favourite down through both, or a 1.5-to-2.5-point underdog up through both, is
+a bet on that lumpiness.
+
+Over 1,396 qualifying legs:
+
+| Window | Win rate | 95% CI | vs 72.4% break-even |
+|---|---|---|---|
+| Underdogs +1.5 to +2.5 | 75.5% | 72.6–78.2% | clears it |
+| Favourites −8.5 to −7.5 | 73.0% | 68.9–76.8% | inside the noise |
+| Both | 74.6% | 72.3–76.9% | inside the noise |
+
+It has *not* been arbitraged away on the field: 2014 onward is 75.6%, better
+than the 73.4% before it.
+
+**The price is what kills it.** A two-leg teaser needs each leg at 72.4% to break
+even at −110, and ten cents of extra juice moves that bar by a full point:
+
+| Price | Need | Got | ROI |
+|---|---|---|---|
+| −110 | 72.4% | 74.6% | **+6.4%** |
+| −120 | 73.9% | 74.6% | +1.0% |
+| −130 | 75.2% | 74.6% | −2.5% |
+| −140 | 76.4% | 74.6% | −5.6% |
+
+Most books now price a two-team 6-point teaser at −120 or worse, which is
+precisely because this was well known. **So: worth playing only if you can find
+−110, marginal at −120, and a losing bet at −130.** Shopping the teaser price
+matters more than picking the legs.
+
+Two honest caveats. The underdog half carries the result — the favourite half is
+not distinguishable from break-even at all. And a blind sweep of every spread
+window finds *zero* windows whose whole confidence interval clears break-even;
+the Wong windows survive only because they were specified in advance by the
+key-number argument rather than discovered by searching. Reassuringly, the two
+best windows in that blind sweep are the two the theory names.
+
+---
+
 ## Survivor: why it plans a path
 
 The mistake that ends most survivor entries is taking the safest available team
@@ -312,6 +358,7 @@ nflpicker picks --contest survivor
 nflpicker teams                  # power ratings and projections
 nflpicker train                  # train and evaluate
 nflpicker backtest --backfill    # grade history
+nflpicker teasers --sweep        # backtest key-number teasers
 nflpicker status                 # what's stored, which sources are healthy
 ```
 
@@ -357,7 +404,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 148 tests, fully offline
+make test     # 170 tests, fully offline
 make lint
 ```
 
@@ -393,7 +440,7 @@ nflpicker/
   market/      consensus, de-vigging, line movement, prediction markets
   picks/       edges, pickem, survivor
   news/        impact classification
-  backtest/    grading, CLV, calibration
+  backtest/    grading, CLV, calibration, teasers
   web/         dashboard (vanilla JS, no build step)
   pipeline.py  refresh orchestration
   scheduler.py background jobs

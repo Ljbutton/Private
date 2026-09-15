@@ -177,6 +177,58 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_teasers(args) -> int:
+    """Backtest 6-point teasers through the key numbers."""
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    from .backtest.teasers import (
+        by_era,
+        describe,
+        key_number_frequency,
+        price_sensitivity,
+        sweep,
+        wong_windows,
+    )
+    from .sources.nflverse import NflverseSource
+
+    print("downloading nflverse game history…")
+    games = NflverseSource().games()
+    usable = games.dropna(subset=["spread_line", "result"])
+    print(f"{len(usable):,} games with a closing line and a result "
+          f"({int(games.season.min())}-{int(games.season.max())})\n")
+
+    print("=== Wong windows: teasing through 3 and 7 ===")
+    for result in wong_windows(games, points=args.points):
+        print("  " + describe(result))
+
+    print("\n=== has it been priced away? ===")
+    for result in by_era(games, points=args.points, split=args.split):
+        print("  " + describe(result))
+
+    print("\n=== the same bet at prices books actually offer ===")
+    print("  (most books now price a 2-team 6-point teaser at -120 or worse)")
+    for row in price_sensitivity(games, points=args.points):
+        verdict = "playable" if row["roi_2leg"] > 0 else "not playable"
+        print(f"  {row['label']:>5}: need {row['break_even_2leg']:.1%}, "
+              f"got {row['win_rate']:.1%} → ROI {row['roi_2leg']:+.1%}  ({verdict})")
+
+    if args.sweep:
+        print("\n=== every window, not just the ones the theory names ===")
+        for result in sorted(sweep(games, points=args.points), key=lambda r: -(r.edge or -1)):
+            star = " *" if result.significant else ""
+            print(f"  {result.label:>14}: {result.win_rate:.1%} "
+                  f"[{result.ci_low:.1%}-{result.ci_high:.1%}] n={result.n:<5} "
+                  f"edge {result.edge:+.1%}{star}")
+
+    print("\n=== why it could work at all: where NFL margins land ===")
+    for row in key_number_frequency(games):
+        if row["share"] >= 0.04:
+            bar = "#" * int(row["share"] * 120)
+            print(f"  {row['margin']:>2}: {row['share']:>5.1%} {bar}")
+    return 0
+
+
 def cmd_picks(args) -> int:
     from .pipeline import Pipeline
 
@@ -296,6 +348,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contest", choices=["all", "ats", "pickem", "survivor"], default="all")
     p.add_argument("--mode", choices=["ev", "leverage"], default="ev")
     p.set_defaults(func=cmd_picks)
+
+    p = sub.add_parser("teasers", help="backtest 6-point teasers through the key numbers")
+    p.add_argument("--points", type=float, default=6.0, help="teaser size in points")
+    p.add_argument("--split", type=int, default=2014, help="era split season")
+    p.add_argument("--sweep", action="store_true", help="also test every spread window")
+    p.set_defaults(func=cmd_teasers)
 
     p = sub.add_parser("teams", help="power ratings and season projections")
     p.add_argument("--season", type=int)

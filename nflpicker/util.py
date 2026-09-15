@@ -119,9 +119,14 @@ def prob_to_american(prob: float | None) -> int | None:
 
 
 def american_to_decimal(odds: float | None) -> float | None:
+    """Decimal payout for American odds. Zero is not a price, so it is None —
+    the same guard ``american_to_prob`` already applies, without which a
+    malformed feed sending 0 crashes rather than being ignored."""
     if odds is None:
         return None
     odds = float(odds)
+    if odds == 0:
+        return None
     return 1.0 + (odds / 100.0 if odds > 0 else 100.0 / -odds)
 
 
