@@ -475,6 +475,10 @@ td.team { font-weight: 600; }
 .slate td.hit  { color: var(--good) !important; }
 .slate td.miss { color: var(--critical) !important; }
 .slate td.hit, .slate td.miss { font-weight: 650; }
+
+/* A borrowed number is still the book's. Marked so a record that is mostly
+   inherited cannot read as one the model earned. */
+.slate td.inherited { font-weight: 500; opacity: .72; font-style: italic; cursor: help; }
 .slate td.mine, .slate th.mine { text-align: center; }
 
 /* Season totals read as a leaderboard, so the best row is marked. */

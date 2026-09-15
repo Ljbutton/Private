@@ -320,10 +320,24 @@ async function renderHome() {
   const rows = games.map((g) => {
     const p = g.prediction;
     const fair = p ? p.fair_margin : null;
-    const prob = p ? p.home_win_prob : null;
+    const ownProb = p && p.home_win_prob !== null && p.home_win_prob !== undefined
+      ? p.home_win_prob : null;
+    const bookHomeProb = g.market?.home_win_prob ?? null;
+
+    // A finished game the model never saw -- anything from before the app was
+    // running -- borrows the sportsbook's pick rather than showing a blank.
+    // Only finished games: for an upcoming one the model has its own view, and
+    // lending it the book's would be inventing an opinion.
+    //
+    // This also fixes a quiet fabrication. With no prediction `prob` was null,
+    // which compared false against 0.5, so the row confidently named the away
+    // team for no reason at all -- a pick nobody had made, indistinguishable
+    // from one somebody had.
+    const inherited = ownProb === null && g.status === "final" && bookHomeProb !== null;
+    const prob = ownProb !== null ? ownProb : (inherited ? bookHomeProb : null);
     const homePick = prob !== null && prob >= 0.5;
-    const winner = homePick ? g.home : g.away;
-    const loser = homePick ? g.away : g.home;
+    const winner = prob === null ? null : (homePick ? g.home : g.away);
+    const loser = prob === null ? null : (homePick ? g.away : g.home);
 
     // Every probability on the row is quoted for the *same* side -- the one we
     // picked -- so they can be compared straight across. Flipping some to the
@@ -378,14 +392,17 @@ async function renderHome() {
 
     return `<tr data-game="${esc(g.game_id)}" tabindex="0">
       <td class="when">${state_}</td>
-      <td class="match">
-        <b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>
+      <td class="match">${winner === null
+        ? `<span class="lose">${esc(g.away)} @ ${esc(g.home)}</span>`
+        : `<b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>`}
       </td>
       <td class="mine" title="Click to pick this game yourself">${
         yourPick
           ? `<button class="pick-chip on${yourVerdict}" data-pick="${esc(g.game_id)}">${esc(yourPick)}</button>`
           : `<button class="pick-chip" data-pick="${esc(g.game_id)}">+</button>`}</td>
-      <td class="ours edge-col${verdict(prob)}">${ourProb === null ? "–" : pct(ourProb)}</td>
+      <td class="ours edge-col${verdict(prob)}${inherited ? " inherited" : ""}"${
+        inherited ? ' title="The model has no pick for this game — it was played before the app was running, so the sportsbook\'s number is shown"' : ""
+      }>${ourProb === null ? "–" : pct(ourProb)}${inherited ? "*" : ""}</td>
       <td class="ours">${esc(line(fair))}</td>
       <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
       <td class="book edge-col${verdict(bookHome)}">${bookProb === null ? "–" : pct(bookProb)}</td>
