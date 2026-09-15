@@ -9,6 +9,7 @@ surfaced in the UI as a source-health row rather than thrown away.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,9 @@ GAME_COLUMNS = [
     "home_score", "away_score", "status", "neutral_site", "roof", "venue", "updated_at",
 ]
 
+
+
+log = logging.getLogger("nflpicker.pipeline")
 
 # The season training starts from, matching the CLI's default. Earlier seasons
 # exist but predate the play-by-play detail most features are built on.
@@ -1499,8 +1503,40 @@ class Pipeline:
         """Registry-facing name for the analytical pass."""
         self.recompute(result)
 
+    def purge_demo_data(self) -> int:
+        """Remove synthetic games left behind by a previous demo run.
+
+        Demo games are stored in the same tables as real ones, distinguished
+        only by a ``demo-`` id prefix. Nothing removed them, so a data directory
+        that had ever been opened in demo mode kept a synthetic slate mixed in
+        with the real one forever -- alongside real games, in the same week, on
+        the same board.
+
+        The tables are discovered from the schema rather than listed here. A
+        hardcoded list is exactly the kind that goes stale the next time a
+        table keyed on ``game_id`` is added, leaving demo rows behind in the
+        one place nobody remembered to update.
+        """
+        conn = db.connect()
+        removed = 0
+        for (table,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall():
+            columns = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if "game_id" not in columns:
+                continue
+            cursor = conn.execute(
+                f"DELETE FROM {table} WHERE game_id LIKE 'demo-%'")  # noqa: S608
+            removed += cursor.rowcount or 0
+        conn.commit()
+        if removed:
+            log.info("removed %d synthetic row(s) left by a previous demo run", removed)
+        return removed
+
     def bootstrap(self) -> RefreshResult:
         """First run: make sure the app has something to show."""
+        if not self.demo:
+            self.purge_demo_data()
         row = db.query_one("SELECT COUNT(*) AS n FROM games")
         if row and row["n"]:
             return self.refresh(["odds", "news", "recompute"])

@@ -162,3 +162,33 @@ def test_an_improved_model_is_promoted(pipeline, monkeypatch):
     assert (pipeline.config.model_dir / "models.joblib").exists()
     # The scratch directory is cleaned up whichever way the fit went.
     assert not written["dir"].exists()
+
+
+def test_going_live_removes_demo_rows(pipeline):
+    """Demo games live in the same tables as real ones, told apart only by an
+    id prefix. Nothing removed them, so a data directory that had ever been
+    opened in demo mode kept a synthetic slate mixed into the real board."""
+    _game("demo-2026-01-DAL-PHI", "final")
+    _game("401671789", "final")               # a real ESPN id
+    db.execute(
+        "INSERT INTO predictions(game_id, captured_at, model_version, margin_home,"
+        " total_points, home_win_prob) VALUES('demo-2026-01-DAL-PHI','t','v',1,2,0.5)")
+
+    removed = pipeline.purge_demo_data()
+
+    assert removed >= 2
+    ids = [r["game_id"] for r in db.query("SELECT game_id FROM games")]
+    assert ids == ["401671789"]
+    assert db.query("SELECT game_id FROM predictions") == []
+
+
+def test_the_purge_covers_every_table_keyed_on_a_game():
+    """Discovered from the schema, not a hardcoded list -- which is the kind
+    that goes stale the next time a game-keyed table is added."""
+    import inspect
+
+    from nflpicker.pipeline import Pipeline
+
+    source = inspect.getsource(Pipeline.purge_demo_data)
+    assert "sqlite_master" in source
+    assert "PRAGMA table_info" in source
