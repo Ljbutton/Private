@@ -54,22 +54,16 @@ class Scheduler:
     _lock: asyncio.Lock | None = None
 
     def __post_init__(self) -> None:
+        # Jobs come from the stage registry, so a newly registered source is
+        # polled without touching this file.
+        from .stages import STAGES
+
         cfg = get_config()
         self.jobs = {
-            "scores": Job("scores", cfg.refresh_scores, ["schedule"]),
-            "odds": Job("odds", cfg.refresh_odds, ["odds"]),
-            "news": Job("news", cfg.refresh_news, ["news"]),
-            "stats": Job("stats", cfg.refresh_stats, ["stats"]),
-            # Forecasts move slowly and only matter near kickoff, so this is
-            # the cheapest job on the board.
-            "weather": Job("weather", cfg.refresh_weather, ["weather"]),
+            stage.name: Job(stage.name, stage.interval(cfg), [stage.name])
+            for stage in STAGES
+            if stage.scheduled and stage.enabled(cfg)
         }
-        if cfg.prediction_markets_enabled:
-            # Polled more often than the sportsbooks: a thin venue's whole value
-            # here is that it lags, and the lag is what closes.
-            self.jobs["prediction_markets"] = Job(
-                "prediction_markets", cfg.refresh_prediction_markets, ["prediction_markets"]
-            )
 
     # ------------------------------------------------------------- intervals
     def odds_interval(self) -> float:
@@ -128,7 +122,7 @@ class Scheduler:
     def interval_for(self, job: Job) -> float:
         if job.name == "odds":
             return self.odds_interval()
-        if job.name == "scores":
+        if job.name == "schedule":
             return self.scores_interval()
         return job.interval
 

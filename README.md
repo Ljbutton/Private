@@ -439,8 +439,47 @@ nflpicker teams                  # power ratings and projections
 nflpicker train                  # train and evaluate
 nflpicker backtest --backfill    # grade history
 nflpicker teasers --sweep        # backtest key-number teasers
+nflpicker sources                # what data sources exist and how often they run
 nflpicker status                 # what's stored, which sources are healthy
 ```
+
+---
+
+## Adding a data source
+
+Sources are declared once, in `nflpicker/stages.py`, and both the refresh
+pipeline and the background scheduler read from that list. `nflpicker sources`
+prints what exists:
+
+```
+stage               enabled  every      feeds model  what it is
+schedule            yes      5m         yes          Games, scores and live in-game state
+odds                yes      15m        yes          Sportsbook lines across every book
+prediction_markets  yes      10m        -            Polymarket and Kalshi prices, shown for comparison
+weather             yes      180m       yes          Forecast at kickoff for outdoor games
+news                yes      15m        yes          Headlines and injury reports
+stats               yes      360m       yes          Play-by-play efficiency and per-game team detail
+recompute           yes      on refresh -            Ratings, projections, picks and grading
+```
+
+To add one:
+
+1. **Write an adapter** in `nflpicker/sources/` that returns plain dicts and
+   never touches the database. That is what makes it testable against a
+   recorded response instead of the live network.
+2. **Add `refresh_<name>(self, result)` to the pipeline** to fetch and store it.
+   Catch its own failures and record them — a dead feed must not cost you odds.
+3. **Register a `Stage`** with an interval and a one-line description.
+
+That is the whole wiring. Nothing else needs editing.
+
+**If it feeds the model, there is a fourth step, and it is the one that gets
+missed:** merge the values into the game rows in `recompute`, and write a test
+asserting the feature is actually populated. This project has shipped
+trained-on columns that arrived as NaN in production twice — once for the
+play-by-play features, once for temperature and wind — and in both cases
+everything upstream looked healthy. The registry gets the data in; only that
+test proves it is used.
 
 ---
 
@@ -485,7 +524,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 206 tests, fully offline
+make test     # 218 tests, fully offline
 make lint
 ```
 
@@ -526,6 +565,7 @@ nflpicker/
   availability.py  injury-adjusted projections
   backtest/    grading, CLV, calibration, teasers
   web/         dashboard (vanilla JS, no build step)
+  stages.py    the source registry both of the below read from
   pipeline.py  refresh orchestration
   scheduler.py background jobs
   api.py       FastAPI

@@ -295,6 +295,26 @@ def cmd_teams(args) -> int:
     return 0
 
 
+def cmd_sources(_args) -> int:
+    """What data sources exist, how often they run, and what they feed."""
+    from .stages import STAGES, describe
+
+    cfg = get_config()
+    rows = []
+    for stage, info in zip(STAGES, describe(), strict=True):
+        rows.append({
+            "stage": stage.name,
+            "enabled": "yes" if stage.enabled(cfg) else "no",
+            "every": f"{stage.interval(cfg) / 60:.0f}m" if stage.scheduled else "on refresh",
+            "feeds model": "yes" if info["feeds_model"] else "-",
+            "what it is": info["description"],
+        })
+    _print_table(rows, ["stage", "enabled", "every", "feeds model", "what it is"])
+    print("\nAdd one by writing an adapter in nflpicker/sources/, a refresh_<name>")
+    print("method on the pipeline, and a Stage entry in nflpicker/stages.py.")
+    return 0
+
+
 def cmd_status(_args) -> int:
     from .pipeline import Pipeline
 
@@ -371,6 +391,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("teams", help="power ratings and season projections")
     p.add_argument("--season", type=int)
     p.set_defaults(func=cmd_teams)
+
+    p = sub.add_parser("sources", help="list data sources and their refresh intervals")
+    p.set_defaults(func=cmd_sources)
 
     p = sub.add_parser("status", help="show what is stored and which sources are healthy")
     p.set_defaults(func=cmd_status)

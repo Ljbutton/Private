@@ -1141,31 +1141,39 @@ class Pipeline:
 
     # ------------------------------------------------------------ full refresh
     def refresh(self, stages: list[str] | None = None, *, force_odds: bool = False) -> RefreshResult:
-        stages = stages or [
-            "schedule", "odds", "prediction_markets", "news", "weather", "stats",
-            "recompute",
-        ]
+        """Run the requested stages in registry order.
+
+        Stages are driven from :mod:`nflpicker.stages` rather than a list
+        written out here, so adding a source does not mean remembering to edit
+        this method, the scheduler, and the default list in two places.
+        """
+        from .stages import STAGES, stage_names
+
+        wanted = set(stages) if stages else set(stage_names(self.config))
         result = RefreshResult()
-        if "schedule" in stages:
-            self.refresh_schedule(result)
-        if "odds" in stages:
-            self.refresh_odds(result, force=force_odds)
-        if "prediction_markets" in stages:
-            self.refresh_prediction_markets(result)
-        if "weather" in stages:
-            self.refresh_weather(result)
-        if "news" in stages:
-            self.refresh_news(result)
-        if "stats" in stages:
-            self.refresh_stats(result)
-        if "recompute" in stages:
+
+        for stage in STAGES:
+            if stage.name not in wanted:
+                continue
+            method = getattr(self, stage.method_name(), None)
+            if method is None:
+                result.record(stage.name, False, "no handler registered")
+                continue
             try:
-                self.recompute(result)
-            except Exception as exc:  # noqa: BLE001
-                result.record("recompute", False, str(exc))
+                if stage.name == "odds":
+                    method(result, force=force_odds)
+                else:
+                    method(result)
+            except Exception as exc:  # noqa: BLE001 - one stage must not stop the rest
+                result.record(stage.name, False, str(exc))
+
         result.finished_at = now_iso()
         db.set_meta("last_refresh", result.to_dict())
         return result
+
+    def refresh_recompute(self, result: RefreshResult) -> None:
+        """Registry-facing name for the analytical pass."""
+        self.recompute(result)
 
     def bootstrap(self) -> RefreshResult:
         """First run: make sure the app has something to show."""
