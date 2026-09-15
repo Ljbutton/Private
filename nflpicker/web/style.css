@@ -511,7 +511,14 @@ td.team { font-weight: 600; }
 /* Season totals read as a leaderboard, so the best row is marked. */
 .slate .who { text-align: left; font-weight: 600; }
 .slate .num { text-align: right; font-variant-numeric: tabular-nums; }
-.slate .num .rec { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+/* The small grey annotation beside a figure -- a won-lost record, a count of
+   inherited picks. It was only ever spaced inside a .num cell, so the one in
+   the picker column ran straight into the label: "Our model16 inherited". */
+.slate .rec { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+/* Three columns stretched across a wide window put a picker's name and its
+   number at opposite ends of the screen, with nothing between them for the eye
+   to follow. */
+.slate.totals { max-width: 660px; }
 .slate.totals tr.lead td { background: color-mix(in srgb, var(--series-1) 9%, transparent); }
 .slate.totals tr.lead .who { color: var(--series-1); }
 
