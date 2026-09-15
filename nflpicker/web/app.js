@@ -773,60 +773,90 @@ async function openGame(gameId) {
 // ------------------------------------------------------------------- teams
 /* Ours against everybody else's, side by side.
 
-   The consensus is the average of published top-32s from ESPN, NFL.com, CBS and
-   the rest, pooled over weeks 1 and 2. It is opinion rather than measurement,
-   so it is not a scoreboard -- but where our rating and a *tight* consensus
-   disagree by a dozen places, one of us has found something and it is worth
-   knowing which. A team the sources themselves cannot place is not evidence of
-   anything, so the spread between them is shown beside every row. */
+   The consensus is the average of published top-32s, pooled over weeks 1 and 2.
+   It is opinion rather than measurement, so it is not a scoreboard — but where
+   our ranking and a *tight* consensus differ by a dozen places, one of us has
+   found something. Both tables carry the same signed gap so a team can be
+   followed across: +4 on the left means the published lists put that team four
+   places lower than we do, and the same team reads −4 on the right. */
+
+/* The shared delta. "=" rather than "0" because a zero in a column of signed
+   numbers reads as a missing value, and agreeing exactly is worth seeing. */
+function gapChip(delta) {
+  if (delta === null || delta === undefined) return '<span class="gap none">–</span>';
+  if (delta === 0) return '<span class="gap same">=</span>';
+  const cls = delta > 0 ? "up" : "down";
+  return `<span class="gap ${cls}">${delta > 0 ? "+" : "−"}${Math.abs(delta)}</span>`;
+}
+
 function comparisonBlock(con, data) {
   const hasData = con && con.n_lists > 0 && (con.comparison || []).length;
   const sources = hasData
     ? con.sources.map((k) => esc(con.source_names[k] || k)).join(", ") : "";
+  // team -> where the consensus puts it, so our own table can carry the gap.
+  const theirs = {};
+  const spreads = {};
+  if (hasData) {
+    for (const r of con.comparison) {
+      theirs[r.team] = r.consensus_rank;
+      spreads[r.team] = r.spread;
+    }
+  }
+
+  /* A disagreement is only worth flagging when the sources agree with each
+     other. Being far from a team nobody can place says nothing. */
+  const flagged = (team, gap) =>
+    gap !== null && Math.abs(gap) >= 8 && (spreads[team] ?? 99) <= 8;
 
   const left = `<div class="panel">
-    <header><h2>Biggest disagreements</h2>
-      <span class="hint">${hasData
-        ? `us vs ${con.n_lists} published list${con.n_lists === 1 ? "" : "s"} ·
-           mean gap ${con.mean_abs_gap} places`
-        : "nothing imported yet"}</span></header>
-    ${hasData ? `<table class="slate">
-      <thead><tr><th>Team</th><th class="num">Ours</th><th class="num">Them</th>
-        <th class="num">Gap</th><th class="num" title="How far apart the sources are on this team">Spread</th></tr></thead>
-      <tbody>${con.comparison.slice(0, 12).map((r) => {
-        const strong = Math.abs(r.gap) >= 8 && r.spread <= 8;
-        return `<tr class="${strong ? "flag" : ""}">
-          <td class="who">${esc(r.team)}</td>
-          <td class="num">${r.our_rank}</td>
-          <td class="num">${r.consensus_rank}</td>
-          <td class="num ${r.gap > 0 ? "hit" : (r.gap < 0 ? "miss" : "")}">${
-            r.gap > 0 ? "+" : ""}${r.gap}</td>
-          <td class="num muted">${r.spread}</td>
+    <header><h2>Power ranking</h2>
+      <span class="hint">by projected finish${hasData
+        ? ` · gap is where ${con.n_lists} published list${con.n_lists === 1 ? "" : "s"} put them`
+        : ""}</span></header>
+    <div class="table-scroll tall"><table class="slate">
+      <thead><tr><th>#</th><th>Team</th><th class="num">Rec</th>
+        <th class="num" title="Expected wins from 20,000 simulations of the rest of the schedule">Proj</th>
+        <th class="num" title="Points better than an average team on a neutral field">Rating</th>
+        <th class="num" title="How many places the published consensus differs — positive means we rate them higher">vs&nbsp;them</th></tr></thead>
+      <tbody>${data.teams.map((t) => {
+        const them = theirs[t.team];
+        const gap = them === undefined ? null : them - t.rank;
+        return `<tr class="${flagged(t.team, gap) ? "flag" : ""}">
+          <td class="num muted">${t.rank}</td>
+          <td class="who">${esc(t.team)} <span class="muted">${esc(t.name)}</span></td>
+          <td class="num muted">${t.record.wins ?? 0}-${t.record.losses ?? 0}</td>
+          <td class="num"><b>${num(t.exp_wins, 1)}</b></td>
+          <td class="num">${signed(t.power)}</td>
+          <td class="num">${gapChip(gap)}</td>
         </tr>`;
-      }).join("")}</tbody></table>
-      <p class="note">A positive gap means we rate a team higher than the
-        published lists do. Rows marked in colour are the ones worth arguing
-        about: a gap of eight or more places on a team the sources themselves
-        agree about (spread of eight or less).</p>`
-      : '<div class="empty">Import a published top-32 to compare against.</div>'}
+      }).join("")}</tbody></table></div>
   </div>`;
 
   const right = `<div class="panel">
     <header><h2>Outside consensus</h2>
       <span class="hint">${hasData
         ? `weeks ${con.weeks.join(" & ")} · ${sources}`
-        : "paste a published ranking"}</span></header>
+        : "paste a published ranking to compare against"}</span></header>
     ${hasData ? `<div class="table-scroll tall"><table class="slate">
-      <thead><tr><th>#</th><th>Team</th><th class="num">Avg</th>
-        <th class="num">Range</th><th class="num">Ours</th></tr></thead>
+      <thead><tr><th>#</th><th>Team</th>
+        <th class="num" title="Mean rank across the published lists">Avg</th>
+        <th class="num" title="Best and worst rank any source gave them">Range</th>
+        <th class="num" title="How many places our ranking differs — positive means they rate them higher">vs&nbsp;us</th></tr></thead>
       <tbody>${con.comparison.slice().sort((a, b) => a.consensus_rank - b.consensus_rank)
-        .map((r) => `<tr>
-          <td class="num muted">${r.consensus_rank}</td>
-          <td class="who">${esc(r.team)} <span class="muted">${esc(r.name)}</span></td>
-          <td class="num">${r.mean_rank.toFixed(1)}</td>
-          <td class="num muted">${r.best}–${r.worst}</td>
-          <td class="num">${r.our_rank}</td>
-        </tr>`).join("")}</tbody></table></div>`
+        .map((r) => {
+          const gap = r.our_rank - r.consensus_rank;
+          return `<tr class="${flagged(r.team, -gap) ? "flag" : ""}">
+            <td class="num muted">${r.consensus_rank}</td>
+            <td class="who">${esc(r.team)} <span class="muted">${esc(r.name)}</span></td>
+            <td class="num">${r.mean_rank.toFixed(1)}</td>
+            <td class="num muted">${r.best}–${r.worst}</td>
+            <td class="num">${gapChip(gap)}</td>
+          </tr>`;
+        }).join("")}</tbody></table></div>
+      <p class="note">Mean gap ${con.mean_abs_gap} places. Highlighted rows are
+        the ones worth arguing about: eight or more places apart on a team the
+        sources themselves agree about (a range of eight or less). A team they
+        cannot place is not evidence either way.</p>`
       : ""}
     <div class="import-box">
       <h3>Add a list</h3>
@@ -906,10 +936,9 @@ async function renderTeams() {
 
   root.innerHTML = `${comparisonBlock(con, data)}
   <div class="panel">
-    <header><h2>Power ranking</h2>
-      <span class="hint">Ranked by projected finish, not by record · ▲▼ is how
-        far a team sits from where its record would put it · rating is points
-        better than average on a neutral field</span></header>
+    <header><h2>Season projections</h2>
+      <span class="hint">same order as the ranking above · ▲▼ is how far a team
+        sits from where its record alone would put it</span></header>
     <div class="table-scroll"><table>
       <thead><tr><th>Team</th><th>Record</th>
         <th title="Expected wins from 20,000 simulations of the remaining schedule — what the ranking is sorted by">Proj. wins</th>

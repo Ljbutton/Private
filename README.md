@@ -343,9 +343,19 @@ that gap is the one thing a table sorted by record can never show.
 
 #### Ours against everybody else's
 
-The **Teams** page opens with two panels: the biggest disagreements between this
-app's rating and the average of published top-32s, and that consensus itself
-with an importer beneath it.
+The **Teams** page opens with two full rankings side by side: ours on the left,
+the average of published top-32s on the right, with an importer beneath it.
+
+Both carry the same signed gap, so a team can be followed across. **+4** on the
+left means the published lists put that team four places lower than we do; the
+same team reads **−4** on the right. **=** means the two rankings agree exactly,
+written that way because a `0` in a column of signed numbers reads as a missing
+value rather than as agreement.
+
+Our rank is the same number in both panels, which sounds obvious and briefly was
+not: the page ranked by projected finish while the comparison ranked by rating,
+so the "ours" column disagreed with the rank printed beside it and nothing said
+why. One ordering now serves both.
 
 Those lists are editorial opinion, so the consensus is not a scoreboard and
 agreeing with it is not a goal. What it is good for is finding outliers: where

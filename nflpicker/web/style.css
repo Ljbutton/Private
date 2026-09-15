@@ -978,3 +978,14 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   width: 100%; margin-top: 8px; font-family: var(--mono); font-size: 12px;
   line-height: 1.5; resize: vertical; min-height: 78px;
 }
+
+/* The signed gap between our ranking and the published consensus. Shown on
+   both tables with the same sign convention, so a team can be followed across:
+   +4 on one side is -4 on the other. */
+.gap { font-weight: 700; font-variant-numeric: tabular-nums; }
+.gap.up { color: var(--good); }
+.gap.down { color: var(--critical); }
+/* "=" rather than 0: a zero in a column of signed numbers reads as missing,
+   and exact agreement is worth seeing. */
+.gap.same { color: var(--text-muted); font-weight: 600; }
+.gap.none { color: var(--text-muted); }

@@ -266,11 +266,8 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # carries both the rating and who is left to play. The rating breaks
         # ties, because two teams can project to the same win total off very
         # different strength.
-        rows.sort(key=lambda r: (
-            r["exp_wins"] is None and r["power"] is None,
-            -(r["exp_wins"] if r["exp_wins"] is not None else -99),
-            -(r["power"] or 0),
-        ))
+        order = {team: i for i, team in enumerate(team_rank_order(season), start=1)}
+        rows.sort(key=lambda r: order.get(r["team"], 99))
         for i, row in enumerate(rows, start=1):
             row["rank"] = i
         # Where the projection disagrees with the table is the interesting
@@ -347,14 +344,8 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
 
         season = season or pipeline.season()
         wanted = tuple(int(w) for w in weeks.split(",") if w.strip().isdigit())
-        our_order = [
-            r["team"] for r in db.query(
-                "SELECT t.team, t.power FROM team_ratings t JOIN (SELECT team, "
-                "MAX(captured_at) m FROM team_ratings WHERE season = ? GROUP BY team) x "
-                "ON x.team = t.team AND x.m = t.captured_at ORDER BY t.power DESC",
-                (season,))
-        ]
-        result = rankings_module.compare(season, our_order, wanted or (1, 2))
+        result = rankings_module.compare(
+            season, team_rank_order(season), wanted or (1, 2))
         result["available_sources"] = [
             {"key": src.key, "name": src.name, "note": src.note}
             for src in rankings_module.SOURCES
@@ -631,6 +622,37 @@ def _is_notable_injury(status: str | None) -> bool:
                                                                 "questionable",
                                                                 "reserve", "pup",
                                                                 "injured"))
+
+
+def team_rank_order(season: int) -> list[str]:
+    """Our teams, best first — the one ordering the whole app calls "our rank".
+
+    It exists because there were briefly two. The Teams page ranks by projected
+    finish while the ranking comparison ranked by rating, so the "ours" column
+    beside the consensus disagreed with the rank printed two panels away, and
+    nothing on either screen said why.
+    """
+    ratings = {
+        r["team"]: r["power"] for r in db.query(
+            "SELECT t.team, t.power FROM team_ratings t JOIN (SELECT team, "
+            "MAX(captured_at) m FROM team_ratings WHERE season = ? GROUP BY team) x "
+            "ON x.team = t.team AND x.m = t.captured_at", (season,))
+    }
+    projections = {
+        r["team"]: r["exp_wins"] for r in db.query(
+            "SELECT p.team, p.exp_wins FROM season_projections p JOIN (SELECT team, "
+            "MAX(captured_at) m FROM season_projections WHERE season = ? GROUP BY team) x "
+            "ON x.team = p.team AND x.m = p.captured_at", (season,))
+    }
+    teams = sorted(set(ratings) | set(projections))
+    # Projected wins first, rating as the tie-break: two teams can project to
+    # the same total off very different strength.
+    teams.sort(key=lambda t: (
+        projections.get(t) is None and ratings.get(t) is None,
+        -(projections[t] if projections.get(t) is not None else -99),
+        -(ratings.get(t) or 0),
+    ))
+    return teams
 
 
 def game_cards(season: int, week: int) -> list[dict]:
