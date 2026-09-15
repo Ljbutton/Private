@@ -614,6 +614,43 @@ easy to get silently wrong:
 
 ---
 
+## Updating, and where your data lives
+
+Everything the app has learned is one SQLite file. Nothing is held in memory
+between runs, so switching the machine off loses nothing — on the next start the
+scheduler runs every due job immediately and carries on from the last snapshot.
+
+| | Path |
+|---|---|
+| From source | `data/nflpicker.db` |
+| Packaged, macOS | `~/Library/Application Support/NFLPicker/` |
+| Packaged, Windows | `%LOCALAPPDATA%\NFLPicker\` |
+
+The database is deliberately **outside** the application. Updating means
+replacing code, never touching that file:
+
+```bash
+make update      # from source: pull, reinstall, migrate, done
+```
+
+For a packaged build, replace the executable. The data directory is untouched
+because it was never inside it.
+
+**Schema changes migrate forward.** `CREATE TABLE IF NOT EXISTS` handles a new
+table, but does nothing to a table that already exists — so a column added later
+would never appear in your database, and the new code would query a column your
+file has never had. Columns are therefore also declared in `COLUMN_ADDITIONS`
+and applied on open, and a copy of the database is written beside it
+(`nflpicker.db.v4.backup`) before anything changes.
+
+That caution is specifically about the data that cannot be rebuilt. Scores,
+schedules and play-by-play can all be re-fetched. **Line movement and closing-line
+value cannot** — they exist only because the app was running and recorded them at
+the time. That is also why the sooner it runs continuously, the sooner the Edge
+tab has anything to say.
+
+---
+
 ## Layout
 
 ```

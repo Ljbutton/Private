@@ -9,6 +9,7 @@ snapshot per key.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
@@ -18,7 +19,16 @@ from typing import Any
 
 from .config import get_config
 
+log = logging.getLogger("nflpicker.db")
+
 SCHEMA_VERSION = 5
+
+# Columns added to tables that already shipped, as (table, column, declaration).
+# Adding a column to SCHEMA alone does nothing to a database that already has
+# the table, so every such change is recorded here too and applied by migrate().
+# Entries stay forever: they are how a database from any older version catches
+# up, and each one is a no-op once applied.
+COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = ()
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -288,6 +298,89 @@ CREATE INDEX IF NOT EXISTS idx_fetchlog_ts ON fetch_log(ts DESC);
 _local = threading.local()
 
 
+def _stored_version(conn: sqlite3.Connection) -> int:
+    """Schema version recorded in the database, or 0 for a database with none."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0        # no meta table yet: a brand-new file
+    try:
+        return int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> bool:
+    """Add a column to an existing table if it is not already there.
+
+    The schema is written with CREATE TABLE IF NOT EXISTS, which silently does
+    nothing when the table exists. That is right for a new table and wrong for
+    a new *column*: an upgraded app would query a column its own schema
+    declares and the user's database has never had. This is the safe way to add
+    one, and it is a no-op on a fresh database that already has it.
+    """
+    existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if not existing or column in existing:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    return True
+
+
+def _backup(db_path: Path, from_version: int) -> Path | None:
+    """Copy the database aside before changing its shape.
+
+    Migrations here are additive and safe, but "safe" is a claim about code
+    that has not run yet against data that cannot be regenerated: line history
+    and closing-line value accumulate only while the app is running and cannot
+    be backfilled from anywhere. A copy costs a few megabytes once per upgrade.
+    """
+    if not db_path.exists():
+        return None
+    target = db_path.with_name(f"{db_path.name}.v{from_version}.backup")
+    try:
+        # Copy through SQLite rather than the filesystem so an in-flight WAL is
+        # checkpointed into the copy instead of being left behind.
+        with sqlite3.connect(str(db_path)) as src, sqlite3.connect(str(target)) as dst:
+            src.backup(dst)
+        return target
+    except Exception:  # noqa: BLE001
+        log.warning("could not back up %s before migrating", db_path)
+        return None
+
+
+def migrate(conn: sqlite3.Connection, db_path: Path | None = None) -> int:
+    """Bring an existing database up to SCHEMA_VERSION, keeping its data.
+
+    Every step must be additive and idempotent. Nothing here drops or rewrites
+    a table: an upgrade that loses a season of captured odds is worse than one
+    that fails loudly.
+    """
+    was = _stored_version(conn)
+    if was >= SCHEMA_VERSION:
+        return was
+    if was > 0 and db_path is not None:
+        backup = _backup(db_path, was)
+        if backup:
+            log.info("backed up database to %s before migrating", backup.name)
+
+    # Columns added to tables that shipped in an earlier version. Listing them
+    # here rather than only in SCHEMA is what makes an upgrade in place work.
+    for table, column, decl in COLUMN_ADDITIONS:
+        if ensure_column(conn, table, column, decl):
+            log.info("added %s.%s", table, column)
+
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+    conn.commit()
+    if was > 0:
+        log.info("migrated database from schema %d to %d", was, SCHEMA_VERSION)
+    return was
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
     """Thread-local connection; SQLite objects are not shareable across threads."""
     db_path = Path(path) if path else get_config().db_path
@@ -297,12 +390,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(key, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        # CREATE TABLE IF NOT EXISTS covers a fresh database and any table added
+        # since; migrate() covers the rest, which that cannot reach.
         conn.executescript(SCHEMA)
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        conn.commit()
+        migrate(conn, db_path)
         conns[key] = conn
         _local.conns = conns
     return conns[key]
