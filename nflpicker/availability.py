@@ -63,12 +63,14 @@ class TeamAvailability:
     adjustment: float = 0.0            # points added to this team's projection
     missing: list[dict] = field(default_factory=list)
     qb_change: bool = False
+    qb_in_model: bool = False      # the replacement is a feature, not an offset
 
     def to_dict(self) -> dict:
         return {
             "team": self.team,
             "adjustment": round(self.adjustment, 2),
             "qb_change": self.qb_change,
+            "qb_in_model": self.qb_in_model,
             "missing": self.missing[:8],
         }
 
@@ -171,8 +173,15 @@ def team_adjustment(
     *,
     qb_values: dict[str, float] | None = None,
     depth: dict[str, list[str]] | None = None,
+    qb_priced: bool = False,
 ) -> TeamAvailability:
-    """Points to add to a team's projection given its current injury report."""
+    """Points to add to a team's projection given its current injury report.
+
+    ``qb_priced`` says the replacement starter has already been fed to the model
+    as a feature, so the quarterback downgrade is inside the projection and must
+    not be charged a second time here. Skill-position absences are still costed:
+    those have no equivalent feature.
+    """
     out = TeamAvailability(team=team)
     unavailable = [i for i in injuries if status_cost(i.get("status")) > 0]
     if not unavailable:
@@ -180,6 +189,9 @@ def team_adjustment(
 
     qb_points, qb_change = quarterback_cost(team, unavailable, qb_values, depth)
     out.qb_change = qb_change
+    if qb_priced:
+        qb_points = 0.0
+        out.qb_in_model = True
 
     others: list[tuple[float, dict]] = []
     for player in unavailable:
@@ -333,8 +345,15 @@ def build_adjustments(
     *,
     qb_values: dict[str, float] | None = None,
     depth: dict[str, list[str]] | None = None,
+    qb_priced: set[str] | None = None,
 ) -> dict[str, TeamAvailability]:
+    """``qb_priced`` names teams whose replacement starter is already a model
+    feature; see :func:`team_adjustment`."""
+    priced = qb_priced or set()
     return {
-        team: team_adjustment(team, rows, qb_values=qb_values, depth=depth)
+        team: team_adjustment(
+            team, rows, qb_values=qb_values, depth=depth,
+            qb_priced=team in priced,
+        )
         for team, rows in injuries_by_team.items()
     }

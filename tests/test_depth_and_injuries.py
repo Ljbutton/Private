@@ -149,3 +149,26 @@ def test_empty_input_is_handled():
 
 def test_names_join_across_the_two_feeds():
     assert normalize_name("Dak Prescott") == normalize_name("D.Prescott")
+
+
+def test_dated_snapshots_come_back_oldest_first():
+    """The release ships newest-first, and week estimation cannot separate these
+    snapshots — an offseason chart and today's chart both clamp to week 1, so
+    they collide on the depth_chart primary key. Whichever lands last wins, so
+    the frame has to be oldest-first or storing it keeps the *offseason* chart.
+    """
+    frame = pd.DataFrame([
+        {"dt": "2026-03-22T06:38:42Z", "team": "ATL", "player_name": "Kirk Cousins",
+         "pos_abb": "QB", "pos_rank": 1},
+        {"dt": "2026-09-15T12:39:14Z", "team": "ATL", "player_name": "Michael Penix Jr.",
+         "pos_abb": "QB", "pos_rank": 1},
+    ]).iloc[::-1]                      # as published: newest row first
+
+    out = normalise_depth_charts(frame, 2026)
+    assert list(out["full_name"]) == ["Kirk Cousins", "Michael Penix Jr."]
+
+    # And therefore last-write-wins keeps the current starter, not the old one.
+    kept = {}
+    for row in out.to_dict("records"):
+        kept[(row["season"], row["week"], row["team"], row["position"], row["depth"])] = row
+    assert next(iter(kept.values()))["full_name"] == "Michael Penix Jr."

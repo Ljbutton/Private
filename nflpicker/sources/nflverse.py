@@ -507,6 +507,15 @@ def normalise_depth_charts(df: pd.DataFrame, season: int) -> pd.DataFrame:
         out["week"] = [
             estimate_week(s.date(), season) if s is not None else 0 for s in stamps
         ]
+        # Sort oldest first, which every consumer depends on and none of them
+        # can see. The release ships newest-first, and week estimation cannot
+        # separate these snapshots: a March chart and today's chart both clamp
+        # to week 1, so they collide on (season, week, team, position, depth)
+        # and whichever lands last wins. Unsorted, that is the *offseason*
+        # chart — which is how a team's starter came back as a quarterback who
+        # had long since fallen down the depth chart.
+        out["_ts"] = stamps
+        out = out.sort_values("_ts", kind="stable", na_position="first")
         out = out[["season", "week", "team", "position", "depth", "full_name"]]
     else:
         return pd.DataFrame()

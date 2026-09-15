@@ -179,6 +179,22 @@ moved margin error **-0.013 points**, straight-up accuracy **+0.12%** and Brier
 **-0.0012** — six times the effect of the situational rates, and the best recent
 addition to the model.
 
+**Announced starters.** The schedule feed records a starter only *after* a game
+is played, so for an upcoming game the builder used to fall back to whoever
+started last week — wrong in exactly the case that moves a line most. Worse, it
+was wrong twice over: the model priced the game with the injured starter's rating
+*and* reported `qb_change = 0`, so nothing downstream knew the projection was
+stale. The expected starter is now resolved before inference by walking the depth
+chart past anyone the injury report has ruled out. Only unplayed games are
+touched — overwriting a final game's starter would rewrite history with
+information from the future.
+
+Because the replacement is now a *feature*, the quarterback half of the
+availability offset is suppressed for those teams. The downgrade is inside the
+model; charging it again would double-count the most expensive absence in the
+sport. Skill-position absences are still costed, since those have no equivalent
+feature.
+
 **Quarterback.** The largest week-to-week swing a power rating misses. Starter
 identity comes from one source only: the schedule feed records the *starter*
 while play-by-play reports whoever threw most, and those disagree on about one
@@ -615,9 +631,11 @@ keyed by capture time, which is what makes the history views answerable.
 - The **news impact estimate** is a coarse prior from position and availability.
   It is a triage signal for what to look at, never a substitute for watching how
   the market actually reacts.
-- **Starting quarterbacks for upcoming games** fall back to whoever started last
-  week. The schedule feed only records a starter after the fact, so an announced
-  midweek change is not yet picked up automatically — the news feed flags it for
-  you, but the model does not consume that flag.
+- **Announced starters** are resolved from the injury report and the depth
+  chart, not from headline text. The news classifier reports a team and a
+  position but never a player name, so it cannot say *which* quarterback a
+  headline means — and a wrong identity here does not degrade gracefully, it
+  prices the wrong player. A starter who is only *questionable* is still treated
+  as starting; that is closer to a coin flip than to a change.
 - Nothing here is betting advice. The app's most useful habit is telling you
   when it has no edge, and it will do that often.

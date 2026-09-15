@@ -840,16 +840,24 @@ class Pipeline:
             return 0
 
         stamp = now_iso()
-        rows = []
+        # The 2025-onward release publishes dated snapshots rather than one row
+        # per week, so a season arrives as ~520k rows that collapse onto ~3.7k
+        # primary keys. Writing all of them costs 99% wasted inserts on every
+        # refresh; de-duplicating here keeps identical semantics — the frame is
+        # chronological and the last row for a key wins, which is exactly what
+        # INSERT OR REPLACE was doing — at a fraction of the write volume.
+        seen: dict[tuple, list] = {}
         for record in frame.to_dict("records"):
             player = normalize_name(record.get("full_name"))
             depth = record.get("depth")
             if not player or depth != depth or not record.get("position"):
                 continue
-            rows.append([
+            key = (
                 int(record.get("season") or season), int(record.get("week") or 0),
-                record["team"], str(record["position"]), int(depth), player, stamp,
-            ])
+                record["team"], str(record["position"]), int(depth),
+            )
+            seen[key] = [*key, player, stamp]
+        rows = list(seen.values())
         db.executemany(
             "INSERT OR REPLACE INTO depth_chart"
             "(season, week, team, position, depth, player, updated_at) "
@@ -929,7 +937,73 @@ class Pipeline:
             values[key] = (sum(samples) / len(samples)) * weight
         return values, depth
 
-    def availability_adjustments(self, season: int) -> dict[str, dict]:
+    def qb_ids_by_name(self, season: int) -> dict[str, str]:
+        """Normalised passer name -> the id the rating tracker knows him by.
+
+        The injury report and the depth chart carry names; the feature builder
+        keys quarterbacks by the play-by-play passer id. Without this bridge an
+        announced replacement arrives as an unknown passer and is priced as a
+        debut start even when he has thrown four hundred passes.
+
+        Read from ``team_game_stats`` specifically, because that is the same
+        source the rating tracker keys on — resolving a name against any other
+        id space would produce a key that looks valid and matches nothing.
+        """
+        from .availability import normalize_name
+
+        out: dict[str, str] = {}
+        for row in db.query(
+            "SELECT payload FROM team_game_stats WHERE season >= ? ORDER BY season, week",
+            (season - 3,),
+        ):
+            try:
+                stats = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            name = normalize_name(stats.get("qb_name"))
+            qb_id = stats.get("qb_id")
+            if name and qb_id:
+                out[name] = str(qb_id)
+        return out
+
+    def expected_starters(self, season: int) -> dict[str, dict]:
+        """Each team's expected starting quarterback for its next game."""
+        from .starters import expected_starters
+
+        depth = self.qb_depth(season)
+        starters = expected_starters(depth, self.current_injuries())
+        return {team: e.to_dict() for team, e in starters.items()}
+
+    def current_injuries(self) -> dict[str, list[dict]]:
+        """Latest injury report, keyed by team, in the shape the costers want."""
+        from .availability import normalize_name
+
+        rows = db.query(
+            "SELECT i.team, i.player, i.position, i.status FROM injuries i "
+            "JOIN (SELECT team, player, MAX(updated_at) AS m FROM injuries "
+            "      GROUP BY team, player) x "
+            "ON x.team = i.team AND x.player = i.player AND x.m = i.updated_at"
+        )
+        by_team: dict[str, list[dict]] = {}
+        for row in rows:
+            by_team.setdefault(row["team"], []).append({
+                "player": normalize_name(row["player"]),
+                "player_name": row["player"],
+                "position": row["position"],
+                "status": row["status"],
+            })
+        return by_team
+
+    def qb_depth(self, season: int) -> dict[str, list[str]]:
+        """Each team's passers in depth order: published chart, then who has
+        actually been starting."""
+        _, inferred = self.quarterback_registry(season)
+        published = self.depth_by_position(season, "QB")
+        return {**inferred, **{t: d for t, d in published.items() if d}}
+
+    def availability_adjustments(
+        self, season: int, qb_priced: set[str] | None = None
+    ) -> dict[str, dict]:
         """Current injury report turned into points per team."""
         from .availability import build_adjustments, normalize_name
 
@@ -949,11 +1023,11 @@ class Pipeline:
                 "position": row["position"],
                 "status": row["status"],
             })
-        values, inferred_depth = self.quarterback_registry(season)
-        # Prefer the published depth chart; fall back to who has been starting.
-        published = self.depth_by_position(season, "QB")
-        depth = {**inferred_depth, **{t: d for t, d in published.items() if d}}
-        built = build_adjustments(by_team, qb_values=values, depth=depth)
+        values, _ = self.quarterback_registry(season)
+        depth = self.qb_depth(season)
+        built = build_adjustments(
+            by_team, qb_values=values, depth=depth, qb_priced=qb_priced
+        )
         return {team: a.to_dict() for team, a in built.items()}
 
     # ------------------------------------------------------------- recompute
@@ -1029,11 +1103,33 @@ class Pipeline:
                 g["wind"] = forecast["wind_mph"]
             if forecast and forecast["indoor"]:
                 g["roof"] = forecast["roof"] or g.get("roof")
+        # An announced starter change is the biggest single thing the schedule
+        # feed cannot tell us before kickoff, so it is filled in here from the
+        # injury report and the depth chart. Teams whose starter we replaced are
+        # then excluded from the quarterback half of the availability offset:
+        # the downgrade is inside the model now, and charging it twice would
+        # double-count the most expensive absence in the sport.
+        from .starters import apply_to_games
+        from .starters import expected_starters as _expected
+
+        starters = _expected(self.qb_depth(season), self.current_injuries())
+        filled = apply_to_games(history, starters, self.qb_ids_by_name(season))
+        qb_priced = {t for t, e in starters.items() if e.changed}
+        db.set_meta(
+            "expected_starters",
+            {t: e.to_dict() for t, e in starters.items() if e.changed},
+        )
+        if qb_priced:
+            db.log_fetch(
+                "starters", True,
+                f"{len(qb_priced)} announced change(s), {filled} sides filled",
+            )
+
         full_frame = build_features(
             history, team_game_stats=self.load_team_game_stats(season)
         )
         frame = full_frame[full_frame["season"] == season] if not full_frame.empty else full_frame
-        availability = self.availability_adjustments(season)
+        availability = self.availability_adjustments(season, qb_priced=qb_priced)
         db.set_meta("availability", availability)
         predictions = self.predictor.predict_frame(
             frame, power,
