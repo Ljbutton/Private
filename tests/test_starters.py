@@ -112,3 +112,31 @@ def test_suppressing_the_quarterback_still_charges_everyone_else():
     )
     assert built["KC"].adjustment < 0.0     # the tight end is still missing
     assert built["KC"].adjustment > -2.0    # but not a quarterback's worth
+
+
+def test_the_accuracy_report_separates_the_cases_that_matter():
+    """A headline rate over all team-games dilutes the result: the two rules
+    agree on most of them, where the feature is a no-op. The disagreement rate
+    is the one that says whether it is worth having."""
+    from nflpicker.backtest.starters import StarterAccuracy
+
+    acc = StarterAccuracy(
+        n=1000, last_week_right=880, announced_right=889,
+        disagreed=100, announced_right_when_disagreed=50,
+        last_week_right_when_disagreed=41,
+    )
+    out = acc.to_dict()
+
+    assert out["last_week_rate"] == 0.88
+    assert out["announced_rate"] == 0.889
+    assert out["announced_rate_when_disagreed"] == 0.5
+    assert out["last_week_rate_when_disagreed"] == 0.41
+
+
+def test_an_empty_run_reports_nothing_rather_than_dividing_by_zero():
+    from nflpicker.backtest.starters import StarterAccuracy
+
+    out = StarterAccuracy().to_dict()
+    assert out["n"] == 0
+    assert out["last_week_rate"] is None
+    assert out["announced_rate_when_disagreed"] is None

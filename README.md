@@ -181,7 +181,21 @@ addition to the model.
 
 **Announced starters.** The schedule feed records a starter only *after* a game
 is played, so for an upcoming game the builder used to fall back to whoever
-started last week — wrong in exactly the case that moves a line most. Worse, it
+started last week.
+
+*Measured*, on 2,011 team-games across 2021–2024 (`nflpicker starters`):
+
+| Naming the starter correctly | All team-games | When the two rules disagree |
+|---|---|---|
+| Last week's starter | 88.1% | 42.1% |
+| Announced starter | **88.9%** | **50.3%** |
+
+So it helps, and less than the first draft of this paragraph claimed. The two
+rules agree on 90% of team-games, where the substitution is a no-op; the 195
+where they disagree are the whole feature. There it is right half the time
+against last week's four-in-ten — a real gain on the cases that move a line, and
+a reminder that *neither* rule is good at them. A headline rate over all games
+would have diluted that to nothing and hidden both halves of it. Worse, it
 was wrong twice over: the model priced the game with the injured starter's rating
 *and* reported `qb_change = 0`, so nothing downstream knew the projection was
 stale. The expected starter is now resolved before inference by walking the depth

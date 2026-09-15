@@ -130,6 +130,34 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_starters(args) -> int:
+    """Does resolving the announced starter beat assuming last week's?"""
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    from .backtest.starters import measure
+
+    seasons = list(range(args.since, args.until + 1)) if args.until else None
+    print("replaying injury reports and depth charts…", flush=True)
+    result = measure(seasons=seasons, progress=lambda m: print(m, flush=True))
+    payload = result.to_dict()
+    print(json.dumps(payload, indent=2))
+
+    if not payload["n"]:
+        print("\nno team-games could be scored — check the seasons requested.")
+        return 1
+
+    print(f"\nnaming the starter correctly, {payload['n']} team-games:")
+    print(f"  last week's starter  {payload['last_week_rate']:.1%}")
+    print(f"  announced starter    {payload['announced_rate']:.1%}")
+    if payload["disagreed"]:
+        print(f"\nthe two rules disagreed on {payload['disagreed']} of them, "
+              "which is the only place the feature can change anything:")
+        print(f"  last week's starter  {payload['last_week_rate_when_disagreed']:.1%}")
+        print(f"  announced starter    {payload['announced_rate_when_disagreed']:.1%}")
+    return 0
+
+
 def cmd_teasers(args) -> int:
     """Backtest 6-point teasers through the key numbers."""
     import warnings
@@ -333,6 +361,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--split", type=int, default=2014, help="era split season")
     p.add_argument("--sweep", action="store_true", help="also test every spread window")
     p.set_defaults(func=cmd_teasers)
+
+    p = sub.add_parser("starters",
+                       help="measure whether the announced-starter rule beats last week's")
+    p.add_argument("--since", type=int, default=2021, help="earliest season")
+    p.add_argument("--until", type=int, default=0, help="latest season (0 = all available)")
+    p.set_defaults(func=cmd_starters)
 
     p = sub.add_parser("teams", help="power ratings and season projections")
     p.add_argument("--season", type=int)
