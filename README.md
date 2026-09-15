@@ -547,6 +547,7 @@ prediction_markets  yes      10m        -            Polymarket and Kalshi price
 weather             yes      180m       yes          Forecast at kickoff for outdoor games
 news                yes      15m        yes          Headlines and injury reports
 stats               yes      360m       yes          Play-by-play efficiency, team detail and depth charts
+train               yes      1440m      -            Refit the model as results come in
 recompute           yes      on refresh -            Ratings, projections, picks and grading
 ```
 
@@ -686,10 +687,33 @@ make refresh    # pull real data first
 make train      # walk-forward fit, ~25 seasons, a few minutes
 ```
 
-Retrain every few weeks in season: the shipped bundle is only as current as the
-day it was built. Training stays a command-line step because it prints a
-validation report you want to actually read, not something to fire from a button
-and hope about. The app picks up new weights on its next refresh.
+**It retrains itself as the season goes on.** The scheduler checks daily and
+refits once a week of results has landed, so the cadence follows the season
+rather than the clock. `make train` is still there for an immediate rebuild, and
+it prints a validation report worth reading.
+
+Three guards, because an unattended fit is the one scheduled job that can make
+the app *worse*:
+
+- **Nothing live.** Training holds the refresh lock for minutes; doing that
+  during a game would stall the score poll exactly when it matters, so a live
+  slate defers to the next check.
+- **Enough new evidence.** A week of results moves the weights; two or three
+  games spend minutes of CPU to move them by nothing.
+- **No regression.** The fit happens in a scratch directory and is promoted only
+  if its walk-forward error is not materially worse than the model already in
+  place. An upstream schema change or a feature that quietly went empty would
+  otherwise replace a good model with a broken one overnight, with the app
+  reporting nothing but a new timestamp. A rejected fit says so in the log and
+  changes nothing.
+
+The comparison has a caveat worth knowing: walk-forward MAE is computed over all
+history each run, and one week moves the sample by about a third of a percent, so
+runs are comparable in practice but not identical. The tolerance
+(`NFLPICKER_TRAIN_MAX_REGRESSION`, 0.15 points) is sized to catch a genuine
+break, not to arbitrate noise.
+
+Turn it off with `NFLPICKER_TRAIN_AUTO=0`.
 
 ---
 

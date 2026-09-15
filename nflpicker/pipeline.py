@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -45,6 +46,11 @@ GAME_COLUMNS = [
     "game_id", "season", "week", "season_type", "kickoff", "home", "away",
     "home_score", "away_score", "status", "neutral_site", "roof", "venue", "updated_at",
 ]
+
+
+# The season training starts from, matching the CLI's default. Earlier seasons
+# exist but predate the play-by-play detail most features are built on.
+TRAIN_SINCE_SEASON = 2002
 
 
 @dataclass
@@ -692,6 +698,98 @@ class Pipeline:
         except Exception as exc:  # noqa: BLE001
             result.record("news", False, str(exc))
             db.log_fetch("news", False, str(exc), int((time.monotonic() - start) * 1000))
+
+    def refresh_train(self, result: RefreshResult) -> None:
+        """Refit the model as the season's results come in.
+
+        Three conditions guard this, because retraining unattended is the one
+        scheduled job that can make the app *worse*:
+
+        * **Nothing live.** Training holds the refresh lock for minutes. Doing
+          that while a game is in progress would stall the score poll exactly
+          when it matters, so a live slate defers to the next check.
+        * **Enough new evidence.** A week of results moves the weights; two or
+          three games spend minutes of CPU to move them by nothing.
+        * **No regression.** A fresh fit is trained into a temporary directory
+          and promoted only if it is not materially worse than the one in
+          place. An upstream schema change or a feature that quietly went empty
+          would otherwise replace a good model with a broken one overnight,
+          with the app reporting nothing but a new timestamp.
+        """
+        start = time.monotonic()
+        try:
+            if self.demo or not self.config.train_auto:
+                result.record("train", True, "automatic training is off")
+                return
+
+            live = db.query_one(
+                "SELECT COUNT(*) AS n FROM games WHERE status = 'in_progress'")
+            if live and live["n"]:
+                result.record("train", True, f"deferred: {live['n']} game(s) in progress")
+                return
+
+            done = db.query_one(
+                "SELECT COUNT(*) AS n FROM games WHERE status = 'final'")
+            completed = int((done or {}).get("n") or 0)
+            trained_on = int(db.get_meta("train:n_games", 0) or 0)
+            new_games = completed - trained_on
+            if trained_on and new_games < self.config.train_min_new_games:
+                result.record(
+                    "train", True,
+                    f"{new_games} new result(s) since the last fit; "
+                    f"waiting for {self.config.train_min_new_games}")
+                return
+
+            detail = self._retrain(completed, new_games)
+            result.record("train", True, detail)
+            db.log_fetch("train", True, detail, int((time.monotonic() - start) * 1000))
+        except Exception as exc:  # noqa: BLE001 - a failed fit must not stop refreshing
+            result.record("train", False, str(exc))
+            db.log_fetch("train", False, str(exc), int((time.monotonic() - start) * 1000))
+
+    def _retrain(self, completed: int, new_games: int) -> str:
+        """Fit into a scratch directory, keep it only if it holds up."""
+        import shutil
+        import tempfile
+        import warnings
+
+        from .ml.dataset import from_nflverse
+        from .ml.train import load_report, train
+
+        incumbent = load_report()
+        before = ((incumbent or {}).get("blind") or {}).get("margin_mae")
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            frame = from_nflverse(TRAIN_SINCE_SEASON)
+            if frame.empty:
+                return "no usable games"
+            staging = Path(tempfile.mkdtemp(prefix="nflpicker-train-"))
+            try:
+                report = train(frame, model_dir=staging).to_dict()
+                after = (report.get("blind") or {}).get("margin_mae")
+
+                if before is not None and after is not None:
+                    slippage = float(after) - float(before)
+                    if slippage > self.config.train_max_regression:
+                        return (
+                            f"rejected: margin MAE {after:.3f} is {slippage:.3f} worse "
+                            f"than the model in place ({before:.3f}); keeping it")
+
+                model_dir = self.config.model_dir
+                model_dir.mkdir(parents=True, exist_ok=True)
+                for name in ("models.joblib", "training_report.json"):
+                    shutil.copy2(staging / name, model_dir / name)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+
+        db.set_meta("train:n_games", completed)
+        db.set_meta("train:at", now_iso())
+        self.reload_model()
+        mae = (report.get("blind") or {}).get("margin_mae")
+        market = (report.get("blind") or {}).get("market_margin_mae")
+        return (f"refit on {report.get('n_games')} games (+{new_games} new): "
+                f"margin MAE {mae:.3f} vs market {market:.3f}")
 
     def refresh_stats(self, result: RefreshResult) -> None:
         """Season-to-date EPA. Optional: everything still works without it."""

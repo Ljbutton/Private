@@ -83,6 +83,22 @@ class Config:
     refresh_scores: int = field(default_factory=lambda: _int("REFRESH_SCORES_SECONDS", 300))
     refresh_news: int = field(default_factory=lambda: _int("REFRESH_NEWS_SECONDS", 900))
     refresh_stats: int = field(default_factory=lambda: _int("REFRESH_STATS_SECONDS", 21600))
+    # Retraining is checked daily but only acts once a week of results has
+    # landed, so the cadence follows the season rather than the clock.
+    refresh_train: int = field(default_factory=lambda: _int("REFRESH_TRAIN_SECONDS", 86400))
+    train_auto: bool = field(default_factory=lambda: _bool("NFLPICKER_TRAIN_AUTO", True))
+    # Roughly a week of games. Retraining on two or three new results spends
+    # minutes of CPU to move the weights by nothing.
+    train_min_new_games: int = field(
+        default_factory=lambda: _int("NFLPICKER_TRAIN_MIN_NEW_GAMES", 12))
+    # How much worse a fresh model may be before it is rejected. Walk-forward
+    # MAE is computed over all history each time, and one week changes the
+    # sample by about a third of a percent, so runs are comparable in practice;
+    # this tolerance is sized to catch a genuine break -- an upstream schema
+    # change, a feature that went empty -- not to arbitrate noise.
+    train_max_regression: float = field(
+        default_factory=lambda: float(
+            os.environ.get("NFLPICKER_TRAIN_MAX_REGRESSION", "") or 0.15))
     refresh_weather: int = field(
         default_factory=lambda: _int("REFRESH_WEATHER_SECONDS", 10800)
     )

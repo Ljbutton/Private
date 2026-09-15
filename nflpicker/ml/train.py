@@ -313,8 +313,23 @@ def train(
         "total_aware": _fit_regressor(completed, aware_features, "total_points"),
         "calibrator": calibrator,
     }
-    joblib.dump(bundle, model_dir / "models.joblib")
-    (model_dir / "training_report.json").write_text(json.dumps(report.to_dict(), indent=2))
+    # Write beside the target and rename into place. A half-written pickle is
+    # indistinguishable from a corrupt one at load time, and the app's response
+    # to a corrupt bundle is to fall back to power ratings -- so an interrupted
+    # save would quietly cost the model until somebody noticed. os.replace is
+    # atomic within a filesystem, so a reader sees the old bundle or the new
+    # one and never a partial file.
+    import os
+
+    target = model_dir / "models.joblib"
+    staged = model_dir / "models.joblib.partial"
+    joblib.dump(bundle, staged)
+    os.replace(staged, target)
+
+    report_target = model_dir / "training_report.json"
+    report_staged = model_dir / "training_report.json.partial"
+    report_staged.write_text(json.dumps(report.to_dict(), indent=2))
+    os.replace(report_staged, report_target)
     return report
 
 

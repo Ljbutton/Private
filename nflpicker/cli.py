@@ -9,9 +9,6 @@ import sys
 from . import db
 from .config import get_config
 
-# nflverse play-by-play starts in 1999.
-PBP_FIRST_SEASON = 1999
-
 
 def _print_table(rows: list[dict], columns: list[str]) -> None:
     if not rows:
@@ -77,90 +74,20 @@ def cmd_refresh(args) -> int:
 def cmd_train(args) -> int:
     import warnings
 
-    from .ml.features import build_features, epa_by_game_from_pbp
+    from .ml.dataset import from_database, from_nflverse
     from .ml.train import train
 
     warnings.filterwarnings("ignore")
     cfg = get_config()
 
-    if args.source == "auto":
-        source = "db" if cfg.demo else "nflverse"
-    else:
-        source = args.source
+    source = ("db" if cfg.demo else "nflverse") if args.source == "auto" else args.source
 
     if source == "nflverse":
-        from .sources.nflverse import NflverseSource
-
         print("downloading nflverse game history…")
-        nfl = NflverseSource()
-        games = nfl.games()
-        games = games[games["season"] >= args.since]
-        rows = games.to_dict("records")
-        for row in rows:
-            row["home"] = row.pop("home_team", None)
-            row["away"] = row.pop("away_team", None)
-            row["neutral_site"] = str(row.get("location", "")).lower() == "neutral"
-            row["season_type"] = "REG" if row.get("game_type") == "REG" else "POST"
-        print(f"  {len(rows)} games from {args.since}")
-
-        # Play-by-play for every training season by default. Partial coverage
-        # is worse than it sounds: if most rows lack these columns the model
-        # learns to ignore them, and the features look worthless when they are
-        # merely absent. It is roughly 20MB a season and downloads in seconds.
-        epa: dict = {}
-        team_stats: dict = {}
-        availability: dict = {}
-        if not args.no_epa:
-            import pandas as pd
-
-            from .availability import SnapShares, historical_index
-
-            seasons = sorted(int(x) for x in games["season"].dropna().unique())
-            seasons = [s for s in seasons if s >= max(args.since, PBP_FIRST_SEASON)]
-            print(f"  loading play-by-play for {len(seasons)} seasons…", flush=True)
-            ok = 0
-            injuries, snaps = [], []
-            for season in seasons:
-                try:
-                    detail = nfl.game_team_stats(season)
-                    for row in detail.to_dict("records"):
-                        team_stats.setdefault(str(row["game_id"]), {})[row["team"]] = row
-                    epa.update(epa_by_game_from_pbp(
-                        nfl.play_by_play(season)))
-                    ok += 1
-                except Exception as exc:  # noqa: BLE001
-                    print(f"    skipped {season}: {exc}")
-                # Weekly reports are small and independent of play-by-play.
-                report = nfl.injury_reports(season)
-                if len(report):
-                    injuries.append(report)
-                snap = nfl.snap_counts(season)
-                if len(snap):
-                    snaps.append(snap)
-            print(f"  play-by-play loaded for {ok}/{len(seasons)} seasons "
-                  f"({len(team_stats)} games)")
-
-            if injuries:
-                shares = SnapShares(pd.concat(snaps) if snaps else None)
-                availability = historical_index(pd.concat(injuries), shares)
-                print(f"  injury reports for {len(availability)} team-weeks")
-        frame = build_features(rows, epa_by_game=epa, team_game_stats=team_stats,
-                               availability=availability)
+        frame = from_nflverse(args.since, with_epa=not args.no_epa,
+                              progress=lambda m: print(m, flush=True))
     else:
-        rows = db.query("SELECT * FROM games ORDER BY season, week, kickoff")
-        consensus = db.query(
-            "SELECT c.game_id, c.spread_home, c.total_points FROM consensus c "
-            "JOIN (SELECT game_id, MAX(captured_at) m FROM consensus GROUP BY game_id) x "
-            "ON x.game_id = c.game_id AND x.m = c.captured_at"
-        )
-        lines = {c["game_id"]: c for c in consensus}
-        for row in rows:
-            line = lines.get(row["game_id"])
-            if line:
-                row["spread_home"] = line["spread_home"]
-                row["market_total"] = line["total_points"]
-        print(f"training on {len(rows)} games from the local database")
-        frame = build_features(rows)
+        frame = from_database(progress=print)
 
     if frame.empty:
         print("no usable games — run `nflpicker refresh` first.")

@@ -82,6 +82,12 @@ STAGES: tuple[Stage, ...] = (
         interval=lambda cfg: cfg.refresh_stats,
         feeds_model=True,
     ),
+    Stage(
+        name="train",
+        description="Refit the model as results come in",
+        interval=lambda cfg: cfg.refresh_train,
+        enabled=lambda cfg: cfg.train_auto and not cfg.demo,
+    ),
     # Not a source: the analytical pass that turns everything above into
     # ratings, projections and picks. It never polls on its own.
     Stage(
