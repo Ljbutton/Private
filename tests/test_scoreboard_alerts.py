@@ -176,3 +176,43 @@ def test_marking_alerts_seen(store):
     assert len(alerts.recent(unseen_only=True)) == 1
     alerts.mark_seen()
     assert alerts.recent(unseen_only=True) == []
+
+
+def test_by_team_scores_every_game_a_team_played(store):
+    """Not games where the picker took that side -- games the team was in. The
+    question is which teams are being read wrongly."""
+    _final("g1", 1, "KC", "BUF", 30, 20)      # KC won
+    _final("g2", 2, "SF", "KC", 10, 30)       # KC won again, away
+    _model("g1", 0.9)                          # right
+    _model("g2", 0.9)                          # picked SF: wrong
+    _you("g1", 1, "KC")
+    _you("g2", 2, "KC")
+
+    rows = {r["team"]: r for r in scoreboard.by_team(2026)}
+    assert rows["KC"]["games"] == 2
+    assert rows["KC"]["tallies"]["model"]["rate"] == 0.5
+    assert rows["KC"]["tallies"]["you"]["rate"] == 1.0
+    # BUF played once and the model got that one right.
+    assert rows["BUF"]["tallies"]["model"] == {
+        "correct": 1, "wrong": 0, "push": 0, "n": 1, "rate": 1.0}
+
+
+def test_by_team_puts_the_model_s_worst_reads_first(store):
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _model("g1", 0.1)                          # badly wrong about KC and BUF
+    _final("g2", 1, "SF", "SEA", 30, 20)
+    _model("g2", 0.9)                          # right about SF and SEA
+
+    order = [r["team"] for r in scoreboard.by_team(2026)]
+    assert order.index("KC") < order.index("SF")
+
+
+def test_alerts_can_be_fetched_for_one_game(store):
+    alerts.record([
+        alerts.Alert(kind="steam", severity="info", title="a", game_id="g1",
+                     fingerprint="f1"),
+        alerts.Alert(kind="steam", severity="info", title="b", game_id="g2",
+                     fingerprint="f2"),
+    ])
+    rows = db.query("SELECT * FROM alerts WHERE game_id = ?", ("g1",))
+    assert [r["title"] for r in rows] == ["a"]

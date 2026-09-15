@@ -171,41 +171,22 @@ function kickoffShort(iso) {
 }
 
 // ------------------------------------------------------------------ alerts
-/* In-app only, by choice. The app already sits open on a desk; what it lacked
-   was a way to say "something changed" without re-reading sixteen rows. */
-async function renderAlerts() {
-  const host = $("#alerts");
-  if (!host) return;
-  const data = await api("/api/alerts?limit=6").catch(() => ({ alerts: [], unseen: 0 }));
-  const rows = data.alerts || [];
-  const unseen = data.unseen || 0;
-
-  const badge = $("#alert-count");
-  if (badge) {
-    badge.textContent = unseen ? String(unseen) : "";
-    badge.hidden = !unseen;
-  }
-  if (!rows.length) { host.innerHTML = ""; return; }
-
-  host.innerHTML = `<div class="alerts">
-    <div class="alerts-head">
-      <span class="eyebrow"><span class="pulse"></span>${unseen || rows.length} recent</span>
-      <button class="btn" id="dismiss-alerts">Mark all read</button>
-    </div>
-    ${rows.map((a) => `<div class="alert ${esc(a.severity)}${a.seen ? " seen" : ""}">
+/* Alerts are per-game and live inside the game's own dialog rather than in a
+   strip over the board. They are something you go looking for once a game has
+   your attention, not a queue demanding to be cleared, and a banner that
+   pushed sixteen rows off the screen was charging the whole board for news
+   about two games. */
+function alertList(rows) {
+  if (!rows || !rows.length) return "";
+  return `<div class="panel" style="margin-top:14px">
+    <header><h2>What changed</h2>
+      <span class="hint">${rows.length} for this game</span></header>
+    ${rows.map((a) => `<div class="alert ${esc(a.severity)}">
       <span class="dot"></span>
       <div><b>${esc(a.title)}</b>${a.detail ? `<div class="sub">${esc(a.detail)}</div>` : ""}</div>
       <span class="when">${ago(a.created_at)}</span>
     </div>`).join("")}
   </div>`;
-
-  $("#dismiss-alerts")?.addEventListener("click", async () => {
-    await api("/api/alerts/seen", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    await renderAlerts();
-  });
 }
 
 // -------------------------------------------------------------- scoreboard
@@ -246,6 +227,28 @@ async function renderScoreboard() {
         <th class="num">Same games</th></tr></thead>
       <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
     </table>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <header><h2>By team</h2>
+      <span class="hint">how often each picker called that team's games right ·
+        hardest for the model first</span></header>
+    <div class="table-scroll"><table class="slate">
+      <thead><tr><th>Team</th><th class="num">Games</th>${(d.pickers || []).map((p) =>
+        `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
+      <tbody>${(d.teams || []).map((t) => `<tr>
+        <td class="who">${esc(t.team)}</td>
+        <td class="num muted">${t.games}</td>
+        ${d.pickers.map((p) => {
+          const v = t.tallies[p];
+          if (!v.n) return '<td class="num muted">–</td>';
+          // Above half is being read well, below it badly; the midpoint is
+          // where a coin would sit, so it is the only sensible split.
+          const tone = v.rate > 0.5 ? " hit" : (v.rate < 0.5 ? " miss" : "");
+          return `<td class="num${tone}">${pct(v.rate)}<span class="rec">${v.correct}-${v.wrong}</span></td>`;
+        }).join("")}
+      </tr>`).join("")}</tbody>
+    </table></div>
   </div>
 
   <div class="panel" style="margin-top:16px">
@@ -318,6 +321,7 @@ async function renderHome() {
     const bookProb = bookHome === null || bookHome === undefined
       ? null : (homePick ? bookHome : 1 - bookHome);
 
+    const mkt = pmByGame[g.game_id];
     const line = (margin) => {
       if (margin === null || margin === undefined) return "–";
       if (Math.abs(margin) < 0.05) return "PK";
@@ -325,14 +329,36 @@ async function renderHome() {
     };
     const bookSpread = g.market?.spread_home;
 
+    // Once a game is final, every number on the row can be marked right or
+    // wrong. Each picker is judged on *its own* call, not on ours: the
+    // probabilities are displayed for the side we picked, so a book that
+    // disagreed shows below 50% and its own pick is the other team.
+    // Named for what it is: `winner` in this scope already means the team we
+    // picked, which is a different thing entirely.
+    const actualWinner = g.status === "final" && g.home_score !== null
+      && g.away_score !== null && g.home_score !== g.away_score
+      ? (g.home_score > g.away_score ? g.home : g.away)
+      : null;
+    const verdict = (homeProb) => {
+      if (actualWinner === null || homeProb === null || homeProb === undefined) return "";
+      if (Math.abs(Number(homeProb) - 0.5) < 1e-9) return "";
+      const called = Number(homeProb) > 0.5 ? g.home : g.away;
+      return called === actualWinner ? " hit" : " miss";
+    };
+    const mktHome = mkt && mkt.venue_prob !== null && mkt.venue_prob !== undefined
+      ? mkt.venue_prob : null;
+    const yourPick = myPick[g.game_id];
+    // Blue until the game is decided, so your pick still reads as yours rather
+    // than as a result you have not earned yet.
+    const yourVerdict = !yourPick || actualWinner === null
+      ? "" : (yourPick === actualWinner ? " hit" : " miss");
+
     const moved = g.movement?.toward_us;
     const movedCls = moved === null || moved === undefined || Math.abs(moved) < 0.05
       ? "flat" : (moved > 0 ? "good" : "bad");
     const movedText = moved === null || moved === undefined ? "–" : signed(moved);
 
-    const mkt = pmByGame[g.game_id];
-    const mktProb = mkt && mkt.venue_prob !== null && mkt.venue_prob !== undefined
-      ? (homePick ? mkt.venue_prob : 1 - mkt.venue_prob) : null;
+    const mktProb = mktHome === null ? null : (homePick ? mktHome : 1 - mktHome);
 
     const state_ = g.status === "in_progress"
       ? `<span class="live-dot"></span>LIVE`
@@ -344,17 +370,17 @@ async function renderHome() {
         <b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>
       </td>
       <td class="mine" title="Click to pick this game yourself">${
-        myPick[g.game_id]
-          ? `<button class="pick-chip on" data-pick="${esc(g.game_id)}">${esc(myPick[g.game_id])}</button>`
+        yourPick
+          ? `<button class="pick-chip on${yourVerdict}" data-pick="${esc(g.game_id)}">${esc(yourPick)}</button>`
           : `<button class="pick-chip" data-pick="${esc(g.game_id)}">+</button>`}</td>
-      <td class="ours edge-col">${ourProb === null ? "–" : pct(ourProb)}</td>
+      <td class="ours edge-col${verdict(prob)}">${ourProb === null ? "–" : pct(ourProb)}</td>
       <td class="ours">${esc(line(fair))}</td>
       <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
-      <td class="book edge-col">${bookProb === null ? "–" : pct(bookProb)}</td>
+      <td class="book edge-col${verdict(bookHome)}">${bookProb === null ? "–" : pct(bookProb)}</td>
       <td class="book">${esc(line(bookSpread === null || bookSpread === undefined
         ? null : -bookSpread))}</td>
       <td class="book">${num(g.market?.total_points, 1)}</td>
-      <td class="pmkt edge-col">${mktProb === null ? "–" : pct(mktProb)}</td>
+      <td class="pmkt edge-col${verdict(mktHome)}">${mktProb === null ? "–" : pct(mktProb)}</td>
       <td class="moved ${movedCls}">${movedText}</td>
     </tr>`;
   }).join("");
@@ -542,7 +568,12 @@ async function openGame(gameId) {
   body.innerHTML = '<div class="empty">Loading…</div>';
   dlg.showModal();
 
-  const d = await api(`/api/game/${encodeURIComponent(gameId)}`);
+  const [d, alertsFor] = await Promise.all([
+    api(`/api/game/${encodeURIComponent(gameId)}`),
+    // A game with no alerts is the normal case, so a failure here must not
+    // cost the dialog everything else it was going to show.
+    api(`/api/alerts?game_id=${encodeURIComponent(gameId)}`).catch(() => ({ alerts: [] })),
+  ]);
   const g = d.game;
   $(".dialog-title", dlg).textContent = `${g.away_name} at ${g.home_name}`;
 
@@ -609,6 +640,8 @@ async function openGame(gameId) {
         </tr>`).join("") || '<tr><td colspan="6" class="muted">No history yet.</td></tr>'}</tbody>
       </table></div>
     </div>
+
+    ${alertList(alertsFor.alerts)}
 
     ${["home", "away"].some((s) => g.availability?.[s]?.missing?.length)
       ? `<div class="panel" style="background:var(--surface-sunken)">
@@ -1195,9 +1228,6 @@ const VIEWS = { home: renderHome, games: renderGames, teams: renderTeams,
 
 async function render() {
   const view = VIEWS[state.tab] || renderHome;
-  // The alert strip lives above the view and is the same on every tab, so it
-  // refreshes with the page rather than being owned by one of them.
-  renderAlerts().catch(() => {});
   try {
     await view();
   } catch (err) {

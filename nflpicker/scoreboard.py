@@ -219,6 +219,55 @@ def season_totals(rows: list[WeekRow]) -> dict:
     }
 
 
+def by_team(season: int) -> list[dict]:
+    """Per team, how often each picker called that team's games correctly.
+
+    "That team's games" means any game it played, not games where the picker
+    took that side. The question this answers is which teams are being read
+    wrongly — a team every picker keeps missing is either genuinely volatile or
+    priced on a reputation nobody has updated.
+    """
+    games = db.query(
+        "SELECT * FROM games WHERE season = ? AND status = 'final' ORDER BY week", (season,))
+    if not games:
+        return []
+
+    by_pick = picks_for(season)
+    tallies: dict[str, dict[str, Tally]] = {}
+
+    for game in games:
+        winner = _winner(game)
+        picks = by_pick.get(game["game_id"], {})
+        if not picks:
+            continue
+        for team in (game["home"], game["away"]):
+            row = tallies.setdefault(team, {k: Tally() for k in PICKERS})
+            for picker in PICKERS:
+                pick = picks.get(picker)
+                if not pick:
+                    continue
+                if winner is None:
+                    row[picker].push += 1
+                    continue
+                row[picker].correct += int(pick == winner)
+                row[picker].wrong += int(pick != winner)
+
+    out = []
+    for team in sorted(tallies):
+        row = tallies[team]
+        played = max((t.n + t.push) for t in row.values())
+        out.append({
+            "team": team,
+            "games": played,
+            "tallies": {k: v.to_dict() for k, v in row.items()},
+        })
+    # Hardest to read first: the teams where the model is furthest from right
+    # are the interesting rows, and an alphabetical list buries them.
+    out.sort(key=lambda r: (r["tallies"][MODEL]["rate"] is None,
+                            r["tallies"][MODEL]["rate"] or 0.0))
+    return out
+
+
 def report(season: int) -> dict:
     rows = weekly(season)
     return {
@@ -227,4 +276,5 @@ def report(season: int) -> dict:
         "pickers": list(PICKERS),
         "weeks": [r.to_dict() for r in rows],
         "totals": season_totals(rows),
+        "teams": by_team(season),
     }

@@ -456,10 +456,25 @@ td.team { font-weight: 600; }
               background var(--fast) var(--ease);
 }
 .pick-chip:hover { color: var(--text-primary); border-color: var(--text-muted); }
+/* Blue while the game is undecided, so your pick reads as a choice rather
+   than as a result you have not earned yet; green or red once it is. */
 .pick-chip.on {
-  border-style: solid; border-color: transparent; color: var(--series-3);
-  background: color-mix(in srgb, var(--series-3) 16%, transparent);
+  border-style: solid; border-color: transparent; color: var(--seq-400);
+  background: color-mix(in srgb, var(--seq-400) 18%, transparent);
 }
+.pick-chip.on.hit {
+  color: var(--good); background: color-mix(in srgb, var(--good) 18%, transparent);
+}
+.pick-chip.on.miss {
+  color: var(--critical); background: color-mix(in srgb, var(--critical) 18%, transparent);
+}
+
+/* A graded percentage is marked right or wrong. Each picker is judged on its
+   own call: the row shows every probability for the side *we* picked, so a
+   book that disagreed reads below 50% and was right when we were wrong. */
+.slate td.hit  { color: var(--good) !important; }
+.slate td.miss { color: var(--critical) !important; }
+.slate td.hit, .slate td.miss { font-weight: 650; }
 .slate td.mine, .slate th.mine { text-align: center; }
 
 /* Season totals read as a leaderboard, so the best row is marked. */

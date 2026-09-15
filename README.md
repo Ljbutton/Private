@@ -671,11 +671,24 @@ columns, and the second is the honest one:
 A source with no opinion is not scored as wrong, a tie is a push for everyone,
 and an exact 50% is not a pick.
 
+**By team** asks a different question: of the games each team played, how often
+did each picker call them right? A team everybody keeps missing is either
+genuinely volatile or priced on a reputation nobody has updated. Sorted with the
+model's worst reads first, because an alphabetical list buries them.
+
+Once a game is final the board marks every number right or wrong — green or red
+on each percentage, and on your own chip, which is blue until the game is
+decided. Each picker is judged on **its own** call: the row shows every
+probability for the side *we* picked, so a book that disagreed reads below 50%
+and was right when we were wrong.
+
 ## Alerts
 
-In-app only, deliberately — nothing is pushed anywhere. The app already sits
-open; what it lacked was a way to say "something changed" without re-reading
-sixteen rows.
+In-app only, deliberately — nothing is pushed anywhere, and they live inside a
+game's own dialog rather than in a strip over the board. They are something you
+go looking for once a game has your attention, not a queue demanding to be
+cleared: a banner that pushed sixteen rows off the screen was charging the whole
+board for news about two games.
 
 It raises a starter being ruled out, a line crossing 3 or 7, a steam move, and a
 disagreement of two points or more against the **opening** line. Two rules keep

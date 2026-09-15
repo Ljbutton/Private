@@ -121,12 +121,18 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
 
     # ------------------------------------------------------------ teams
     @app.get("/api/alerts")
-    def alerts_feed(limit: int = 40, unseen: bool = False) -> dict:
-        from . import alerts as alerts_module
+    def alerts_feed(limit: int = 40, game_id: str | None = None) -> dict:
+        """Alerts, optionally for one game. They are read from the game's own
+        dialog now, so the common case is a single game's handful."""
+        if game_id:
+            rows = db.query(
+                "SELECT * FROM alerts WHERE game_id = ? ORDER BY created_at DESC LIMIT ?",
+                (game_id, limit))
+        else:
+            from . import alerts as alerts_module
 
-        rows = alerts_module.recent(limit=limit, unseen_only=unseen)
-        unseen_count = db.query_one("SELECT COUNT(*) AS n FROM alerts WHERE seen = 0")
-        return {"alerts": rows, "unseen": int((unseen_count or {}).get("n") or 0)}
+            rows = alerts_module.recent(limit=limit)
+        return {"alerts": rows}
 
     @app.post("/api/alerts/seen")
     def alerts_seen(payload: dict | None = None) -> dict:
