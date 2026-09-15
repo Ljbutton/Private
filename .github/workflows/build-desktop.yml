@@ -53,9 +53,9 @@ jobs:
     runs-on: ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-latest' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -101,7 +101,7 @@ jobs:
           tar -czf NFLPicker-macos.tar.gz -C dist NFLPicker.app
           shasum -a 256 NFLPicker-macos.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
         with:
           name: NFLPicker-windows-${{ inputs.profile || 'full' }}
@@ -109,7 +109,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.target == 'macos'
         with:
           name: NFLPicker-macos-${{ inputs.profile || 'full' }}
