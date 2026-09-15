@@ -189,7 +189,7 @@ function kickoffShort(iso) {
    afterwards touches one function and cannot corrupt a template it never
    parses. <details> is used so keyboard support, find-in-page and open state
    all come for free. */
-const FOLDING_TABS = new Set(["teams", "picks", "news", "edge", "performance", "games"]);
+const FOLDING_TABS = new Set(["teams", "picks", "edge", "performance", "games"]);
 
 function foldPanels(root) {
   if (!FOLDING_TABS.has(state.tab)) return;
@@ -347,16 +347,64 @@ async function renderScoreboard() {
 }
 
 // -------------------------------------------------------------------- home
-/* The whole slate on one screen. The card board is better for reading one
-   game closely; this is for answering "what does the model think, and is the
-   market coming to it" across sixteen games without scrolling.
+/* The whole slate, one card per game.
 
-   Three numbers per game, and they are deliberately the *same* three the rest
-   of the app uses:
-     ours   -- fair_margin, the blend. This is what the win probability is
-               built from, so the pick and the spread can never disagree.
+   This replaced an eleven-column table. The table fit everything, but every
+   game was a single dense line and reading one meant counting columns across
+   to find which number belonged to which team — the two teams shared one row,
+   so nothing on it could be attributed to a side by position alone.
+
+   A card gives each team its own line, and each line is only half the card
+   wide: the left half identifies the team, the right half is the same three
+   sources the rest of the app uses, one column each, read straight down.
+
+     ours   -- fair_margin and the win probability built from it, so the pick
+               and the spread can never disagree.
      book   -- the sportsbook consensus.
-     market -- prediction markets, shown but never mixed into either. */
+     market -- prediction markets, shown but never mixed into either.
+
+   The tick marks the side a source picked, which is what makes the card
+   scannable: four ticks in a column is agreement, a split is a game worth
+   opening. Once a game is final the tick turns green or red, so the card is
+   its own scorecard. */
+
+const LOGO_BASE = "https://a.espncdn.com/i/teamlogos/nfl/500/";
+
+/* A team's mark. The abbreviation in the team's own colour is drawn first and
+   the logo replaces it only once it has actually loaded, so a blocked network
+   or a slow CDN degrades to a readable badge rather than to a broken image. */
+function teamMark(abbr) {
+  const t = (state.meta?.teams || {})[abbr] || {};
+  const slug = t.espn || String(abbr || "").toLowerCase();
+  return `<span class="tbadge" style="--team:${esc(t.color || "#64748b")}">
+    <span class="mono">${esc(abbr)}</span>
+    <img class="tlogo" alt="" src="${esc(LOGO_BASE + slug)}.png" />
+  </span>`;
+}
+
+function wireLogos(root) {
+  $$("img.tlogo", root).forEach((img) => {
+    const badge = img.closest(".tbadge");
+    if (!badge) return;
+    const ok = () => badge.classList.add("hasimg");
+    if (img.complete && img.naturalWidth > 0) ok();
+    img.addEventListener("load", ok);
+  });
+}
+
+/* "Final · 9/14", "LIVE · Q3 4:05", "Sun 1:00" — the one line that says where
+   in its life the game is. */
+function gameStamp(g) {
+  if (g.status === "in_progress") {
+    return `<span class="live-dot"></span>LIVE${g.live ? ` · ${esc(liveLabel(g.live))}` : ""}`;
+  }
+  const d = g.kickoff ? new Date(g.kickoff) : null;
+  const date = d && !Number.isNaN(d.getTime())
+    ? d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" }) : "";
+  if (g.status === "final") return `Final${date ? ` · ${date}` : ""}`;
+  return esc(kickoffShort(g.kickoff)) || "Scheduled";
+}
+
 async function renderHome() {
   const root = $("#view");
   const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
@@ -382,144 +430,152 @@ async function renderHome() {
     return rank(a) - rank(b) || String(a.kickoff).localeCompare(String(b.kickoff));
   });
 
-  const rows = games.map((g) => {
+  let anyInherited = false;
+
+  const card = (g) => {
     const p = g.prediction;
-    const fair = p ? p.fair_margin : null;
     const ownProb = p && p.home_win_prob !== null && p.home_win_prob !== undefined
       ? p.home_win_prob : null;
-    const bookHomeProb = g.market?.home_win_prob ?? null;
+    const bookHome = g.market?.home_win_prob ?? null;
 
     // A finished game the model never saw -- anything from before the app was
     // running -- borrows the sportsbook's pick rather than showing a blank.
     // Only finished games: for an upcoming one the model has its own view, and
     // lending it the book's would be inventing an opinion.
-    //
-    // This also fixes a quiet fabrication. With no prediction `prob` was null,
-    // which compared false against 0.5, so the row confidently named the away
-    // team for no reason at all -- a pick nobody had made, indistinguishable
-    // from one somebody had.
-    const inherited = ownProb === null && g.status === "final" && bookHomeProb !== null;
-    const prob = ownProb !== null ? ownProb : (inherited ? bookHomeProb : null);
-    const homePick = prob !== null && prob >= 0.5;
-    const winner = prob === null ? null : (homePick ? g.home : g.away);
-    const loser = prob === null ? null : (homePick ? g.away : g.home);
-
-    // Every probability on the row is quoted for the *same* side -- the one we
-    // picked -- so they can be compared straight across. Flipping some to the
-    // home team and others to our pick would make the row unreadable.
-    const ourProb = prob === null ? null : (homePick ? prob : 1 - prob);
-    const bookHome = g.market?.home_win_prob;
-    const bookProb = bookHome === null || bookHome === undefined
-      ? null : (homePick ? bookHome : 1 - bookHome);
+    const inherited = ownProb === null && g.status === "final" && bookHome !== null;
+    if (inherited) anyInherited = true;
+    const ourHome = ownProb !== null ? ownProb : (inherited ? bookHome : null);
 
     const mkt = pmByGame[g.game_id];
-    const line = (margin) => {
-      if (margin === null || margin === undefined) return "–";
-      if (Math.abs(margin) < 0.05) return "PK";
-      return margin > 0 ? `${g.home} ${num(-margin, 1)}` : `${g.away} ${num(margin, 1)}`;
-    };
-    const bookSpread = g.market?.spread_home;
+    const mktHome = mkt && mkt.venue_prob !== null && mkt.venue_prob !== undefined
+      ? mkt.venue_prob : null;
 
-    // Once a game is final, every number on the row can be marked right or
-    // wrong. Each picker is judged on *its own* call, not on ours: the
-    // probabilities are displayed for the side we picked, so a book that
-    // disagreed shows below 50% and its own pick is the other team.
-    // Named for what it is: `winner` in this scope already means the team we
-    // picked, which is a different thing entirely.
+    // Model margins are home-positive; posted spreads are the home team's line.
+    // One negation apart, and getting it wrong would flip every number on the
+    // card, so it is done once here rather than per cell.
+    const ourLineHome = p && p.fair_margin !== null && p.fair_margin !== undefined
+      ? -Number(p.fair_margin) : null;
+    const bookLineHome = g.market?.spread_home ?? null;
+
     const actualWinner = g.status === "final" && g.home_score !== null
       && g.away_score !== null && g.home_score !== g.away_score
       ? (g.home_score > g.away_score ? g.home : g.away)
       : null;
-    const verdict = (homeProb) => {
-      if (actualWinner === null || homeProb === null || homeProb === undefined) return "";
-      if (Math.abs(Number(homeProb) - 0.5) < 1e-9) return "";
-      const called = Number(homeProb) > 0.5 ? g.home : g.away;
-      return called === actualWinner ? " hit" : " miss";
+
+    const lineText = (homeLine, side) => {
+      if (homeLine === null || homeLine === undefined) return "–";
+      const v = side === "home" ? Number(homeLine) : -Number(homeLine);
+      return Math.abs(v) < 0.05 ? "PK" : signed(v);
     };
-    const mktHome = mkt && mkt.venue_prob !== null && mkt.venue_prob !== undefined
-      ? mkt.venue_prob : null;
+
+    // One source's opinion about one team: its line for that side, its
+    // probability for that side, and whether that is the side it picked.
+    const cell = (kind, homeProb, homeLine, side) => {
+      const picked = homeProb !== null && Math.abs(Number(homeProb) - 0.5) > 1e-9
+        && ((Number(homeProb) > 0.5) === (side === "home"));
+      const verdict = picked && actualWinner
+        ? (g[side] === actualWinner ? " hit" : " miss") : "";
+      const prob = homeProb === null ? null
+        : (side === "home" ? Number(homeProb) : 1 - Number(homeProb));
+      // A near-coin-flip rounds to "50%" on both sides, and a tick on one of
+      // them then reads as a contradiction rather than as a close call. One
+      // decimal, only where the rounding is what hides the difference.
+      const digits = prob !== null && Math.abs(prob - 0.5) < 0.005 ? 1 : 0;
+      return `<div class="gcell ${kind}${picked ? " picked" : ""}${verdict}">
+        <span class="gline">${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
+        <span class="gprob">${prob === null ? "–" : pct(prob, digits)}${
+          kind === "ours" && inherited ? "*" : ""}${picked ? `
+          <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>` : ""}</span>
+      </div>`;
+    };
+
     const yourPick = myPick[g.game_id];
-    // Blue until the game is decided, so your pick still reads as yours rather
-    // than as a result you have not earned yet.
-    const yourVerdict = !yourPick || actualWinner === null
-      ? "" : (yourPick === actualWinner ? " hit" : " miss");
+    const teamRow = (side) => {
+      const abbr = g[side];
+      const t = (state.meta?.teams || {})[abbr] || {};
+      const score = g[`${side}_score`];
+      const mineHere = yourPick === abbr;
+      // Blue while the game is undecided, so your pick still reads as yours
+      // rather than as a result you have not earned yet.
+      const yourVerdict = !mineHere || actualWinner === null
+        ? "" : (abbr === actualWinner ? " hit" : " miss");
+      const beaten = actualWinner !== null && abbr !== actualWinner;
+      return `<div class="gteam${beaten ? " beaten" : ""}">
+        <button class="pickdot${mineHere ? " on" : ""}${yourVerdict}" data-pick="${esc(g.game_id)}"
+          data-team="${esc(abbr)}" title="${mineHere ? "Your pick — click to clear" : `Pick ${esc(abbr)}`}"
+          aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
+            mineHere ? (yourVerdict === " miss" ? "✕" : "✓") : ""}</button>
+        ${teamMark(abbr)}
+        <span class="tname">${esc(t.name || abbr)}<span class="tsub">${
+          esc(t.location || "")} ${side === "away" ? "" : "· home"}</span></span>
+        <span class="tscore">${score === null || score === undefined ? "" : score}</span>
+      </div>
+      ${cell("ours", ourHome, ourLineHome, side)}
+      ${cell("book", bookHome, bookLineHome, side)}
+      ${cell("pmkt", mktHome, undefined, side)}`;
+    };
 
     const moved = g.movement?.toward_us;
-    const movedCls = moved === null || moved === undefined || Math.abs(moved) < 0.05
-      ? "flat" : (moved > 0 ? "good" : "bad");
-    const movedText = moved === null || moved === undefined ? "–" : signed(moved);
+    const movedBadge = moved === null || moved === undefined || Math.abs(moved) < 0.05
+      ? ""
+      : `<span class="gmoved ${moved > 0 ? "good" : "bad"}"
+           title="Points the line has moved toward our side since it opened"
+           >${signed(moved)} ${moved > 0 ? "to us" : "against us"}</span>`;
 
-    const mktProb = mktHome === null ? null : (homePick ? mktHome : 1 - mktHome);
+    const ourTotal = p && p.fair_total ? num(p.fair_total, 1) : null;
+    const bookTotal = g.market?.total_points;
 
-    const state_ = g.status === "in_progress"
-      ? `<span class="live-dot"></span>LIVE`
-      : (g.status === "final" ? "Final" : kickoffShort(g.kickoff));
-
-    return `<tr data-game="${esc(g.game_id)}" tabindex="0">
-      <td class="when">${state_}</td>
-      <td class="match">${winner === null
-        ? `<span class="lose">${esc(g.away)} @ ${esc(g.home)}</span>`
-        : `<b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>`}
-      </td>
-      <td class="mine" title="Click to pick this game yourself">${
-        yourPick
-          ? `<button class="pick-chip on${yourVerdict}" data-pick="${esc(g.game_id)}">${esc(yourPick)}</button>`
-          : `<button class="pick-chip" data-pick="${esc(g.game_id)}">+</button>`}</td>
-      <td class="ours edge-col${verdict(prob)}${inherited ? " inherited" : ""}"${
-        inherited ? ' title="The model has no pick for this game — it was played before the app was running, so the sportsbook\'s number is shown"' : ""
-      }>${ourProb === null ? "–" : pct(ourProb)}${inherited ? "*" : ""}</td>
-      <td class="ours">${esc(line(fair))}</td>
-      <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
-      <td class="book edge-col${verdict(bookHome)}">${bookProb === null ? "–" : pct(bookProb)}</td>
-      <td class="book">${esc(line(bookSpread === null || bookSpread === undefined
-        ? null : -bookSpread))}</td>
-      <td class="book">${num(g.market?.total_points, 1)}</td>
-      <td class="pmkt edge-col${verdict(mktHome)}">${mktProb === null ? "–" : pct(mktProb)}</td>
-      <td class="moved ${movedCls}">${movedText}</td>
-    </tr>`;
-  }).join("");
+    return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
+      <div class="gcard-top">
+        <span class="gstate">${gameStamp(g)}</span>
+        ${movedBadge}
+        <span class="gopen">View game info<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+      </div>
+      <div class="gcard-grid">
+        <div class="ghead"></div>
+        <div class="ghead ours"><span class="lg">Our model</span><span class="sm">Model</span></div>
+        <div class="ghead book"><span class="lg">Sportsbook</span><span class="sm">Book</span></div>
+        <div class="ghead pmkt"><span class="lg">Pred. mkt</span><span class="sm">Mkt</span></div>
+        ${teamRow("away")}
+        ${teamRow("home")}
+      </div>
+      <div class="gcard-foot">
+        <span class="flabel">Total</span>
+        <span class="fval ours">${ourTotal === null ? "–" : ourTotal}</span>
+        <span class="fval book">${num(bookTotal, 1)}</span>
+        <span class="fval pmkt">–</span>
+      </div>
+    </article>`;
+  };
 
   root.innerHTML = `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
-      <span class="hint">Every probability is for the side we picked ·
-        click a row for detail</span></header>
-    <table class="slate">
-      <thead>
-        <tr class="groups">
-          <th colspan="3"></th>
-          <th colspan="3" class="g-ours">Our model</th>
-          <th colspan="3" class="g-book">Sportsbook</th>
-          <th class="g-pmkt">Pred. mkt</th>
-          <th></th>
-        </tr>
-        <tr>
-          <th></th><th>Pick</th><th class="mine">You</th>
-          <th class="ours edge-col">Win</th><th class="ours">Spread</th><th class="ours">Total</th>
-          <th class="book edge-col">Win</th><th class="book">Spread</th><th class="book">Total</th>
-          <th class="pmkt edge-col">Win</th>
-          <th class="moved" title="Points the line has moved toward our side since it opened">Moved to us</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+      <span class="hint">A tick marks the side each source picked ·
+        click a card for detail</span></header>
+    <div class="gboard">${games.map(card).join("")}</div>
+    ${anyInherited ? `<p class="note">* These games finished before the app was
+      running, so the model has no pick of its own and the sportsbook's number is
+      shown in its place.</p>` : ""}
   </div>`;
 
-  $$("tr[data-game]", root).forEach((node) => {
+  wireLogos(root);
+
+  $$(".gcard", root).forEach((node) => {
     const open = () => openGame(node.dataset.game);
     node.addEventListener("click", open);
     node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
   });
 
-  // The chip sits inside a row that opens a dialog, so its click must not
-  // reach the row -- otherwise recording a pick also opens the detail view.
-  $$(".pick-chip", root).forEach((chip) => {
-    chip.addEventListener("click", async (event) => {
+  // The pick button sits inside a card that opens a dialog, so its click must
+  // not reach the card -- otherwise recording a pick also opens the detail view.
+  $$(".pickdot", root).forEach((dot) => {
+    dot.addEventListener("click", async (event) => {
       event.stopPropagation();
-      const gameId = chip.dataset.pick;
-      const game = games.find((g) => g.game_id === gameId);
-      if (!game) return;
-      const order = [game.away, game.home, ""];
-      const next = order[(order.indexOf(myPick[gameId] || "") + 1) % order.length];
+      const gameId = dot.dataset.pick;
+      // Clicking the team you already have selected clears it; clicking the
+      // other one switches. Two buttons behaving like a radio group you can
+      // also turn off, which is what picking a game actually is.
+      const next = myPick[gameId] === dot.dataset.team ? "" : dot.dataset.team;
       await api("/api/my-picks", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ game_id: gameId, selection: next }),
@@ -1083,40 +1139,53 @@ async function renderPicks() {
 }
 
 // -------------------------------------------------------------------- news
+/* Two columns, not folded. This page is read by scanning rather than by
+   looking one thing up: the question is "has anything changed that I should
+   know before I pick", and the injury report is the half that answers it most
+   often. Side by side, one scan covers both; stacked behind summaries it took
+   two clicks to learn there was nothing new. */
 async function renderNews() {
   const root = $("#view");
   const data = await api("/api/news?limit=80");
-  const items = data.items.map((n) => `<div style="padding:9px 0;border-bottom:1px solid var(--grid)">
-    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+  const items = data.items.map((n) => `<div class="news-item">
+    <div class="news-tags">
       <span class="badge ${esc(n.category)}">${esc(n.category)}</span>
       ${(n.teams || []).map((t) => `<span class="badge">${esc(t)}</span>`).join("")}
       ${n.line_impact ? `<span class="badge" style="border-color:var(--serious);color:var(--serious)">
         est. ${signed(n.line_impact)} pts</span>` : ""}
-      <span class="muted" style="margin-left:auto;font-size:11px">${esc(n.source)} · ${ago(n.published_at)}</span>
+      <span class="muted news-src">${esc(n.source)} · ${ago(n.published_at)}</span>
     </div>
-    <div style="margin-top:3px">${n.url
+    <div class="news-title">${n.url
       ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`
       : esc(n.title)}</div>
-    ${n.summary ? `<div class="muted" style="font-size:12px;margin-top:2px">${esc(n.summary.slice(0, 220))}</div>` : ""}
+    ${n.summary ? `<div class="muted news-sum">${esc(n.summary.slice(0, 220))}</div>` : ""}
   </div>`).join("");
 
-  const injuries = (data.injuries || []).slice(0, 60).map((i) => `<tr>
+  const injuries = (data.injuries || []).slice(0, 80).map((i) => `<tr>
     <td class="team">${esc(i.team)}</td><td>${esc(i.player)}</td>
     <td>${esc(i.position || "–")}</td><td>${esc(i.status || "–")}</td>
     <td class="muted">${ago(i.updated_at)}</td></tr>`).join("");
 
-  root.innerHTML = `<div class="panel">
-    <header><h2>News &amp; changes</h2>
-      <span class="hint">Sorted by estimated relevance to picks, not by recency</span></header>
-    ${items || '<div class="empty">No news stored yet.</div>'}
-    <p class="note">The points estimate is a coarse prior from position and availability —
-      a starting quarterback is worth two to three points, a backup almost nothing. It is a
-      triage signal for what to look at, never a substitute for the market's own reaction.</p>
-  </div>
-  ${injuries ? `<div class="panel"><header><h2>Injury report</h2></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Team</th><th>Player</th><th>Pos</th><th>Status</th><th>Updated</th></tr></thead>
-      <tbody>${injuries}</tbody></table></div></div>` : ""}`;
+  root.innerHTML = `<div class="grid-2 news-split">
+    <div class="panel">
+      <header><h2>Injury report</h2>
+        <span class="hint">${(data.injuries || []).length} listed</span></header>
+      ${injuries
+        ? `<div class="table-scroll tall"><table class="slate roster">
+            <thead><tr><th>Team</th><th>Player</th><th>Pos</th><th>Status</th><th>Updated</th></tr></thead>
+            <tbody>${injuries}</tbody></table></div>`
+        : '<div class="empty">No injury report stored yet.</div>'}
+    </div>
+
+    <div class="panel">
+      <header><h2>News &amp; changes</h2>
+        <span class="hint">by estimated relevance, not recency</span></header>
+      <div class="news-feed">${items || '<div class="empty">No news stored yet.</div>'}</div>
+      <p class="note">The points estimate is a coarse prior from position and availability —
+        a starting quarterback is worth two to three points, a backup almost nothing. It is a
+        triage signal for what to look at, never a substitute for the market's own reaction.</p>
+    </div>
+  </div>`;
 }
 
 // ------------------------------------------------------------- performance

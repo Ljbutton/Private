@@ -31,3 +31,20 @@ def test_distance_is_symmetric_and_sane():
     assert abs(d - teams.distance_miles("SEA", "KC")) < 1e-6
     assert 1400 < d < 1700
     assert teams.distance_miles("NYG", "NYJ") < 1        # same stadium
+
+
+def test_the_ui_reference_covers_every_team_with_a_logo_key():
+    ref = teams.reference()
+    assert set(ref) == set(teams.TEAMS)
+    for row in ref.values():
+        assert row["name"] and row["location"]
+        assert row["color"].startswith("#")
+        assert row["espn"] and row["espn"] == row["espn"].lower()
+
+
+def test_espn_logo_keys_use_espn_s_own_spelling():
+    # The board addresses team marks by ESPN's abbreviation, which is not ours
+    # everywhere. Getting this wrong shows a blank badge rather than an error.
+    assert teams.espn_abbr("WAS") == "wsh"
+    assert teams.espn_abbr("KC") == "kc"
+    assert teams.espn_abbr("LAR") == "lar"

@@ -18,7 +18,7 @@ from .market import movement
 from .ml.train import load_report
 from .pipeline import Pipeline
 from .scheduler import Scheduler
-from .teams import DIVISIONS, TEAMS
+from .teams import DIVISIONS, TEAMS, reference
 from .util import now_iso
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -68,6 +68,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                 "SELECT DISTINCT week FROM games WHERE season = ? AND season_type='REG' "
                 "ORDER BY week", (season,))],
             "seasons": pipeline.stored_seasons(),
+            "teams": reference(),
             "demo": pipeline.demo,
             "has_odds_key": cfg.has_odds_key,
             "odds_usage": odds_usage,

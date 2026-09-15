@@ -94,6 +94,10 @@ def test_state_endpoint_describes_the_installation(client):
     assert body["season"] and body["week"]
     assert len(body["weeks"]) == 18
     assert "model" in body and "sources" in body
+    # The board draws a mark and a name for all thirty-two teams, and this is
+    # where that reference reaches the browser.
+    assert len(body["teams"]) == 32
+    assert body["teams"]["KC"]["name"] == "Chiefs"
 
 
 def test_games_endpoint_returns_renderable_cards(client):

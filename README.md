@@ -655,12 +655,49 @@ easy to get silently wrong:
 
 ## Reading the pages
 
-Home and the Scoreboard are boards: everything on them is meant to be taken in
-at once, so nothing on them folds. Every other page is reference material you
+Home is a board of cards, one per game. It was an eleven-column table, which fit
+the whole slate on one screen but gave both teams a single shared row: no number
+on it could be attributed to a side by position, so reading one game meant
+counting columns across to find whose 62% that was.
+
+A card splits the line in half instead. The left half says which team — mark,
+name, score; the right half is the same three sources the rest of the app uses,
+one column each, so a game is read by looking *down* a column rather than across
+a row:
+
+```
+ FINAL · 9/13                                        View game info ›
+                              OUR MODEL   SPORTSBOOK   PRED. MKT
+  ○  Bears      Chicago  37       +0.3         +0.3
+                                   49%          49%         46%
+  ✕  Vikings   Minnesota 33       −0.3         −0.3
+                                  51% ✓        51% ✓       54% ✓
+ TOTAL                            42.5         42.5           –
+```
+
+The tick marks the side each source picked, which is what makes a card
+scannable: ticks in a line is agreement, a split is a game worth opening. It
+stays the source's own colour until the game is decided and turns green or red
+after — green means *was right* here, the same as everywhere else in the app, so
+a pick is never dressed as a result.
+
+**Team marks** come from ESPN's logo CDN. If that is unreachable — no network, a
+firewall, a machine that has never been online — each mark falls back to the
+team's abbreviation on its own colour rather than to a broken image, and nothing
+else about the board changes.
+
+The Scoreboard is a board too: everything on both is meant to be taken in at
+once, so nothing on them folds. Every other page is reference material you
 consult one question at a time, and four full tables stacked down a page turns
 finding the one you came for into a scrolling exercise — so those pages open to
 their headings, with the first section expanded. What you open stays open for
 the session, per page.
+
+**News** is the exception among those: it is read by scanning rather than by
+looking one thing up — "has anything changed before I pick" — so it stays open
+and splits left to right, the injury report on one side and everything else on
+the other. One scan covers both; behind summaries it took two clicks to learn
+there was nothing new.
 
 ## Seasons
 
@@ -692,9 +729,9 @@ inventing an opinion rather than filling in a missing one.
 
 ## Your picks, and who is actually right
 
-Click the chip in the **You** column on the board to record your own pick —
-clicking again cycles away, home, none. The point is to be able to disagree: with
-the model, with the book, or with both.
+Click the circle beside a team on its card to pick that team; click it again to
+clear it, or click the other team to switch. The point is to be able to
+disagree: with the model, with the book, or with both.
 
 The **Scoreboard** then scores everyone on straight-up winners, which is the one
 question all four can be asked without a spread or a price to argue about. Two
@@ -715,10 +752,10 @@ model's accuracy, best first; teams it has no opinion on sort last rather than
 to the bottom of the scale, where a missing rate would read as a score of zero.
 
 Once a game is final the board marks every number right or wrong — green or red
-on each percentage, and on your own chip, which is blue until the game is
-decided. Each picker is judged on **its own** call: the row shows every
-probability for the side *we* picked, so a book that disagreed reads below 50%
-and was right when we were wrong.
+on each percentage, and on your own pick, which is blue until the game is
+decided. Each picker is judged on **its own** call, and because each source has
+its own column read down both teams, a book that disagreed with us shows its
+tick on the other team and is green there when we are red.
 
 ## Alerts
 

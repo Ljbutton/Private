@@ -74,6 +74,39 @@ TEAMS: dict[str, Team] = {
     ]
 }
 
+# ESPN spells three of these differently, and its logo CDN is keyed on its own
+# spelling. Only the exceptions are listed; everything else is our abbreviation
+# lowercased.
+_ESPN_ABBR = {"WAS": "WSH"}
+
+
+def espn_abbr(abbr: str) -> str:
+    """The abbreviation ESPN uses, which is how its team marks are addressed."""
+    return _ESPN_ABBR.get(abbr, abbr).lower()
+
+
+def reference() -> dict[str, dict]:
+    """Team identity for the UI: name, colour, and the logo key.
+
+    The dashboard draws a mark and a name for every team on the board, and the
+    only place that data lives is here -- shipping it to the browser beats
+    keeping a second copy of thirty-two names in JavaScript that can drift.
+    """
+    return {
+        abbr: {
+            "abbr": abbr,
+            "name": t.name,
+            "location": t.location,
+            "full_name": t.full_name,
+            "color": t.color,
+            "conference": t.conference,
+            "division": t.division,
+            "espn": espn_abbr(abbr),
+        }
+        for abbr, t in TEAMS.items()
+    }
+
+
 ABBRS: list[str] = sorted(TEAMS)
 DIVISIONS: dict[str, list[str]] = {}
 for _abbr, _t in TEAMS.items():

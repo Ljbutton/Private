@@ -298,7 +298,7 @@ th {
 tbody tr { transition: background var(--fast) var(--ease); }
 tbody tr:hover { background: var(--surface-sunken); }
 td.team { font-weight: 600; }
-.table-scroll { overflow-x: auto; }
+.table-scroll { overflow-x: auto; min-width: 0; }
 
 /* --------------------------------------------------------- game cards */
 /* align-items: start so a card is as tall as its own content. Stretching
@@ -476,117 +476,231 @@ td.team { font-weight: 600; }
 }
 
 /* ------------------------------------------------------------- your picks */
-.pick-chip {
-  appearance: none; cursor: pointer; font: inherit;
-  font-size: 11.5px; font-weight: 640; letter-spacing: -0.01em;
-  min-width: 46px; padding: 3px 8px; border-radius: var(--radius-pill);
-  border: 1px dashed var(--border-strong); background: transparent;
-  color: var(--text-muted);
-  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
-              background var(--fast) var(--ease);
+/* Two buttons per game, one on each team's line, behaving like a radio group
+   you can also switch off — which is what picking a game actually is. The
+   previous single chip cycled away → home → none, so recording the home team
+   took two clicks and clearing it took three, and nothing on the control said
+   which team the next click would select. */
+.pickdot {
+  appearance: none; cursor: pointer; font: inherit; flex: none; padding: 0;
+  width: 19px; height: 19px; border-radius: 50%;
+  border: 1.5px dashed var(--border-strong); background: transparent;
+  color: transparent; font-size: 10px; font-weight: 800; line-height: 1;
+  display: grid; place-items: center;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
 }
-.pick-chip:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.pickdot:hover {
+  border-color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+.pickdot:focus-visible { outline: none; box-shadow: var(--ring); }
 /* Blue while the game is undecided, so your pick reads as a choice rather
    than as a result you have not earned yet; green or red once it is. */
-.pick-chip.on {
-  border-style: solid; border-color: transparent; color: var(--seq-400);
-  background: color-mix(in srgb, var(--seq-400) 18%, transparent);
-}
-.pick-chip.on.hit {
-  color: var(--good); background: color-mix(in srgb, var(--good) 18%, transparent);
-}
-.pick-chip.on.miss {
-  color: var(--critical); background: color-mix(in srgb, var(--critical) 18%, transparent);
-}
+.pickdot.on { border-style: solid; border-color: transparent; color: #fff;
+  background: var(--seq-400); }
+.pickdot.on.hit  { background: var(--good); }
+.pickdot.on.miss { background: var(--critical); }
 
 /* A graded percentage is marked right or wrong. Each picker is judged on its
-   own call: the row shows every probability for the side *we* picked, so a
-   book that disagreed reads below 50% and was right when we were wrong. */
+   own call, so a book that disagreed with us can be green on the same row
+   where we are red. */
 .slate td.hit  { color: var(--good) !important; }
 .slate td.miss { color: var(--critical) !important; }
 .slate td.hit, .slate td.miss { font-weight: 650; }
 
-/* A borrowed number is still the book's. Marked so a record that is mostly
-   inherited cannot read as one the model earned. */
-.slate td.inherited { font-weight: 500; opacity: .72; font-style: italic; cursor: help; }
-.slate td.mine, .slate th.mine { text-align: center; }
-
 /* Season totals read as a leaderboard, so the best row is marked. */
-.slate.totals .who { text-align: left; font-weight: 600; }
+.slate .who { text-align: left; font-weight: 600; }
 .slate .num { text-align: right; font-variant-numeric: tabular-nums; }
 .slate .num .rec { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
 .slate.totals tr.lead td { background: color-mix(in srgb, var(--series-1) 9%, transparent); }
 .slate.totals tr.lead .who { color: var(--series-1); }
 
-/* ------------------------------------------------------------- the board */
-/* Sixteen games on one screen. Every size here is chosen so the whole slate
-   clears a laptop viewport without scrolling; the card view is where a single
-   game gets room to explain itself.
-
-   The columns are grouped by *who is claiming it* -- our model, the
-   sportsbooks, the prediction markets -- because the whole question the board
-   answers is where those three disagree. Interleaving them would make the row
-   read as one set of numbers with no author. */
-.panel.board { padding: 16px 18px 10px; overflow-x: auto; }
+/* ------------------------------------------------------------- the tables */
+/* Shared by the scoreboard and the injury report. The home board used to be
+   one of these too; see the card board below for why it is not. */
 .slate { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums;
   min-width: 340px; }
-
 .slate thead th {
   font-size: 9.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em;
   color: var(--text-muted); text-align: right; padding: 0 9px 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--grid);
 }
-.slate thead tr:last-child th { border-bottom: 1px solid var(--grid); }
 .slate thead th:nth-child(1), .slate thead th:nth-child(2) { text-align: left; }
-
-/* The group row names the source once, over its own columns. */
-.slate tr.groups th { padding-bottom: 5px; text-align: center; font-size: 9px; }
-.slate tr.groups .g-ours { color: var(--series-1); }
-.slate tr.groups .g-book, .slate tr.groups .g-pmkt { color: var(--text-muted); }
-
 .slate td {
   padding: 0 9px; height: 34px; text-align: right; white-space: nowrap;
   border-bottom: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
 }
-.slate tbody tr { cursor: pointer; transition: background var(--fast) var(--ease); }
+.slate tbody tr { transition: background var(--fast) var(--ease); }
 .slate tbody tr:hover { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
 .slate tbody tr:last-child td { border-bottom: 0; }
+/* A roster listing is words, not figures; only the tables of numbers want
+   their columns right-aligned. */
+.slate.roster td, .slate.roster th { text-align: left; }
+.slate.roster .team { font-weight: 650; }
 
-.slate .when { text-align: left; color: var(--text-muted); font-size: 11px; width: 74px; }
-.slate .match { text-align: left; font-size: 13.5px; }
-.slate .match b { font-weight: 660; }
-.slate .match .beat { color: var(--text-muted); font-size: 10.5px; margin: 0 6px; }
-.slate .match .lose { color: var(--text-secondary); }
+/* -------------------------------------------------------- the card board */
+/* One card per game, and inside it each team gets its own line.
 
-/* Ours reads first, the book's as the reference beside it. */
-.slate td.ours { font-weight: 640; color: var(--text-primary); }
-.slate td.book { color: var(--text-secondary); font-weight: 500; }
-.slate td.pmkt, .slate th.pmkt { color: var(--text-muted); font-weight: 500; }
-/* The win column leads each group, so it carries the rule that separates them. */
-.slate th.edge-col, .slate td.edge-col { border-left: 1px solid var(--grid); }
-.slate td.ours.edge-col { color: var(--series-1); }
+   This was an eleven-column table. The table fit the whole slate on one
+   screen, which was the point, but both teams shared a single row: no number
+   on it could be attributed to a side by position, so reading one game meant
+   counting columns across to find whose 62% that was.
 
-.slate .moved { font-weight: 650; width: 84px; }
-.slate td.moved.good { color: var(--good); }
-.slate td.moved.bad  { color: var(--critical); }
-.slate td.moved.flat { color: var(--text-muted); }
-.slate .live-dot { width: 6px; height: 6px; margin-right: 5px; }
-
-/* Columns drop in order of what a narrow screen can least afford to keep:
-   the third opinion first, then both totals, then the kickoff time. */
-@media (max-width: 1180px) {
-  .slate th:nth-child(9), .slate td:nth-child(9) { display: none; }   /* pred mkt */
-  .slate tr.groups .g-pmkt { display: none; }
+   The card splits the line in half instead. The left half says which team;
+   the right half is the same three sources the rest of the app uses, one
+   column each, so a game is read by looking *down* a column rather than
+   across a row. Four ticks in a column is agreement; a split is a game worth
+   opening. */
+.panel.board { padding: 16px 18px 14px; }
+.gboard {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr));
 }
-@media (max-width: 900px) {
-  .slate th:nth-child(5), .slate td:nth-child(5),
-  .slate th:nth-child(8), .slate td:nth-child(8) { display: none; }   /* totals */
-  .slate tr.groups .g-ours, .slate tr.groups .g-book { }
+
+.gcard {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-sunken); padding: 9px 13px 7px; cursor: pointer;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease),
+              transform var(--fast) var(--ease);
 }
-@media (max-width: 760px) {
-  .slate .when { display: none; }
-  .slate th, .slate td { padding: 0 6px; }
-  .panel.board { padding: 14px 10px 8px; }
+.gcard:hover {
+  border-color: var(--border-strong); box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
 }
+.gcard:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.gcard-top {
+  display: flex; align-items: center; gap: 8px; font-size: 11px;
+  color: var(--text-muted); padding-bottom: 7px;
+}
+.gstate {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-secondary); display: inline-flex; align-items: center;
+}
+.gstate .live-dot { width: 6px; height: 6px; margin-right: 5px; }
+.gmoved {
+  font-size: 10px; font-weight: 650; padding: 1px 7px; border-radius: var(--radius-pill);
+  cursor: help;
+}
+.gmoved.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
+.gmoved.bad  { color: var(--critical); background: color-mix(in srgb, var(--critical) 14%, transparent); }
+.gopen {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 1px;
+  font-size: 10.5px; font-weight: 600; color: var(--series-1); opacity: .75;
+}
+.gopen svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4;
+  stroke-linecap: round; stroke-linejoin: round; }
+.gcard:hover .gopen { opacity: 1; }
+
+/* The team takes one half; the three sources share the other. */
+.gcard-grid, .gcard-foot {
+  display: grid; align-items: center;
+  grid-template-columns: minmax(0, 1fr) repeat(3, minmax(56px, 0.3333fr));
+}
+.ghead {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-muted); text-align: center; padding: 0 4px 6px;
+  border-bottom: 1px solid var(--grid);
+}
+.ghead.ours { color: var(--series-1); }
+/* Narrow columns get the short name rather than a wrapped or clipped one. */
+.ghead .sm { display: none; }
+@media (max-width: 640px) {
+  .ghead .lg { display: none; }
+  .ghead .sm { display: inline; }
+}
+
+.gteam { display: flex; align-items: center; gap: 9px; min-width: 0;
+  padding: 7px 10px 7px 0; }
+/* The team that lost recedes rather than disappears: the losing side's numbers
+   are still the point of a graded card. */
+.gteam.beaten { opacity: .55; }
+.tname { display: flex; flex-direction: column; min-width: 0; line-height: 1.2;
+  font-size: 13.5px; font-weight: 660; letter-spacing: -0.01em; }
+.tsub { font-size: 10px; font-weight: 500; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tscore { margin-left: auto; font-size: 16px; font-weight: 700;
+  font-variant-numeric: tabular-nums; }
+
+/* The team's mark. The abbreviation in the team's own colour is drawn first
+   and the logo replaces it only once it has loaded, so a blocked CDN or a
+   machine with no network degrades to a readable badge rather than to a
+   broken-image icon. */
+.tbadge {
+  position: relative; flex: none; width: 27px; height: 27px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--team);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.tbadge .mono { font-size: 9px; font-weight: 800; letter-spacing: -0.03em; color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
+.tbadge img { position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; opacity: 0; }
+.tbadge.hasimg { background: transparent; box-shadow: none; }
+.tbadge.hasimg .mono { display: none; }
+.tbadge.hasimg img { opacity: 1; }
+
+.gcell {
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  padding: 7px 4px; min-width: 0;
+  border-left: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
+}
+.gline { font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.gprob { display: inline-flex; align-items: center; gap: 3px;
+  font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gcell.ours .gprob { color: var(--series-1); }
+.gcell.book .gprob { color: var(--text-secondary); }
+.gcell.pmkt .gprob { color: var(--text-muted); }
+.gcell.picked .gprob { font-weight: 750; }
+/* The tick says which side a source picked. It stays the source's own colour
+   until the game is decided -- green here means "was right", the same as it
+   does everywhere else in the app, and a pick is not a result. */
+.tick { width: 12px; height: 12px; fill: currentColor; }
+.gcell.hit  .gprob { color: var(--good); }
+.gcell.miss .gprob { color: var(--critical); }
+
+.gcard-foot {
+  border-top: 1px solid var(--grid); margin-top: 3px; padding-top: 6px;
+  font-size: 11px; color: var(--text-secondary);
+}
+.flabel { font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-muted); }
+.fval { text-align: center; font-variant-numeric: tabular-nums; }
+.fval.ours { color: var(--series-1); font-weight: 640; }
+.fval.pmkt { color: var(--text-muted); }
+
+/* A narrow window gets one card per line and tighter columns rather than
+   fewer of them: dropping a source is dropping the comparison the board is
+   for. */
+@media (max-width: 640px) {
+  .gcard-grid, .gcard-foot {
+    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(44px, 0.3333fr));
+  }
+  .gcard { padding: 8px 10px 6px; }
+  .tname { font-size: 12.5px; }
+  .gprob { font-size: 12px; }
+  .panel.board { padding: 14px 10px 10px; }
+}
+
+/* ------------------------------------------------------------------- news */
+/* Read by scanning, not by looking one thing up, so both halves stay open and
+   sit side by side: the question is "has anything changed before I pick", and
+   the injury report is the half that answers it most often. */
+/* Both halves reach the same depth; .grid-2 starts its children at the top,
+   which left the shorter column floating beside a long one. */
+.grid-2.news-split { align-items: stretch; }
+.news-split > .panel { display: flex; flex-direction: column; min-width: 0; }
+.table-scroll.tall, .news-feed { max-height: 600px; overflow-y: auto; }
+/* A scroll box that ends mid-row looks like a rendering fault rather than like
+   more content, so the last line fades instead of being sliced. */
+.table-scroll.tall, .news-feed {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
+}
+.news-item { padding: 9px 0; border-bottom: 1px solid var(--grid); }
+.news-item:last-child { border-bottom: 0; }
+.news-tags { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.news-src { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.news-title { margin-top: 3px; font-size: 13px; line-height: 1.35; }
+.news-sum { font-size: 12px; margin-top: 2px; line-height: 1.4; }
 
 /* --------------------------------------------------------------- misc */
 .badge {
@@ -660,6 +774,10 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    The cumulative-units chart was being padded out with an inch of empty space
    to match a calibration panel that happens to carry a table. */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+/* A grid item's automatic minimum is its content, so one wide table inside a
+   half-width column pushed the whole page sideways rather than scrolling
+   inside its own box. */
+.grid-2 > * { min-width: 0; }
 .pickem-list { display: grid; gap: 4px; }
 .pick-row {
   display: grid; grid-template-columns: 40px 1fr auto auto; gap: 12px; align-items: center;
