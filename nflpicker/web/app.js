@@ -176,15 +176,26 @@ async function renderGames() {
         <span>${card.movement.steam ? "⚡ steam move" : (spark || "")}</span></div>
       ${live && live.last_play ? `<div class="lastplay">${esc(live.last_play)}</div>` : ""}
       <div class="teams">${teamRow("away")}${teamRow("home")}</div>
-      <div class="numbers">
-        <div>Market<strong>${esc(spreadText(card))}</strong></div>
-        <div>Model<strong>${esc(modelLineText(card))}</strong></div>
-        <div>Edge<strong>${edgePill(p?.spread_edge)}</strong></div>
-      </div>
-      <div class="numbers" style="border-top:0;padding-top:6px">
-        <div>Total<strong>${num(card.market?.total_points, 1)}</strong></div>
-        <div>Model total<strong>${num(p?.total_points, 1)}</strong></div>
-        <div>Line move<strong>${signed(card.movement.spread_move)}</strong></div>
+      <div class="lines">
+        <div class="line">
+          <span class="lbl">Spread</span>
+          <span class="pair" title="Market line, then our blended estimate">
+            <b class="mkt">${esc(spreadText(card))}</b>
+            <i class="to" aria-hidden="true"></i>
+            <b class="mdl">${esc(modelLineText(card))}</b>
+          </span>
+          ${edgePill(p?.spread_edge)}
+        </div>
+        <div class="line">
+          <span class="lbl">Total</span>
+          <span class="pair" title="Market total, then our blended estimate">
+            <b class="mkt">${num(card.market?.total_points, 1)}</b>
+            <i class="to" aria-hidden="true"></i>
+            <b class="mdl">${num(p?.total_points, 1)}</b>
+          </span>
+          <span class="move" title="How far the line has moved since it opened"
+            >${signed(card.movement.spread_move)}</span>
+        </div>
       </div>
       ${weatherFlag ? `<div class="newsline">${weatherFlag}<span class="muted">conditions at kickoff</span></div>` : ""}
       ${hits ? `<div class="newsline">${hits}<span class="muted">injury adjustment applied</span></div>` : ""}
@@ -199,7 +210,8 @@ async function renderGames() {
     <div class="legend" style="margin-bottom:12px">
       <span class="key"><i style="background:var(--div-pos)"></i>Edge favours home</span>
       <span class="key"><i style="background:var(--div-neg)"></i>Edge favours away</span>
-      <span class="key muted">Edge is our blended estimate against the line, not the raw model gap</span>
+      <span class="key muted">Each pair reads market \u2192 our model. Edge is the blended
+        estimate against the line, not the raw model gap</span>
     </div>
     <div class="cards">${cards}</div></div>`;
 
