@@ -61,6 +61,12 @@ class Scheduler:
             "news": Job("news", cfg.refresh_news, ["news"]),
             "stats": Job("stats", cfg.refresh_stats, ["stats"]),
         }
+        if cfg.prediction_markets_enabled:
+            # Polled more often than the sportsbooks: a thin venue's whole value
+            # here is that it lags, and the lag is what closes.
+            self.jobs["prediction_markets"] = Job(
+                "prediction_markets", cfg.refresh_prediction_markets, ["prediction_markets"]
+            )
 
     # ------------------------------------------------------------- intervals
     def odds_interval(self) -> float:

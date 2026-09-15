@@ -64,3 +64,30 @@ def test_spread_falls_back_to_an_implied_probability_without_moneylines():
 def test_disagreement_measures_the_spread_between_books():
     assert spread_disagreement(_quotes()) == 1.0     # -3.0 to -4.0
     assert build_consensus("g", [], "t") is None
+
+
+def test_prediction_markets_are_excluded_from_the_sportsbook_consensus():
+    """The consensus is the benchmark a thinner venue is measured against. If
+    that venue were averaged into it, the comparison would partly be against
+    itself and the benchmark would drift toward the price being judged."""
+    quotes = _quotes() + [
+        {"book": "polymarket", "market": "moneyline",
+         "captured_at": "2025-09-02T00:00:00+00:00",
+         "home_price": 100, "away_price": -120},
+        {"book": "polymarket", "market": "spread",
+         "captured_at": "2025-09-02T00:00:00+00:00",
+         "home_point": -10.0, "away_point": 10.0,
+         "home_price": -110, "away_price": -110},
+    ]
+    c = build_consensus("g1", quotes, "2025-09-02T01:00:00+00:00")
+    assert "polymarket" not in c.books
+    assert c.n_books == 3
+    # The outlier -10 line must not drag the median.
+    assert c.spread_home == -3.5
+
+
+def test_a_game_priced_only_by_a_prediction_market_has_no_consensus():
+    quotes = [{"book": "polymarket", "market": "moneyline",
+               "captured_at": "2025-09-02T00:00:00+00:00",
+               "home_price": 100, "away_price": -120}]
+    assert build_consensus("g1", quotes, "2025-09-02T01:00:00+00:00") is None

@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from ..sources.polymarket import PREDICTION_MARKET_VENUES
 from ..util import american_to_prob, devig, mean, median, prob_to_american
 
 
@@ -71,6 +72,17 @@ class Consensus:
         }
 
 
+def sportsbook_quotes(quotes: list[dict]) -> list[dict]:
+    """Drop prediction-market venues from a set of quotes.
+
+    The consensus is only useful because it averages deep, efficient
+    sportsbooks. Mixing a thinner prediction market into it would move the
+    benchmark toward the very price we want to measure against, and the
+    cross-market comparison would partly be comparing that price to itself.
+    """
+    return [q for q in quotes if (q.get("book") or "").lower() not in PREDICTION_MARKET_VENUES]
+
+
 def latest_per_book(quotes: list[dict]) -> dict[tuple[str, str], dict]:
     """Keep only each book's most recent quote for each market."""
     newest: dict[tuple[str, str], dict] = {}
@@ -84,6 +96,7 @@ def latest_per_book(quotes: list[dict]) -> dict[tuple[str, str], dict]:
 
 def build_consensus(game_id: str, quotes: list[dict], captured_at: str) -> Consensus | None:
     """Average the latest quote from every book into a single market view."""
+    quotes = sportsbook_quotes(quotes)
     if not quotes:
         return None
     newest = latest_per_book(quotes)

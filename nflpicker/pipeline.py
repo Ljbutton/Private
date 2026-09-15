@@ -29,7 +29,14 @@ from .ratings.elo import run_elo
 from .ratings.power import build_power_ratings
 from .sim.season import simulate_season
 from .sources.base import SourceError
-from .util import current_season, estimate_week, now_iso, to_utc
+from .util import (
+    american_to_prob,
+    current_season,
+    devig,
+    estimate_week,
+    now_iso,
+    to_utc,
+)
 
 # How many complete seasons of synthetic history demo mode loads behind the
 # current one.  Five is enough for Elo to converge and for the trainer to have
@@ -388,6 +395,77 @@ class Pipeline:
             result.record("odds", False, str(exc))
             db.log_fetch("odds", False, str(exc), int((time.monotonic() - start) * 1000))
 
+    def refresh_prediction_markets(self, result: RefreshResult) -> None:
+        """Poll Polymarket and store it as its own venue.
+
+        Deliberately a separate stage from ``odds``: it is a different kind of
+        venue, it must never reach the sportsbook consensus, and it should be
+        able to fail without touching the sharp lines the rest of the app runs
+        on.
+        """
+        start = time.monotonic()
+        try:
+            if not self.config.prediction_markets_enabled:
+                result.record("prediction_markets", True, "disabled by configuration")
+                return
+            if self.demo:
+                quotes = _demo_prediction_market(self)
+            else:
+                from .sources.polymarket import PolymarketSource
+
+                quotes = PolymarketSource().fetch(with_depth=True)
+            if not quotes:
+                raise SourceError("no NFL markets returned")
+
+            stamp = now_iso()
+            rows = [q.to_quote_row(stamp) for q in quotes]
+            matched, unmatched = self.match_quotes(rows)
+            # Orientation: our schedule decides home and away, so a market that
+            # named the teams the other way round is flipped rather than dropped.
+            oriented = self._orient_prediction_quotes(matched)
+            stored = self.store_quotes(oriented)
+
+            depth = {}
+            for quote, row in zip(quotes, rows, strict=False):
+                gid = next((m["game_id"] for m in oriented
+                            if m.get("provider_event_id") == row.get("provider_event_id")), None)
+                if gid and quote.depth:
+                    depth[gid] = quote.depth
+            db.set_meta("prediction_market_depth", depth)
+
+            detail = f"{stored} quotes from polymarket ({unmatched} unmatched)"
+            result.record("prediction_markets", True, detail, stored=stored)
+            db.log_fetch("prediction_markets", True, detail,
+                         int((time.monotonic() - start) * 1000))
+        except Exception as exc:  # noqa: BLE001
+            result.record("prediction_markets", False, str(exc))
+            db.log_fetch("prediction_markets", False, str(exc),
+                         int((time.monotonic() - start) * 1000))
+
+    def _orient_prediction_quotes(self, quotes: list[dict]) -> list[dict]:
+        """Flip any quote whose home/away are reversed relative to our schedule."""
+        if not quotes:
+            return quotes
+        lookup = {
+            r["game_id"]: r for r in db.query("SELECT game_id, home, away FROM games")
+        }
+        out: list[dict] = []
+        for q in quotes:
+            game = lookup.get(q.get("game_id"))
+            if not game:
+                continue
+            if q.get("home") == game["away"] and q.get("away") == game["home"]:
+                q = {
+                    **q,
+                    "home": game["home"], "away": game["away"],
+                    "home_price": q.get("away_price"), "away_price": q.get("home_price"),
+                    "home_point": q.get("away_point"), "away_point": q.get("home_point"),
+                }
+            elif q.get("home") != game["home"]:
+                continue
+            out.append(q)
+        return out
+
     def refresh_news(self, result: RefreshResult) -> None:
         start = time.monotonic()
         try:
@@ -691,8 +769,11 @@ class Pipeline:
         used = db.get_meta("survivor_used_teams", []) or []
         survivor = plan_survivor(season, week, by_week, used_teams=used, horizon=6).to_dict()
 
+        cross = self._cross_market_edges(season, week, upcoming, consensus)
+
         for contest, payload in (
             ("ats", {"edges": edges}),
+            ("crossmarket", {"edges": cross}),
             ("pickem", boards),
             ("survivor", survivor),
         ):
@@ -762,14 +843,58 @@ class Pipeline:
         )
         return len(predictions)
 
+    def _cross_market_edges(self, season: int, week: int, upcoming: list[dict],
+                            consensus: dict) -> list[dict]:
+        """Where a prediction market disagrees with the sportsbook consensus."""
+        from .picks.crossmarket import find_cross_market_edges
+        from .sources.polymarket import VENUE
+
+        games = [g for g in upcoming if int(g["week"]) == week]
+        if not games:
+            return []
+        ids = [g["game_id"] for g in games]
+        placeholders = ",".join("?" for _ in ids)
+        rows = db.query(
+            "SELECT o.game_id, o.home_price, o.away_price FROM odds_snapshots o "
+            "JOIN (SELECT game_id, MAX(captured_at) AS m FROM odds_snapshots "
+            f"      WHERE book = ? AND market = 'moneyline' AND game_id IN ({placeholders}) "
+            "       GROUP BY game_id) x "
+            "ON x.game_id = o.game_id AND x.m = o.captured_at "
+            "WHERE o.book = ? AND o.market = 'moneyline'",
+            [VENUE, *ids, VENUE],
+        )
+        probs: dict[str, float] = {}
+        for row in rows:
+            pair = devig(
+                american_to_prob(row["home_price"]), american_to_prob(row["away_price"])
+            )
+            if pair:
+                probs[row["game_id"]] = pair[0]
+        if not probs:
+            return []
+
+        consensus_objects = {
+            gid: _consensus_from_row(consensus[gid], gid)
+            for gid in probs if gid in consensus
+        }
+        depths = db.get_meta("prediction_market_depth", {}) or {}
+        found = find_cross_market_edges(
+            games, consensus_objects, probs, depths=depths, venue=VENUE
+        )
+        return [e.to_dict() for e in found]
+
     # ------------------------------------------------------------ full refresh
     def refresh(self, stages: list[str] | None = None, *, force_odds: bool = False) -> RefreshResult:
-        stages = stages or ["schedule", "odds", "news", "stats", "recompute"]
+        stages = stages or [
+            "schedule", "odds", "prediction_markets", "news", "stats", "recompute",
+        ]
         result = RefreshResult()
         if "schedule" in stages:
             self.refresh_schedule(result)
         if "odds" in stages:
             self.refresh_odds(result, force=force_odds)
+        if "prediction_markets" in stages:
+            self.refresh_prediction_markets(result)
         if "news" in stages:
             self.refresh_news(result)
         if "stats" in stages:
@@ -791,6 +916,50 @@ class Pipeline:
         return self.refresh()
 
 
+def _demo_prediction_market(pipeline) -> list:
+    """Synthetic prediction-market prices for demo mode.
+
+    Deliberately biased and noisy relative to the demo sportsbooks, so the
+    cross-market panel has something to show and the depth filter is exercised.
+    """
+    import random
+
+    from .sources.polymarket import PolymarketQuote
+
+    season = pipeline.season()
+    week = pipeline.current_week(season)
+    games = db.query(
+        "SELECT game_id, home, away, kickoff FROM games "
+        "WHERE season = ? AND week = ? AND status != 'final'",
+        (season, week),
+    )
+    rng = random.Random(season * 1000 + week)
+    quotes = []
+    for game in games:
+        row = db.query_one(
+            "SELECT home_win_prob FROM consensus WHERE game_id = ? "
+            "ORDER BY captured_at DESC LIMIT 1", (game["game_id"],)
+        )
+        fair = (row or {}).get("home_win_prob")
+        if fair is None:
+            continue
+        # A thin venue that lags: mostly close, occasionally well off.
+        drift = rng.gauss(0, 0.03) + (rng.choice([-0.09, 0.09]) if rng.random() < 0.25 else 0)
+        price = min(0.97, max(0.03, float(fair) + drift))
+        quote = PolymarketQuote(
+            home=game["home"], away=game["away"],
+            home_price=price, away_price=1 - price,
+            kickoff=game["kickoff"], market_id=f"demo-pm-{game['game_id']}",
+            volume=rng.uniform(2000, 60000),
+        )
+        quote.depth = {
+            game["home"]: rng.uniform(100, 4000),
+            game["away"]: rng.uniform(100, 4000),
+        }
+        quotes.append(quote)
+    return quotes
+
+
 def _over_prob(team_season, line: float | None) -> float | None:
     """P(team finishes over its market season win total)."""
     if line is None:
@@ -802,7 +971,7 @@ def _over_prob(team_season, line: float | None) -> float | None:
 def _consensus_from_row(row: dict, game_id: str):
     """Rehydrate a Consensus object from a stored row, including best prices."""
     from . import db as _db
-    from .market.consensus import Consensus, latest_per_book
+    from .market.consensus import Consensus, latest_per_book, sportsbook_quotes
 
     consensus = Consensus(
         game_id=game_id,
@@ -824,6 +993,11 @@ def _consensus_from_row(row: dict, game_id: str):
         "FROM odds_snapshots WHERE game_id = ? ORDER BY captured_at",
         (game_id,),
     )
+    # Best-available pricing must stay inside the sportsbook universe. A
+    # prediction-market price is the thing the cross-market panel bets *into*;
+    # quoting a model edge against it would merge two different claims and
+    # attribute a sportsbook recommendation to a venue that never offered it.
+    quotes = sportsbook_quotes(quotes)
     newest = latest_per_book(quotes)
     from .market.consensus import _best, _best_price
 

@@ -62,6 +62,17 @@ class Config:
     refresh_scores: int = field(default_factory=lambda: _int("REFRESH_SCORES_SECONDS", 300))
     refresh_news: int = field(default_factory=lambda: _int("REFRESH_NEWS_SECONDS", 900))
     refresh_stats: int = field(default_factory=lambda: _int("REFRESH_STATS_SECONDS", 21600))
+    refresh_prediction_markets: int = field(
+        default_factory=lambda: _int("REFRESH_PREDICTION_MARKETS_SECONDS", 600)
+    )
+    prediction_markets_enabled: bool = field(
+        default_factory=lambda: _bool("PREDICTION_MARKETS_ENABLED", True)
+    )
+    # Ignore thinly traded markets outright; their prices are not informative
+    # and their books cannot absorb a stake.
+    polymarket_min_volume: int = field(
+        default_factory=lambda: _int("POLYMARKET_MIN_VOLUME", 1000)
+    )
 
     host: str = field(default_factory=lambda: os.environ.get("HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: _int("PORT", 8000))

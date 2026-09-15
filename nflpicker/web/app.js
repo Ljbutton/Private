@@ -339,6 +339,7 @@ async function renderPicks() {
   const root = $("#view");
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
   const edges = data.ats?.edges || [];
+  const cross = data.crossmarket?.edges || [];
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
@@ -372,7 +373,39 @@ async function renderPicks() {
     <td>${pct(a.win_prob, 1)}</td><td>${pct(a.path_survival, 1)}</td>
     <td>${a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`}</td></tr>`).join("");
 
+  const crossRows = cross.map((e) => `<tr>
+    <td class="team">${esc(e.team)} <span class="muted">vs ${esc(e.opponent)}</span></td>
+    <td>${esc(e.venue)}</td>
+    <td>${pct(e.venue_price, 1)}</td>
+    <td>${pct(e.fair_prob, 1)}</td>
+    <td>${signed(e.gap * 100, 1)}pp</td>
+    <td>${pct(e.expected_value, 1)}</td>
+    <td>$${Math.round(e.depth).toLocaleString()}</td>
+    <td>$${Math.round(e.max_stake).toLocaleString()}</td>
+    <td><span class="badge ${e.confidence === "suspect" ? "qb" : ""}">${esc(e.confidence)}</span></td>
+  </tr>`).join("");
+
   root.innerHTML = `
+  <div class="panel">
+    <header><h2>Cross-market — prediction venues vs the sportsbooks</h2>
+      <span class="hint">Fair value is the sportsbook consensus, not our model</span></header>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Side</th><th>Venue</th><th>You pay</th><th>Books imply</th>
+        <th>Gap</th><th>EV</th><th>Depth</th><th>Max stake</th><th>Rating</th></tr></thead>
+      <tbody>${crossRows || `<tr><td colspan="9" class="muted">
+        No qualifying cross-market gaps right now.${data.crossmarket ? ""
+          : " Prediction-market data has not been fetched yet."}</td></tr>`}</tbody>
+    </table></div>
+    <p class="note">This is a different, weaker claim than the rest of the app, and that is
+      the point: it does not require our model to beat anything. Fair value is the
+      <strong>sportsbook consensus itself</strong>, and the bet is that a thinner venue is
+      lagging the deepest market in American sport. Sizing is against real order-book
+      depth, because a gap you cannot trade at size is not an edge. A
+      <strong>suspect</strong> rating means the gap is large enough that news, a
+      resolution-rule difference, or a market heading for a void is the likelier
+      explanation.</p>
+  </div>
+
   <div class="panel">
     <header><h2>Best bets — week ${data.week}</h2>
       <span class="hint">Priced against the best available number, sized at quarter Kelly</span></header>

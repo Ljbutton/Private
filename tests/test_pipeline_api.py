@@ -152,3 +152,37 @@ def test_the_dashboard_and_its_assets_are_served(client):
     for asset in ("app.js", "charts.js", "style.css"):
         res = client.get(f"/static/{asset}")
         assert res.status_code == 200 and len(res.content) > 500
+
+
+def test_sportsbook_edges_are_never_priced_against_a_prediction_market(booted):
+    """The cross-market panel bets *into* a prediction venue. A model edge
+    quoted at that venue's price would merge two different claims and credit a
+    sportsbook recommendation to a book that never offered it."""
+    import json
+
+    from nflpicker.sources.polymarket import VENUE
+
+    booted.recompute()
+    row = db.query_one(
+        "SELECT payload FROM pick_history WHERE contest = 'ats' "
+        "ORDER BY captured_at DESC LIMIT 1"
+    )
+    edges = json.loads(row["payload"])["edges"] if row else []
+    books = {e.get("book") for e in edges}
+    assert VENUE not in books, f"sportsbook edges priced at {VENUE}: {books}"
+
+
+def test_cross_market_edges_are_priced_against_the_consensus(booted):
+    import json
+
+    booted.recompute()
+    row = db.query_one(
+        "SELECT payload FROM pick_history WHERE contest = 'crossmarket' "
+        "ORDER BY captured_at DESC LIMIT 1"
+    )
+    edges = json.loads(row["payload"])["edges"] if row else []
+    for e in edges:
+        assert e["n_books"] >= 3, "consensus must rest on several books"
+        assert e["depth"] > 0, "an edge with no depth is not tradeable"
+        assert e["max_stake"] <= e["depth"] + 1e-6
+        assert abs((e["fair_prob"] - e["venue_price"]) - e["gap"]) < 1e-6
