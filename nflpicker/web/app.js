@@ -84,25 +84,82 @@ function edgePill(edge) {
 
 // ------------------------------------------------------------------ status
 function renderStatus(meta) {
-  const bar = $("#statusbar");
-  const chips = [];
-  chips.push(`<span class="chip ${meta.demo ? "warn" : "ok"}"><span class="dot"></span>` +
-    `${meta.demo ? "Demo data (synthetic)" : "Live sources"}</span>`);
-  chips.push(`<span class="chip"><span class="dot"></span>Model: ${esc(meta.model.version)}</span>`);
+  const rows = [];
+  const conn = (cls, name, status, title = "") =>
+    `<div class="conn ${cls}" title="${esc(title)}"><span class="dot"></span>` +
+    `<span class="nm">${esc(name)}</span><span class="st">${esc(status)}</span></div>`;
+
+  rows.push(conn(meta.demo ? "warn" : "ok", meta.demo ? "Demo data" : "Live sources",
+    meta.demo ? "synthetic" : "live"));
+  rows.push(conn(meta.model.trained ? "ok" : "warn", "Model", esc(meta.model.version)));
   for (const s of meta.sources || []) {
-    chips.push(`<span class="chip ${s.ok ? "ok" : "bad"}" title="${esc(s.detail || "")}">` +
-      `<span class="dot"></span>${esc(s.source)} ${ago(s.ts)}</span>`);
+    rows.push(conn(s.ok ? "ok" : "bad", s.source, ago(s.ts), s.detail || ""));
   }
   if (meta.odds_usage) {
     const u = meta.odds_usage;
-    const low = u.remaining_budget < 40;
-    chips.push(`<span class="chip ${low ? "warn" : "ok"}"><span class="dot"></span>` +
-      `Odds API ${u.used}/${u.budget} used this month</span>`);
+    rows.push(conn(u.remaining_budget < 40 ? "warn" : "ok", "Odds API",
+      `${u.used}/${u.budget}`, "requests used this month"));
   } else if (!meta.has_odds_key && !meta.demo) {
-    chips.push('<span class="chip warn"><span class="dot"></span>' +
-      "No ODDS_API_KEY — single consensus line only</span>");
+    rows.push(conn("warn", "Odds API", "no key", "single consensus line only"));
   }
-  bar.innerHTML = chips.join("");
+  $("#statusbar").innerHTML = rows.join("");
+}
+
+/* ------------------------------------------------------------------ hero */
+
+function greetingFor(date) {
+  const h = date.getHours();
+  if (h < 12) return "Good morning";
+  if (h < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function renderHero(meta) {
+  const now = new Date();
+  $("#clock").textContent = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  $("#clockdate").textContent = now
+    .toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
+    .toUpperCase();
+  $("#greeting").textContent = `${greetingFor(now)}.`;
+
+  // The cadence is read from the scheduler rather than written here, so the
+  // line cannot drift away from what the app is actually doing.
+  const jobs = (meta.scheduler && meta.scheduler.jobs) || [];
+  const fastest = jobs.reduce((min, j) => {
+    const s = j.next_interval_seconds || j.interval_seconds;
+    return s && (!min || s < min) ? s : min;
+  }, 0);
+  $("#cadence").textContent = fastest
+    ? `Live · updates every ${fastest >= 60 ? `${Math.round(fastest / 60)} min` : `${fastest}s`}`
+    : "Live";
+
+  const day = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  $("#herosub").textContent = `${day} — week ${meta.week} of the ${meta.season} season`;
+}
+
+/* Four numbers answering "is there anything to do right now", above the board. */
+function statRow(games) {
+  const withEdge = games.filter((g) => g.prediction && g.prediction.spread_edge !== null);
+  const live = games.filter((g) => g.status === "in_progress").length;
+  const strong = withEdge.filter((g) => Math.abs(g.prediction.spread_edge) >= 1.5).length;
+  const biggest = withEdge.reduce(
+    (best, g) => (Math.abs(g.prediction.spread_edge) > Math.abs(best) ? g.prediction.spread_edge : best),
+    0);
+
+  const cell = (label, value, caption, accent) =>
+    `<div class="stat" style="--accent:${accent}"><div class="k">${label}</div>` +
+    `<div class="v">${value}</div><div class="c">${caption}</div></div>`;
+
+  return `<div class="stat-row">
+    ${cell("Games this week", games.length, `${games.filter((g) => g.status === "final").length} final`,
+      "var(--text-primary)")}
+    ${cell("Live now", live, live ? "in progress" : "nothing in progress",
+      live ? "var(--critical)" : "var(--text-muted)")}
+    ${cell("Edges worth a look", strong, "past 1.5 points",
+      strong ? "var(--series-1)" : "var(--text-muted)")}
+    ${cell("Biggest edge", biggest ? signed(biggest) : "—", "against the closing line",
+      Math.abs(biggest) >= 1.5 ? "var(--series-3)" : "var(--text-muted)")}
+  </div>`;
 }
 
 // ------------------------------------------------------------------- games
@@ -203,7 +260,7 @@ async function renderGames() {
     </article>`;
   }).join("");
 
-  root.innerHTML = `<div class="panel">
+  root.innerHTML = `${statRow(data.games)}<div class="panel">
     <header><h2>Week ${data.week} — ${data.games.length} games</h2>
       <span class="hint">Click a game for line movement, every book, and prediction history</span>
     </header>
@@ -903,7 +960,8 @@ async function loadState() {
     sel.innerHTML = state.weeks.map((w) => `<option value="${w}">Week ${w}</option>`).join("");
   }
   sel.value = String(state.week);
-  $("#refreshed").textContent = `updated ${ago(meta.last_recompute)}`;
+  $("#refreshed").textContent = `Updated ${ago(meta.last_recompute)}`;
+  renderHero(meta);
 }
 
 function setTab(tab) {
@@ -933,11 +991,14 @@ async function main() {
   $("#week").addEventListener("change", (e) => { state.week = Number(e.target.value); render(); });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
 
-  $("#refresh").addEventListener("click", async (ev) => {
+  const refreshBtn = $("#refresh");
+  refreshBtn.addEventListener("click", async () => {
     if (state.busy) return;
     state.busy = true;
-    ev.target.disabled = true;
-    ev.target.textContent = "Refreshing…";
+    // The button is an icon now, so progress is shown by spinning it rather
+    // than by replacing its label -- writing text into it would delete the SVG.
+    refreshBtn.disabled = true;
+    refreshBtn.classList.add("spinning");
     try {
       await api("/api/refresh", { method: "POST" });
       await loadState();
@@ -946,10 +1007,13 @@ async function main() {
       alert(`Refresh failed: ${err.message}`);
     } finally {
       state.busy = false;
-      ev.target.disabled = false;
-      ev.target.textContent = "Refresh now";
+      refreshBtn.disabled = false;
+      refreshBtn.classList.remove("spinning");
     }
   });
+
+  // The clock is the one thing on the page that must not wait for a refresh.
+  setInterval(() => { if (state.meta) renderHero(state.meta); }, 30000);
 
   await loadState();
   await render();
