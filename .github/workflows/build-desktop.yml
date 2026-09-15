@@ -20,13 +20,20 @@ on:
         options: [windows, macos, both]
         default: windows
   push:
-    # Build when the packaging itself changes, on any branch. A manual run
-    # is only offered for workflows that already exist on the default branch,
-    # so without this there is no way to get a binary out of a feature branch.
-    # Scoped to the files that decide what the binary contains, so ordinary
-    # commits do not spend two runners each.
+    # A manual run is only offered for workflows that already exist on the
+    # default branch, so without this there is no way to get a binary out of a
+    # feature branch at all.
+    #
+    # The paths list used to name only the packaging files, on the reasoning
+    # that they are what "decides what the binary contains". That was wrong in
+    # the way that matters: the binary contains the application too. Eight
+    # commits of real work -- a new default view, the trained model, scheduled
+    # retraining -- produced no build, so the last downloadable executable was
+    # silently weeks of features out of date while looking current.
     branches: ["main", "claude/**"]
     paths:
+      - "nflpicker/**"
+      - "data/models/**"
       - "nflpicker.spec"
       - "scripts/desktop_entry.py"
       - "pyproject.toml"
@@ -44,12 +51,13 @@ jobs:
         # matrix context is not available to one -- that combination is not a
         # failing build, it is a workflow that never starts and reports no jobs
         # at all. Inputs are null outside a manual run, so an automatic run
-        # falls through to building both.
+        # falls through to Windows, which is where this is being tested; macOS
+        # is one dropdown away rather than a second runner on every commit.
         target: >-
           ${{ fromJSON(
-            inputs.targets == 'windows' && '["windows"]'
-            || inputs.targets == 'macos' && '["macos"]'
-            || '["windows","macos"]') }}
+            inputs.targets == 'macos' && '["macos"]'
+            || inputs.targets == 'both' && '["windows","macos"]'
+            || '["windows"]') }}
     runs-on: ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-latest' }}
 
     steps:
