@@ -58,3 +58,29 @@ def test_weight_is_clamped_into_a_usable_range():
     w, _ = fit_market_weight(_frame(model_err_sd=40.0, market_err_sd=0.2),
                              "pred_margin", "market_margin", "margin_home")
     assert 0.30 <= w <= 0.98
+
+
+def test_the_weight_is_fitted_on_recent_seasons_not_all_history():
+    """Market efficiency changes. A weight fitted across twenty years bakes in
+    an inefficiency that has since disappeared and invents edges from it."""
+    old = _frame(model_err_sd=1.0, market_err_sd=8.0, n=3000, seed=2)   # beatable
+    old["season"] = np.repeat(np.arange(2000, 2015), 200)
+    new = _frame(model_err_sd=8.0, market_err_sd=1.0, n=1600, seed=3)   # efficient
+    new["season"] = np.repeat(np.arange(2015, 2023), 200)
+    frame = pd.concat([old, new], ignore_index=True)
+
+    w, _ = fit_market_weight(frame, "pred_margin", "market_margin", "margin_home",
+                             recent_seasons=8)
+    assert w > 0.8, "recent, efficient seasons must dominate the fit"
+
+    w_all, _ = fit_market_weight(frame, "pred_margin", "market_margin", "margin_home",
+                                 recent_seasons=None)
+    assert w_all < w, "fitting over all history should be pulled by the old regime"
+
+
+def test_narrowing_is_skipped_when_it_would_leave_too_few_games():
+    frame = _frame(model_err_sd=6.0, market_err_sd=1.0, n=1200, seed=4)
+    frame["season"] = np.repeat(np.arange(2015, 2027), 100)   # 100 games/season
+    w, _ = fit_market_weight(frame, "pred_margin", "market_margin", "margin_home",
+                             recent_seasons=2)
+    assert w > 0.85       # fell back to the full frame rather than 200 games

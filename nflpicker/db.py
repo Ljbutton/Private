@@ -18,7 +18,7 @@ from typing import Any
 
 from .config import get_config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -206,6 +206,21 @@ CREATE TABLE IF NOT EXISTS graded (
     log_loss       REAL
 );
 CREATE INDEX IF NOT EXISTS idx_graded_week ON graded(season, week);
+
+-- Per-game, per-team detail behind the market-blind features. Kept in its own
+-- table rather than recomputed from play-by-play on every refresh, which would
+-- mean re-reading hundreds of megabytes of parquet each cycle.
+CREATE TABLE IF NOT EXISTS team_game_stats (
+    game_id     TEXT NOT NULL,
+    team        TEXT NOT NULL,
+    season      INTEGER,
+    week        INTEGER,
+    opponent    TEXT,
+    payload     TEXT NOT NULL,   -- json of the extracted stats
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (game_id, team)
+);
+CREATE INDEX IF NOT EXISTS idx_tgs_season ON team_game_stats(season, week);
 
 CREATE TABLE IF NOT EXISTS fetch_log (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -451,15 +451,62 @@ class Pipeline:
             from .sources.nflverse import NflverseSource
 
             season = self.season()
-            epa = NflverseSource().team_epa(season)
+            nfl = NflverseSource()
+            epa = nfl.team_epa(season)
             payload = epa.to_dict("records") if epa is not None and len(epa) else []
             db.set_meta("team_epa", {"season": season, "captured_at": now_iso(), "rows": payload})
-            detail = f"EPA for {len(payload)} teams"
+
+            # The per-game detail the market-blind features roll up. The current
+            # and prior season are enough: rolling state only looks back that far.
+            stored = self.store_team_game_stats(nfl, [season - 1, season])
+            detail = f"EPA for {len(payload)} teams, {stored} game-team rows"
             result.record("stats", True, detail, count=len(payload))
             db.log_fetch("stats", True, detail, int((time.monotonic() - start) * 1000))
         except Exception as exc:  # noqa: BLE001
             result.record("stats", False, str(exc))
             db.log_fetch("stats", False, str(exc), int((time.monotonic() - start) * 1000))
+
+    def store_team_game_stats(self, source, seasons: list[int]) -> int:
+        """Cache per-game team detail for the given seasons."""
+        stamp = now_iso()
+        rows: list[list] = []
+        for season in seasons:
+            try:
+                frame = source.game_team_stats(season)
+            except Exception:  # noqa: BLE001 - a missing season must not fail the stage
+                continue
+            if frame is None or len(frame) == 0:
+                continue
+            for record in frame.to_dict("records"):
+                clean = {
+                    k: (None if v is None or v != v else v)
+                    for k, v in record.items()
+                    if not isinstance(v, (list, dict))
+                }
+                rows.append([
+                    str(record.get("game_id")), record.get("team"),
+                    int(record.get("season") or season), int(record.get("week") or 0),
+                    record.get("opponent"), json.dumps(clean, default=str), stamp,
+                ])
+        db.executemany(
+            "INSERT OR REPLACE INTO team_game_stats"
+            "(game_id, team, season, week, opponent, payload, updated_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            rows,
+        )
+        return len(rows)
+
+    def load_team_game_stats(self, season: int) -> dict[str, dict]:
+        """game_id -> {team: stats}, for the feature builder."""
+        out: dict[str, dict] = {}
+        for row in db.query(
+            "SELECT game_id, team, payload FROM team_game_stats WHERE season <= ?", (season,)
+        ):
+            try:
+                out.setdefault(row["game_id"], {})[row["team"]] = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+        return out
 
     # ------------------------------------------------------------- recompute
     def load_games(self, season: int | None = None) -> list[dict]:
@@ -526,7 +573,9 @@ class Pipeline:
             if row:
                 g["spread_home"] = row["spread_home"]
                 g["market_total"] = row["total_points"]
-        full_frame = build_features(history)
+        full_frame = build_features(
+            history, team_game_stats=self.load_team_game_stats(season)
+        )
         frame = full_frame[full_frame["season"] == season] if not full_frame.empty else full_frame
         predictions = self.predictor.predict_frame(frame, power)
         by_game = {p.game_id: p for p in predictions}
@@ -685,7 +734,9 @@ class Pipeline:
         if not wanted:
             return 0
 
-        frame = build_features(history)
+        frame = build_features(
+            history, team_game_stats=self.load_team_game_stats(season)
+        )
         frame = frame[frame["game_id"].isin(wanted)]
         if frame.empty:
             return 0

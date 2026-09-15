@@ -307,6 +307,14 @@ def train(
     return report
 
 
+# Market efficiency is not a constant. Lines from the 2000s were beatable in
+# ways today's are not, so a weight fitted over all history encodes a dead
+# inefficiency and manufactures edges that no longer exist. Fitting on recent
+# seasons only is the difference between a live signal and a historical one.
+MARKET_WEIGHT_SEASONS = 8
+MIN_WEIGHT_FIT_GAMES = 400
+
+
 def fit_market_weight(
     preds: pd.DataFrame,
     model_col: str,
@@ -315,6 +323,7 @@ def fit_market_weight(
     *,
     lo: float = 0.30,
     hi: float = 0.98,
+    recent_seasons: int | None = MARKET_WEIGHT_SEASONS,
 ) -> tuple[float, float]:
     """Fit how much to trust the market versus the model, from real results.
 
@@ -333,7 +342,17 @@ def fit_market_weight(
 
     Returns the weight and the residual SD of the blended estimate.
     """
-    usable = preds[[model_col, market_col, actual_col]].dropna()
+    frame = preds
+    if recent_seasons and "season" in preds.columns:
+        seasons = sorted(preds["season"].dropna().unique())
+        if len(seasons) > recent_seasons:
+            cutoff = seasons[-recent_seasons]
+            recent = preds[preds["season"] >= cutoff]
+            # Only narrow the window if enough games remain to fit on.
+            if len(recent.dropna(subset=[model_col, market_col, actual_col])) >= MIN_WEIGHT_FIT_GAMES:
+                frame = recent
+
+    usable = frame[[model_col, market_col, actual_col]].dropna()
     if len(usable) < 100:
         return 0.65, MARGIN_SD
     model = usable[model_col].to_numpy(dtype=float)

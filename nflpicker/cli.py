@@ -9,6 +9,9 @@ import sys
 from . import db
 from .config import get_config
 
+# nflverse play-by-play starts in 1999.
+PBP_FIRST_SEASON = 1999
+
 
 def _print_table(rows: list[dict], columns: list[str]) -> None:
     if not rows:
@@ -93,16 +96,30 @@ def cmd_train(args) -> int:
             row["season_type"] = "REG" if row.get("game_type") == "REG" else "POST"
         print(f"  {len(rows)} games from {args.since}")
 
+        # Play-by-play for every training season by default. Partial coverage
+        # is worse than it sounds: if most rows lack these columns the model
+        # learns to ignore them, and the features look worthless when they are
+        # merely absent. It is roughly 20MB a season and downloads in seconds.
         epa: dict = {}
-        if args.epa_seasons:
-            newest = int(games["season"].max())
-            for season in range(newest - args.epa_seasons + 1, newest + 1):
+        team_stats: dict = {}
+        if not args.no_epa:
+            seasons = sorted(int(x) for x in games["season"].dropna().unique())
+            seasons = [s for s in seasons if s >= max(args.since, PBP_FIRST_SEASON)]
+            print(f"  loading play-by-play for {len(seasons)} seasons…", flush=True)
+            ok = 0
+            for season in seasons:
                 try:
-                    print(f"  play-by-play {season}…", flush=True)
-                    epa.update(epa_by_game_from_pbp(nfl.play_by_play(season)))
+                    detail = nfl.game_team_stats(season)
+                    for row in detail.to_dict("records"):
+                        team_stats.setdefault(str(row["game_id"]), {})[row["team"]] = row
+                    epa.update(epa_by_game_from_pbp(
+                        nfl.play_by_play(season)))
+                    ok += 1
                 except Exception as exc:  # noqa: BLE001
                     print(f"    skipped {season}: {exc}")
-        frame = build_features(rows, epa_by_game=epa)
+            print(f"  play-by-play loaded for {ok}/{len(seasons)} seasons "
+                  f"({len(team_stats)} games)")
+        frame = build_features(rows, epa_by_game=epa, team_game_stats=team_stats)
     else:
         rows = db.query("SELECT * FROM games ORDER BY season, week, kickoff")
         consensus = db.query(
@@ -260,8 +277,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("train", help="train the projection models")
     p.add_argument("--source", choices=["auto", "nflverse", "db"], default="auto")
     p.add_argument("--since", type=int, default=2002, help="earliest season to train on")
-    p.add_argument("--epa-seasons", type=int, default=0,
-                   help="download this many recent seasons of play-by-play for EPA features")
+    p.add_argument("--no-epa", action="store_true",
+                   help="skip play-by-play; trains without EPA, quarterback, "
+                        "special teams or turnover features")
     p.add_argument("--fast", action="store_true", help="skip walk-forward evaluation")
     p.set_defaults(func=cmd_train)
 

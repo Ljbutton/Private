@@ -89,14 +89,23 @@ in week 6. The current count is shown in the status bar.
 The app works out of the box on power ratings alone. To train the full model:
 
 ```bash
-make train                       # downloads nflverse history, ~1 minute
-.venv/bin/python -m nflpicker.cli train --epa-seasons 6   # adds EPA features
+make train                                        # full training, a few minutes
+.venv/bin/python -m nflpicker.cli train --no-epa  # skip play-by-play
 ```
 
-This downloads every NFL game since 1999 with its historical closing line,
-builds features, runs walk-forward validation and saves the models to
-`data/models/`. Re-run whenever you want; the app picks up new weights on its
-next refresh.
+This downloads every NFL game since 1999 with its historical closing line, plus
+play-by-play for every training season (~430 MB, and it fetches in well under a
+minute), builds features, runs walk-forward validation and saves the models to
+`data/models/`.
+
+Play-by-play is downloaded for **every** season by default rather than the most
+recent handful. Partial coverage is worse than it sounds: when most training
+rows lack the EPA and quarterback columns the model learns to ignore them, and
+the features look worthless when they are merely absent. Loading all of them
+moved margin MAE by an order of magnitude more than loading nine seasons did.
+
+Re-run whenever you want; the app picks up new weights on its next refresh, and
+the refresher keeps the per-game detail those features need up to date.
 
 ---
 
@@ -113,11 +122,31 @@ with it. Play-by-play parquet (optional) adds EPA.
 
 | Group | Features |
 |---|---|
-| Power | Elo (MOV-adjusted, season-regressed), rolling opponent-adjusted EPA per play for each side's offence and defence, pass/rush splits, success rate |
+| Power | Elo (MOV-adjusted, season-regressed), rolling EPA per play for offence and defence, pass/rush splits, success rate |
+| Quarterback | starter's shrunk EPA per dropback, career dropbacks, starter-changed flag |
+| Efficiency | opponent-adjusted offensive and defensive EPA (exponentially weighted) |
+| Hidden components | special-teams EPA, turnover luck (margin minus its fumble-recovery-neutral expectation) |
 | Situation | rest days, short week, off bye, travel miles, time-zone shift, divisional, week, neutral site |
 | Environment | roof, surface, temperature, wind |
-| Form | rolling points for/against and margin over the last 8 games |
+| Form | rolling points for/against, decayed scoring margin, Pythagorean win expectation |
 | Market | consensus spread and total |
+
+Three of these deserve a note on *why* they exist:
+
+**Opponent adjustment.** Raw EPA rewards a team for the schedule it happened to
+draw. Each game's efficiency is adjusted by the opponent's rating *as it stood
+before that game* — moving the ball on a good defence counts for more.
+
+**Turnover luck.** Fumble recoveries are close to a coin flip, so a team's
+turnover margin is part skill and part luck. Recording the gap between the
+actual margin and a recovery-neutral expectation lets the model treat the lucky
+part as the noise it is rather than projecting it forward.
+
+**Quarterback.** The largest week-to-week swing a power rating misses. Starter
+identity comes from one source only: the schedule feed records the *starter*
+while play-by-play reports whoever threw most, and those disagree on about one
+game in ten — mixing them made the "starter changed" flag fire on source
+disagreements instead of actual changes.
 
 ### Two model variants, on purpose
 
@@ -166,8 +195,47 @@ through the rolling features and produces flattering, meaningless scores.
 Reported metrics: margin MAE against the market's own MAE (the bar to beat),
 ATS rate against the closing number, Brier score and log loss, and CLV.
 
+### What the model actually achieves — and what it does not
+
+Measured over 5,980 walk-forward games from 2002 to 2026:
+
+| | margin MAE | straight-up | Brier |
+|---|---|---|---|
+| Model (market-blind) | 10.60 | 64.2% | 0.222 |
+| **Closing line** | **10.23** | — | — |
+
+The market-blind features are worth having: they improved the standalone model
+from 10.65 to roughly 10.60 MAE, lifted straight-up accuracy from 63.0% to
+64.2%, and `epa_adj_diff` and `qb_value_diff` rank third and fifth by
+permutation importance, behind only Elo.
+
+**But the model does not beat the closing line, and the blend adds nothing to
+it.** Fitting `(1 - w) · model + w · market` against actual results gives an
+unconstrained optimum of **w = 1.002** — statistically indistinguishable from
+ignoring the model entirely. The blend's MAE differs from the market's by
+0.0002 points. The same holds on 2016+ alone (w = 0.998). The trailing gap of
+~0.3 points is remarkably constant across every era, so it is not an artifact of
+thin early data, and narrowing the training window does not close it.
+
+Totals looked briefly more promising — the weight fits at 0.89 across all
+history rather than 0.98 — but that is a dead inefficiency, not a live edge. On
+2016+ the fit is 0.99, and betting the disagreement returns 52.1% against a
+52.4% break-even. This is why the market weight is fitted on **recent seasons
+only**: a weight fitted across twenty years bakes a 2005-era inefficiency into
+today's recommendations and manufactures edges from it.
+
+So the honest summary is that a public model built from box scores, EPA and
+quarterback data lands within about a third of a point of the NFL closing line
+and carries no information the line does not already have. Closing that last gap
+needs inputs the market has and this does not — injury severity, personnel
+grades, and the early-week openers where the line is genuinely softer. The app
+reports this rather than dressing it up, which is the entire point of the fitted
+weight.
+
 ### Guardrails
 
+- **Recency-fitted market weight.** Market efficiency is not a constant, so the
+  blend weight is fitted on the last eight seasons rather than all history.
 - **Cold-start suppression.** Before each team has played ~5 games the ratings
   sit near their priors, so any disagreement with the market is ignorance rather
   than edge. Below that threshold no bets are recommended at all.
@@ -253,7 +321,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 108 tests, fully offline
+make test     # 121 tests, fully offline
 make lint
 ```
 
@@ -270,6 +338,9 @@ easy to get silently wrong:
 - **Survivor optimality.** That it really does save a team it needs later.
 - **Live parsers.** ESPN, Odds API and RSS shapes, including the fields those
   feeds routinely omit.
+- **Feature wiring.** That inference actually supplies the per-game detail the
+  model was trained on. Training with columns that silently arrive as NaN in
+  production is invisible without a test for it.
 
 ---
 
@@ -307,5 +378,9 @@ keyed by capture time, which is what makes the history views answerable.
 - The **news impact estimate** is a coarse prior from position and availability.
   It is a triage signal for what to look at, never a substitute for watching how
   the market actually reacts.
+- **Starting quarterbacks for upcoming games** fall back to whoever started last
+  week. The schedule feed only records a starter after the fact, so an announced
+  midweek change is not yet picked up automatically — the news feed flags it for
+  you, but the model does not consume that flag.
 - Nothing here is betting advice. The app's most useful habit is telling you
   when it has no edge, and it will do that often.
