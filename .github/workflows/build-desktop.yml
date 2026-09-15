@@ -43,13 +43,13 @@ jobs:
         # Selected here rather than filtered with a job-level `if`, because the
         # matrix context is not available to one -- that combination is not a
         # failing build, it is a workflow that never starts and reports no jobs
-        # at all. An automatic run builds Windows only, which is the target
-        # anyone is actually waiting on; inputs are null outside a manual run.
+        # at all. Inputs are null outside a manual run, so an automatic run
+        # falls through to building both.
         target: >-
           ${{ fromJSON(
-            inputs.targets == 'both' && '["windows","macos"]'
+            inputs.targets == 'windows' && '["windows"]'
             || inputs.targets == 'macos' && '["macos"]'
-            || '["windows"]') }}
+            || '["windows","macos"]') }}
     runs-on: ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-latest' }}
 
     steps:
@@ -89,11 +89,30 @@ jobs:
           test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist; exit 1; }
           NFLPICKER_DEMO=1 "$BIN" --selftest
 
+      # A GitHub artifact is a zip, and that zip does not carry the executable
+      # bit. On Windows that is harmless; on macOS it means the .app unzips
+      # without +x and simply will not launch, which looks like a broken build
+      # rather than a packaging detail. Tarring preserves the mode.
+      - name: Package for macOS
+        if: matrix.target == 'macos'
+        run: |
+          set -e
+          test -d dist/NFLPicker.app || { echo "no .app bundle"; ls -R dist; exit 1; }
+          tar -czf NFLPicker-macos.tar.gz -C dist NFLPicker.app
+          shasum -a 256 NFLPicker-macos.tar.gz
+
       - uses: actions/upload-artifact@v4
+        if: matrix.target == 'windows'
         with:
-          name: NFLPicker-${{ matrix.target }}-${{ inputs.profile || 'full' }}
-          path: |
-            dist/NFLPicker.exe
-            dist/NFLPicker
+          name: NFLPicker-windows-${{ inputs.profile || 'full' }}
+          path: dist/NFLPicker.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'macos'
+        with:
+          name: NFLPicker-macos-${{ inputs.profile || 'full' }}
+          path: NFLPicker-macos.tar.gz
           if-no-files-found: error
           retention-days: 30

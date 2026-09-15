@@ -314,10 +314,30 @@ than failing.
 
 ### Getting the executable
 
-**Without installing anything:** the *Build desktop app* workflow builds it on a
-real Windows runner and attaches it to the run. Actions tab → *Build desktop
-app* → *Run workflow* → download the `NFLPicker-windows-full` artifact. It
-unzips to one `.exe`.
+**Without installing anything:** the *Build desktop app* workflow builds on real
+Windows and macOS runners and attaches the result to the run. Actions tab →
+*Build desktop app* → download the artifact for your platform.
+
+- **Windows** — `NFLPicker-windows-full` unzips to one `.exe`.
+- **macOS** — `NFLPicker-macos-full` contains a `.tar.gz`, not a loose app. A
+  GitHub artifact is a zip and a zip does not carry the executable bit, so an
+  unzipped `.app` would not launch at all. Extract it with `tar`, which
+  preserves the mode:
+
+  ```bash
+  tar -xzf NFLPicker-macos.tar.gz
+  xattr -dr com.apple.quarantine NFLPicker.app   # it was downloaded, so Gatekeeper
+  open NFLPicker.app
+  ```
+
+  Without the `xattr` line macOS says the app "is damaged and can't be opened".
+  It is not damaged — that is what Gatekeeper says about anything unsigned that
+  arrived over the network. Signing it properly needs an Apple Developer
+  account; building it yourself avoids the question entirely, because a locally
+  built app is never quarantined.
+
+The runner is Apple Silicon, so the macOS build is arm64. An Intel Mac needs a
+`macos-13` build instead.
 
 The build runs the test suite first and then boots the frozen binary with
 `--selftest`, because PyInstaller exiting 0 only means the bundle was written.

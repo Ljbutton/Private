@@ -43,7 +43,19 @@ def selftest() -> int:
     finally:
         server.stop()
 
-    print(f"selftest ok: {url}/api/state -> {len(payload)} keys", flush=True)
+    # Whether the webview backend was collected at all. A packaged app that
+    # cannot import it still runs -- it falls back to a browser tab -- so this
+    # failure is invisible at runtime and silently undoes the entire point of
+    # shipping a native app. Importing is the right level of check: it tests
+    # what is in the bundle, not whether the CI runner has a window server.
+    try:
+        import webview  # noqa: F401
+    except Exception as exc:                              # noqa: BLE001
+        print(f"selftest FAILED: webview did not import: {exc!r}", flush=True)
+        return 1
+
+    print(f"selftest ok: {url}/api/state -> {len(payload)} keys, webview present",
+          flush=True)
     return 0
 
 
