@@ -166,6 +166,16 @@ function renderHero(meta) {
     : `${day} — viewing week ${week} of ${season}`;
 }
 
+/* How serious an injury status is, for colour. Out and IR are settled; a
+   questionable is a coin flip that still moves a line by a point. */
+function statusClass(status) {
+  const v = String(status || "").toLowerCase();
+  if (/(out|injured reserve|\bir\b|pup|physically unable|suspended|nfi)/.test(v)) return "out";
+  if (v.includes("doubtful")) return "doubtful";
+  if (v.includes("questionable") || v.includes("limited")) return "questionable";
+  return "";
+}
+
 /* "Sun 1:00" — the board has sixteen rows and no width to spare for a date
    that is the same on most of them. */
 function kickoffShort(iso) {
@@ -189,7 +199,7 @@ function kickoffShort(iso) {
    afterwards touches one function and cannot corrupt a template it never
    parses. <details> is used so keyboard support, find-in-page and open state
    all come for free. */
-const FOLDING_TABS = new Set(["teams", "picks", "edge", "performance", "games"]);
+const FOLDING_TABS = new Set(["teams", "picks", "edge", "performance"]);
 
 function foldPanels(root) {
   if (!FOLDING_TABS.has(state.tab)) return;
@@ -613,132 +623,12 @@ async function renderHome() {
   });
 }
 
-// ------------------------------------------------------------------- games
-async function renderGames() {
-  const root = $("#view");
-  const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
-  if (!data.games.length) {
-    root.innerHTML = '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>';
-    return;
-  }
-
-  // Games in progress lead: they are the ones changing while you look at them.
-  data.games.sort((a, b) => {
-    const rank = (g) => (g.status === "in_progress" ? 0 : g.status === "final" ? 2 : 1);
-    return rank(a) - rank(b) || String(a.kickoff).localeCompare(String(b.kickoff));
-  });
-  const cards = data.games.map((card) => {
-    const p = card.prediction;
-    const final = card.status === "final";
-    const live = card.status === "in_progress" ? card.live : null;
-    const movePoints = (card.movement.points || []).map((pt) => pt.value);
-    const spark = movePoints.length > 1
-      ? sparkline(movePoints, { color: "var(--axis)" }) : "";
-    const homeProb = p ? p.home_win_prob : null;
-
-    const teamRow = (side) => {
-      const isHome = side === "home";
-      const abbr = isHome ? card.home : card.away;
-      const name = isHome ? card.home_name : card.away_name;
-      const color = isHome ? card.home_color : card.away_color;
-      const score = isHome ? card.home_score : card.away_score;
-      const prob = homeProb === null ? null : (isHome ? homeProb : 1 - homeProb);
-      // While a game is live the score is the headline and the probability is
-      // the live one, not the pregame projection.
-      const liveProb = live && live.win_prob_home !== null && live.win_prob_home !== undefined
-        ? (isHome ? live.win_prob_home : 1 - live.win_prob_home) : null;
-      const right = (final || live)
-        ? `<span class="score">${score ?? "–"}</span>` +
-          (liveProb !== null ? `<span class="prob" style="margin-left:10px">${pct(liveProb)}</span>` : "")
-        : `<span class="prob">${pct(prob)}</span>`;
-      const hasBall = live && live.possession === abbr
-        ? '<span class="ball" title="has possession"></span>' : "";
-      // The bar behind the row *is* the win probability. Thirty-two team
-      // colours across a sixteen-game board read as confetti, and most NFL
-      // palettes are dark navies that disappear on a near-black card anyway --
-      // so the one thing worth colouring is the one thing that carries meaning.
-      const shown = liveProb !== null ? liveProb : prob;
-      const lead = shown !== null && shown >= 0.5;
-      const fill = shown === null ? "" :
-        `<span class="pbar${lead ? " lead" : ""}" style="width:${(shown * 100).toFixed(1)}%"></span>`;
-      return `<div class="row-team" style="--team:${esc(color || "transparent")}">${fill}` +
-        `<span class="nm">${esc(abbr)}</span>${hasBall}` +
-        `<span class="rec">${esc(name.replace(abbr, "").trim())}</span>${right}</div>`;
-    };
-
-    const news = (card.news || []).slice(0, 2).map((n) =>
-      `<span class="badge ${esc(n.category)}">${esc(n.category)}</span>`).join(" ");
-    // Only surface weather when it is the kind that moves a total. A mild
-    // afternoon is not information.
-    const w = card.weather;
-    const weatherFlag = (w && !w.indoor && (
-      (w.wind_mph ?? 0) >= 15 || (w.temp_f ?? 50) <= 32 || (w.precip_pct ?? 0) >= 60))
-      ? `<span class="badge weather">${(w.wind_mph ?? 0) >= 15
-          ? `${Math.round(w.wind_mph)} mph wind` : ""}${
-          (w.wind_mph ?? 0) >= 15 && (w.temp_f ?? 50) <= 32 ? " · " : ""}${
-          (w.temp_f ?? 50) <= 32 ? `${Math.round(w.temp_f)}°F` : ""}${
-          (w.precip_pct ?? 0) >= 60 ? ` · ${Math.round(w.precip_pct)}% precip` : ""}</span>`
-      : "";
-    const hits = ["away", "home"]
-      .map((side) => [side === "home" ? card.home : card.away, card.availability?.[side]])
-      .filter(([, a]) => a && a.adjustment <= -1.0)
-      .map(([team, a]) => `<span class="badge injury">${esc(team)} ${signed(a.adjustment)}` +
-        `${a.qb_change ? " QB" : ""}</span>`).join(" ");
-
-    return `<article class="card" data-game="${esc(card.game_id)}" tabindex="0">
-      <div class="kick">
-        <span>${live
-          ? `<span class="live-dot"></span>${esc(liveLabel(live))}`
-          : (final ? "Final" : when(card.kickoff))}</span>
-        <span>${card.movement.steam ? "⚡ steam move" : (spark || "")}</span></div>
-      ${live && live.last_play ? `<div class="lastplay">${esc(live.last_play)}</div>` : ""}
-      <div class="teams">${teamRow("away")}${teamRow("home")}</div>
-      <div class="lines">
-        <div class="line">
-          <span class="lbl">Spread</span>
-          <span class="pair" title="Market line, then our blended estimate">
-            <b class="mkt">${esc(spreadText(card))}</b>
-            <i class="to" aria-hidden="true"></i>
-            <b class="mdl">${esc(modelLineText(card))}</b>
-          </span>
-          ${edgePill(p?.spread_edge)}
-        </div>
-        <div class="line">
-          <span class="lbl">Total</span>
-          <span class="pair" title="Market total, then our blended estimate">
-            <b class="mkt">${num(card.market?.total_points, 1)}</b>
-            <i class="to" aria-hidden="true"></i>
-            <b class="mdl">${num(p?.total_points, 1)}</b>
-          </span>
-          <span class="move" title="How far the line has moved since it opened"
-            >${signed(card.movement.spread_move)}</span>
-        </div>
-      </div>
-      ${weatherFlag ? `<div class="newsline">${weatherFlag}<span class="muted">conditions at kickoff</span></div>` : ""}
-      ${hits ? `<div class="newsline">${hits}<span class="muted">injury adjustment applied</span></div>` : ""}
-      ${news ? `<div class="newsline">${news}<span class="muted">news affecting this game</span></div>` : ""}
-    </article>`;
-  }).join("");
-
-  root.innerHTML = `<div class="panel">
-    <header><h2>Week ${data.week} — ${data.games.length} games</h2>
-      <span class="hint">Click a game for line movement, every book, and prediction history</span>
-    </header>
-    <div class="legend" style="margin-bottom:12px">
-      <span class="key"><i style="background:var(--div-pos)"></i>Edge favours home</span>
-      <span class="key"><i style="background:var(--div-neg)"></i>Edge favours away</span>
-      <span class="key muted">Each pair reads market \u2192 our model. Edge is the blended
-        estimate against the line, not the raw model gap</span>
-    </div>
-    <div class="cards">${cards}</div></div>`;
-
-  $$(".card", root).forEach((node) => {
-    const open = () => openGame(node.dataset.game);
-    node.addEventListener("click", open);
-    node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
-  });
-}
-
+// ------------------------------------------------- one game, in detail
+/* The dialog behind every card on the board. It outlived the Games page:
+   that page was a second rendering of the same week the board already
+   shows, but this is the only place a single game explains itself --
+   line movement, every book's current number, and the alerts raised for
+   it. */
 async function openGame(gameId) {
   const dlg = $("#detail");
   const body = $(".dialog-body", dlg);
@@ -1129,14 +1019,16 @@ async function renderPicks() {
         team now can cost more later than it gains today, so the optimiser solves the whole
         remaining path — the cost column is what deviating actually costs over that path.</p>
     ` : `<div class="empty">${esc(survivor.note || "No survivor plan available.")}</div>`}
-    <div>
-      <h3 style="font-size:12px;margin-bottom:6px">Teams you have already used</h3>
-      <div class="controls">
-        <input type="text" id="used-teams" style="flex:1;min-width:220px"
-          value="${esc((data.survivor_used || []).join(", "))}"
-          placeholder="e.g. KC, SF, BAL" />
-        <button class="btn primary" id="save-used">Save &amp; replan</button>
-      </div>
+    <div class="used-block">
+      <h3>Teams you have already used<span class="hint">click a mark to use or
+        release it — the plan replans itself</span></h3>
+      <div class="team-picker used">${(state.meta?.teams
+        ? Object.keys(state.meta.teams).sort() : []).map((t) => {
+          const used = (data.survivor_used || []).includes(t);
+          return `<button class="team-pick${used ? " used" : ""}" data-used="${esc(t)}"
+            title="${esc(t)} — ${used ? "used, click to release" : "available, click to mark used"}"
+            aria-pressed="${used}">${teamMark(t)}</button>`;
+        }).join("")}</div>
     </div>
   </div>`;
 
@@ -1147,22 +1039,23 @@ async function renderPicks() {
     renderPicks();
   });
 
-  $("#save-used").addEventListener("click", async (ev) => {
-    const teams = $("#used-teams").value.split(",").map((t) => t.trim().toUpperCase()).filter(Boolean);
-    ev.target.disabled = true;
-    ev.target.textContent = "Replanning…";
-    try {
+  wireLogos(root);
+  /* Clicking a mark toggles it and replans immediately. Typing a
+     comma-separated list meant naming a team from memory, spelling its
+     abbreviation the way this app happens to spell it, and pressing a second
+     button before anything happened. */
+  $$("[data-used]", root).forEach((button) => {
+    button.addEventListener("click", async () => {
+      const team = button.dataset.used;
+      const used = new Set(data.survivor_used || []);
+      if (used.has(team)) used.delete(team); else used.add(team);
+      button.classList.toggle("used");
       await api("/api/survivor/used", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ teams }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ teams: [...used] }),
       });
       await renderPicks();
-    } catch (err) {
-      alert(`Could not save: ${err.message}`);
-      ev.target.disabled = false;
-      ev.target.textContent = "Save & replan";
-    }
+    });
   });
 }
 
@@ -1189,20 +1082,44 @@ async function renderNews() {
     ${n.summary ? `<div class="muted news-sum">${esc(n.summary.slice(0, 220))}</div>` : ""}
   </div>`).join("");
 
-  const injuries = (data.injuries || []).slice(0, 80).map((i) => `<tr>
-    <td class="team">${esc(i.team)}</td><td>${esc(i.player)}</td>
-    <td>${esc(i.position || "–")}</td><td>${esc(i.status || "–")}</td>
+  /* One team at a time, chosen by its mark. A league-wide list is four hundred
+     rows you scroll past to find the one team you are about to pick, and the
+     status filter happens server-side: "Active" is not an injury report. */
+  const teams = data.injury_teams || [];
+  const counts = data.injury_counts || {};
+  if (!state.injuryTeam || !teams.includes(state.injuryTeam)) {
+    state.injuryTeam = teams[0] || null;
+  }
+  const picker = (state.meta?.teams ? Object.keys(state.meta.teams).sort() : teams)
+    .map((t) => {
+      const n = counts[t] || 0;
+      return `<button class="team-pick${t === state.injuryTeam ? " on" : ""}${
+        n ? "" : " empty"}" data-team="${esc(t)}"
+        title="${esc(t)} — ${n ? `${n} listed` : "nobody listed"}">
+        ${teamMark(t)}<span class="tp-count">${n || ""}</span></button>`;
+    }).join("");
+
+  const shown = (data.injuries || []).filter((i) => i.team === state.injuryTeam);
+  const injuries = shown.map((i) => `<tr>
+    <td class="team">${esc(i.player)}</td>
+    <td>${esc(i.position || "–")}</td>
+    <td><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
+    <td class="muted">${esc(i.detail || "")}</td>
     <td class="muted">${ago(i.updated_at)}</td></tr>`).join("");
 
   root.innerHTML = `<div class="grid-2 news-split">
     <div class="panel">
       <header><h2>Injury report</h2>
-        <span class="hint">${(data.injuries || []).length} listed</span></header>
+        <span class="hint">questionable, doubtful, out, IR and PUP only —
+          not the whole roster</span></header>
+      <div class="team-picker">${picker}</div>
       ${injuries
         ? `<div class="table-scroll tall"><table class="slate roster">
-            <thead><tr><th>Team</th><th>Player</th><th>Pos</th><th>Status</th><th>Updated</th></tr></thead>
+            <thead><tr><th>Player</th><th>Pos</th><th>Status</th><th>Detail</th><th>Updated</th></tr></thead>
             <tbody>${injuries}</tbody></table></div>`
-        : '<div class="empty">No injury report stored yet.</div>'}
+        : `<div class="empty">${state.injuryTeam
+            ? `Nobody listed for ${esc(state.injuryTeam)} — everyone is available.`
+            : "No injury report stored yet."}</div>`}
     </div>
 
     <div class="panel">
@@ -1412,10 +1329,210 @@ async function renderEdge() {
     </table></div></div>`;
 }
 
+// --------------------------------------------------------------- settings
+/* What you have to tell this app, and where it goes.
+
+   Everything here was an environment variable, which is fine in a terminal and
+   useless in a packaged app: there is no shell to export from. Each field says
+   what breaks without it, because "Odds API key" answers nothing on its own —
+   the question being asked is "what do I need to fill in, and what happens if
+   I don't". */
+async function renderSettings() {
+  const root = $("#view");
+  const data = await api("/api/settings");
+
+  const field = (s) => {
+    const id = `set-${s.key}`;
+    if (s.kind === "bool") {
+      const on = String(s.value).toLowerCase() === "true";
+      return `<label class="switch"><input type="checkbox" id="${id}"
+        data-key="${esc(s.key)}" ${on ? "checked" : ""} /><span>Enabled</span></label>`;
+    }
+    // A secret is never sent to the browser, so the box starts empty with the
+    // stored key's last four characters as its placeholder: enough to see that
+    // something is saved, useless to anyone reading over your shoulder.
+    const type = s.kind === "secret" ? "password" : (s.kind === "number" ? "number" : "text");
+    const placeholder = s.kind === "secret" && s.is_set
+      ? `saved — ${s.masked} — type to replace` : s.placeholder;
+    return `<input type="${type}" id="${id}" data-key="${esc(s.key)}"
+      value="${esc(s.kind === "secret" ? "" : s.value)}"
+      placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" />`;
+  };
+
+  root.innerHTML = `${(data.groups || []).map((g) => `<div class="panel">
+    <header><h2>${esc(g.name)}</h2></header>
+    <div class="settings">
+      ${g.settings.map((s) => `<div class="setting">
+        <div class="set-head">
+          <label for="set-${esc(s.key)}">${esc(s.label)}</label>
+          <span class="set-state ${s.explicit ? "on" : ""}">${
+            s.explicit
+              ? (s.source === "file" ? "saved" : "from environment")
+              : (s.is_set ? "default" : "not set")}</span>
+        </div>
+        ${field(s)}
+        <div class="set-help">${esc(s.help)}${s.link
+          ? ` <a href="${esc(s.link)}" target="_blank" rel="noopener">${esc(s.link)}</a>` : ""}</div>
+        ${s.needed_for ? `<div class="set-need"><b>Needed for:</b> ${esc(s.needed_for)}</div>` : ""}
+        ${s.key === "ODDS_API_KEY"
+          ? `<div class="controls"><button class="btn" id="test-odds">Test this key</button>
+             <span id="odds-result" class="muted"></span></div>` : ""}
+      </div>`).join("")}
+    </div>
+  </div>`).join("")}
+
+  <div class="panel">
+    <div class="controls">
+      <button class="btn primary" id="save-settings">Save settings</button>
+      <span id="save-result" class="muted"></span>
+    </div>
+    <p class="note">Written to <code>${esc(data.path)}</code>. Saved settings take
+      effect on the next refresh — no restart. A secret is never sent back to this
+      page, so an empty box means "leave it alone", not "clear it"; to remove a key,
+      type a space and save.</p>
+  </div>`;
+
+  $("#test-odds")?.addEventListener("click", async (ev) => {
+    const key = $("#set-ODDS_API_KEY").value.trim();
+    const out = $("#odds-result");
+    out.textContent = "checking…";
+    ev.target.disabled = true;
+    try {
+      const r = await api("/api/settings/test-odds-key", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      out.textContent = r.message;
+      out.className = r.ok ? "pos" : "neg";
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
+
+  $("#save-settings").addEventListener("click", async (ev) => {
+    const values = {};
+    $$("[data-key]", root).forEach((el) => {
+      if (el.type === "checkbox") values[el.dataset.key] = el.checked ? "true" : "false";
+      // An untouched secret box is empty, and sending that would clear a key
+      // the page was never shown. Absent means "leave it".
+      else if (el.value !== "") values[el.dataset.key] = el.value;
+      else if (el.type !== "password") values[el.dataset.key] = "";
+    });
+    ev.target.disabled = true;
+    const out = $("#save-result");
+    try {
+      const r = await api("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      });
+      out.textContent = `Saved ${r.saved.length} setting${r.saved.length === 1 ? "" : "s"}.`;
+      out.className = "pos";
+      await loadState();
+      await renderSettings();
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
+}
+
+// -------------------------------------------------------------- assistant
+/* A local model, given this app's own numbers.
+
+   It is not a football oracle and is not asked to be one: it gets the board,
+   the model's measured record and the scoreboard as JSON, and answers about
+   those. Nothing leaves the machine — the app refuses any endpoint that is not
+   loopback, so "offline" is enforced rather than promised. */
+const chatLog = [];
+
+async function renderAssistant() {
+  const root = $("#view");
+  const state_ = await api("/api/assistant/status").catch((e) => ({
+    ready: false, message: String(e) }));
+
+  if (!state_.ready) {
+    root.innerHTML = `<div class="panel">
+      <header><h2>Assistant</h2><span class="hint">not configured</span></header>
+      <div class="empty" style="text-align:left;max-width:64ch;margin:0 auto">
+        <p>${esc(state_.message)}</p>
+        <p class="note" style="margin-top:14px">The assistant runs a model on this
+          machine and talks to it over loopback only — an endpoint anywhere else is
+          refused, so nothing you ask it can leave the computer. It sees this week's
+          board, the model's measured record and the scoreboard, and nothing else.</p>
+        <ol class="setup">
+          <li>Install <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a>.</li>
+          <li>Run <code>ollama pull qwen3.5:4b</code> once. About 2.5&nbsp;GB; a 4B
+            model is plenty for reading a page of numbers and runs on a laptop.</li>
+          <li>On <b>Settings</b>, set the endpoint to <code>http://127.0.0.1:11434/v1</code>
+            and the model to <code>qwen3.5:4b</code>.</li>
+        </ol>
+      </div>
+    </div>`;
+    return;
+  }
+
+  const bubbles = chatLog.map((m) => `<div class="msg ${esc(m.role)}">
+    <div class="msg-body">${esc(m.content)}</div></div>`).join("");
+
+  root.innerHTML = `<div class="panel chat">
+    <header><h2>Assistant</h2>
+      <span class="hint">${esc(state_.model)} · on this machine · sees week
+        ${state.week} of ${state.season}</span></header>
+    <div class="chat-log" id="chat-log">${bubbles || `<div class="empty">
+      Ask about this week's board, where the model disagrees with the market, or
+      what its record actually says. It only knows what this app has.</div>`}</div>
+    <div class="controls chat-input">
+      <input type="text" id="chat-q" placeholder="e.g. where does the blind model disagree most with the book this week?" />
+      <button class="btn primary" id="chat-send">Ask</button>
+    </div>
+    <div class="chat-suggest">
+      ${["Which games does the blind model disagree with the market on?",
+         "Is this model actually any good? Be blunt.",
+         "Summarise this week in five lines."].map((q) =>
+        `<button class="btn tiny" data-q="${esc(q)}">${esc(q)}</button>`).join("")}
+    </div>
+  </div>`;
+
+  const send = async (question) => {
+    if (!question.trim()) return;
+    chatLog.push({ role: "user", content: question });
+    await renderAssistant();
+    const log = $("#chat-log");
+    if (log) log.scrollTop = log.scrollHeight;
+    try {
+      const r = await api("/api/assistant/ask", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: chatLog, season: state.season, week: state.week }),
+      });
+      chatLog.push({ role: "assistant", content: r.reply });
+    } catch (err) {
+      chatLog.push({ role: "assistant", content: `Could not answer: ${err}` });
+    }
+    await renderAssistant();
+    const after = $("#chat-log");
+    if (after) after.scrollTop = after.scrollHeight;
+  };
+
+  $("#chat-send").addEventListener("click", () => send($("#chat-q").value));
+  $("#chat-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send(e.target.value);
+  });
+  $$("[data-q]", root).forEach((b) =>
+    b.addEventListener("click", () => send(b.dataset.q)));
+  const log = $("#chat-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
 // -------------------------------------------------------------------- shell
-const VIEWS = { home: renderHome, games: renderGames, teams: renderTeams,
+const VIEWS = { home: renderHome, teams: renderTeams,
   picks: renderPicks, news: renderNews, edge: renderEdge,
-  scoreboard: renderScoreboard, performance: renderPerformance };
+  scoreboard: renderScoreboard, performance: renderPerformance,
+  assistant: renderAssistant, settings: renderSettings };
 
 async function render() {
   const view = VIEWS[state.tab] || renderHome;

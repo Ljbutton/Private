@@ -318,6 +318,55 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         return {"contest": contest, "season": season, "entries": rows}
 
     # ------------------------------------------------------------- news
+    # --------------------------------------------------------- settings
+    @app.get("/api/settings")
+    def read_settings() -> dict:
+        from . import settings as settings_module
+
+        return settings_module.current()
+
+    @app.post("/api/settings")
+    def write_settings(payload: dict) -> dict:
+        """Save settings. Only keys this app defines are written, and a key the
+        UI did not send is left alone rather than cleared -- otherwise opening
+        the page and saving one field would wipe a secret it never displayed."""
+        from . import settings as settings_module
+
+        values = payload.get("values")
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="expected a values object")
+        # save() resets the cached config, and the scheduler calls get_config()
+        # afresh on every cycle, so a changed cadence or a new key is picked up
+        # on the next pass without a restart.
+        return settings_module.save(values)
+
+    @app.post("/api/settings/test-odds-key")
+    def test_odds_key(payload: dict) -> dict:
+        from . import settings as settings_module
+
+        return settings_module.validate_odds_key(payload.get("key") or "")
+
+    # -------------------------------------------------------- assistant
+    @app.get("/api/assistant/status")
+    def assistant_status() -> dict:
+        from . import assistant
+
+        return assistant.status()
+
+    @app.post("/api/assistant/ask")
+    def assistant_ask(payload: dict) -> dict:
+        from . import assistant
+
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise HTTPException(status_code=400, detail="expected messages")
+        season = int(payload.get("season") or pipeline.season())
+        week = int(payload.get("week") or pipeline.current_week(season))
+        try:
+            return assistant.ask(messages, season, week)
+        except assistant.AssistantError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get("/api/news")
     def news(limit: int = 60, min_impact: float = 0.0, team: str | None = None) -> dict:
         sql = "SELECT * FROM news WHERE impact >= ?"
@@ -331,12 +380,28 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         for row in rows:
             with contextlib.suppress(Exception):
                 row["teams"] = json.loads(row["teams"] or "[]")
+        # Only players whose availability is in question. An injury table is
+        # mostly the word "Active" repeated, and a row that says a healthy
+        # player is healthy is not an injury report -- it buries the four names
+        # that actually change a projection.
+        injuries = [
+            r for r in db.query(
+                "SELECT team, player, position, status, detail, MAX(updated_at) AS updated_at "
+                "FROM injuries GROUP BY team, player ORDER BY team, player"
+            )
+            if _is_notable_injury(r.get("status"))
+        ]
         return {
             "items": rows,
-            "injuries": db.query(
-                "SELECT team, player, position, status, detail, MAX(updated_at) AS updated_at "
-                "FROM injuries GROUP BY team, player ORDER BY team, player LIMIT 400"
-            ),
+            "injuries": [r for r in injuries
+                         if not team or r["team"] == team.upper()],
+            # Every team that has someone listed, so the picker can grey out
+            # the ones with a clean sheet rather than offering an empty page.
+            "injury_teams": sorted({r["team"] for r in injuries}),
+            "injury_counts": {
+                t: sum(1 for r in injuries if r["team"] == t)
+                for t in sorted({r["team"] for r in injuries})
+            },
         }
 
     # ------------------------------------------------------- performance
@@ -475,6 +540,27 @@ def _moved_toward_us(prediction: dict | None, move: dict) -> float | None:
         return 0.0
     # `or 0.0` collapses -0.0, which would otherwise render as "-0.0".
     return round(movement if lean > 0 else -movement, 2) or 0.0
+
+
+# Statuses that mean "this player may not play". Anything else -- Active,
+# a blank, a status a feed invented -- is not a report, and showing it turns a
+# four-name list into a four-hundred-name one.
+_NOTABLE_INJURY = {
+    "out", "doubtful", "questionable", "injured reserve", "ir",
+    "physically unable to perform", "pup", "did not participate",
+    "limited participation", "non football injury", "nfi", "suspended",
+    "reserve/covid-19", "practice squad/injured",
+}
+
+
+def _is_notable_injury(status: str | None) -> bool:
+    value = (status or "").strip().lower()
+    if not value or value in {"active", "full participation", "probable", "healthy"}:
+        return False
+    return value in _NOTABLE_INJURY or any(k in value for k in ("out", "doubtful",
+                                                                "questionable",
+                                                                "reserve", "pup",
+                                                                "injured"))
 
 
 def game_cards(season: int, week: int) -> list[dict]:

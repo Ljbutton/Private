@@ -95,15 +95,30 @@ def available() -> bool:
 
     Importing pywebview is not the test: the package imports cleanly on a
     machine with no GUI toolkit at all, and only fails later inside
-    ``webview.start()``. Checking the import alone made a packaged build crash
-    on a headless box instead of falling back to the browser, so this asks the
-    library to resolve a backend and treats any failure as "not available".
+    ``webview.start()``. So this asks the library to resolve a backend and
+    treats a failure as "not available".
+
+    The module is fetched through ``import_module`` rather than with
+    ``from webview import guilib``, and that detail is the whole function.
+    pywebview's package sets a module-level ``guilib = None`` which it only
+    replaces with the real backend inside ``webview.start()`` — so the plain
+    ``from`` import binds **None**, ``None.initialize()`` raises AttributeError,
+    the except swallowed it, and this returned False on every platform, every
+    launch. The native window was never opening for anyone; the app silently
+    opened a browser tab instead, which is the one thing packaging it was meant
+    to avoid. ``import_module`` resolves the submodule itself and is unaffected
+    by the package attribute shadowing it.
     """
     try:
-        from webview import guilib
+        from importlib import import_module
+
+        guilib = import_module("webview.guilib")
     except Exception:  # noqa: BLE001
         return False
     try:
+        # Raises WebViewException when no backend can be imported. On macOS it
+        # also calls setup_app(), which must happen on the main thread -- run()
+        # is the only caller and holds it.
         guilib.initialize()
     except Exception:  # noqa: BLE001
         return False

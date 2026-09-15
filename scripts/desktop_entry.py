@@ -54,8 +54,24 @@ def selftest() -> int:
         print(f"selftest FAILED: webview did not import: {exc!r}", flush=True)
         return 1
 
-    print(f"selftest ok: {url}/api/state -> {len(payload)} keys, webview present",
-          flush=True)
+    # Importing pywebview was never enough. The window opens through
+    # webview.guilib, and the package shadows that submodule with a None
+    # attribute until webview.start() runs -- so resolving it wrongly made the
+    # app fall back to a browser tab on every platform while this check stayed
+    # green. Resolving the module and finding initialize() on it is the part
+    # that actually failed, and it needs no display to verify.
+    try:
+        from importlib import import_module
+
+        guilib = import_module("webview.guilib")
+        if not callable(getattr(guilib, "initialize", None)):
+            raise AttributeError("webview.guilib has no initialize()")
+    except Exception as exc:                              # noqa: BLE001
+        print(f"selftest FAILED: webview backend not resolvable: {exc!r}", flush=True)
+        return 1
+
+    print(f"selftest ok: {url}/api/state -> {len(payload)} keys, "
+          "webview backend resolvable", flush=True)
     return 0
 
 
