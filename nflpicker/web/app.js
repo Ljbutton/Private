@@ -125,6 +125,11 @@ async function renderGames() {
 
     const news = (card.news || []).slice(0, 2).map((n) =>
       `<span class="badge ${esc(n.category)}">${esc(n.category)}</span>`).join(" ");
+    const hits = ["away", "home"]
+      .map((side) => [side === "home" ? card.home : card.away, card.availability?.[side]])
+      .filter(([, a]) => a && a.adjustment <= -1.0)
+      .map(([team, a]) => `<span class="badge injury">${esc(team)} ${signed(a.adjustment)}` +
+        `${a.qb_change ? " QB" : ""}</span>`).join(" ");
 
     return `<article class="card" data-game="${esc(card.game_id)}" tabindex="0">
       <div class="kick"><span>${final ? "Final" : when(card.kickoff)}</span>
@@ -140,6 +145,7 @@ async function renderGames() {
         <div>Model total<strong>${num(p?.total_points, 1)}</strong></div>
         <div>Line move<strong>${signed(card.movement.spread_move)}</strong></div>
       </div>
+      ${hits ? `<div class="newsline">${hits}<span class="muted">injury adjustment applied</span></div>` : ""}
       ${news ? `<div class="newsline">${news}<span class="muted">news affecting this game</span></div>` : ""}
     </article>`;
   }).join("");
@@ -237,6 +243,27 @@ async function openGame(gameId) {
       </table></div>
     </div>
 
+    ${["home", "away"].some((s) => g.availability?.[s]?.missing?.length)
+      ? `<div class="panel" style="background:var(--surface-sunken)">
+      <header><h2>Availability</h2>
+        <span class="hint">applied to our projection; the market already prices this</span></header>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Team</th><th>Player</th><th>Pos</th><th>Status</th><th>Cost</th></tr></thead>
+        <tbody>${["away", "home"].flatMap((side) => {
+          const team = side === "home" ? g.home : g.away;
+          const a = g.availability?.[side];
+          if (!a || !a.missing?.length) return [];
+          return a.missing.map((m, i) => `<tr>
+            <td class="team">${i === 0 ? `${esc(team)} <span class="muted">(${signed(a.adjustment)})</span>` : ""}</td>
+            <td>${esc(m.player || "–")}</td><td>${esc(m.position || "–")}</td>
+            <td>${esc(m.status || "–")}</td><td>${m.cost ? `−${num(m.cost, 2)}` : "–"}</td></tr>`);
+        }).join("")}</tbody>
+      </table></div>
+      <p class="note">Injury history is not in the training data, so this is applied to the
+        projection rather than learned. It mostly removes false disagreement — a model that
+        has not noticed a ruled-out starter claims its biggest edge on the game it understands
+        least. A quarterback's cost is the measured gap to his backup, not a flat constant.</p>
+    </div>` : ""}
     ${(g.news || []).length ? `<div class="panel" style="background:var(--surface-sunken)">
       <header><h2>News touching this game</h2></header>
       ${g.news.map((n) => `<div style="padding:6px 0;border-bottom:1px solid var(--grid)">

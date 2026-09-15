@@ -130,6 +130,7 @@ class Predictor:
         power: PowerRatings | None = None,
         *,
         market_weight: float | None = None,
+        adjustments: dict[str, float] | None = None,
     ) -> list[GamePrediction]:
         market_weight = self.market_weight if market_weight is None else market_weight
         total_weight = (
@@ -174,6 +175,22 @@ class Predictor:
         )
         model_margin = np.nan_to_num(model_margin, nan=0.0)
         model_total = np.where(np.isnan(model_total), 44.0, model_total)
+
+        # Availability adjustment. Injury reports are not in the training data,
+        # so this is applied to the projection rather than learned. It mostly
+        # *removes* false disagreement: a model that has not noticed a
+        # ruled-out starter will claim its largest edge on the game it
+        # understands least.
+        if adjustments:
+            home_adj = np.array(
+                [adjustments.get(r["home"], 0.0) for r in frame.to_dict("records")],
+                dtype=float,
+            )
+            away_adj = np.array(
+                [adjustments.get(r["away"], 0.0) for r in frame.to_dict("records")],
+                dtype=float,
+            )
+            model_margin = model_margin + home_adj - away_adj
 
         # How much has actually been observed about these two teams?  Both the
         # games they have played and whether a trained model exists count.
@@ -271,6 +288,10 @@ class Predictor:
                         "raw_win_prob": _opt(raw_prob[i]),
                         "market_weight": round(float(effective_weight[i]), 3)
                         if spread is not None else 0.0,
+                        "availability_home": round(
+                            float((adjustments or {}).get(row["home"], 0.0)), 2),
+                        "availability_away": round(
+                            float((adjustments or {}).get(row["away"], 0.0)), 2),
                         "source": "model" if self.trained else FALLBACK_NOTE,
                     },
                 )

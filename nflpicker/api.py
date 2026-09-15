@@ -378,6 +378,7 @@ def game_cards(season: int, week: int) -> list[dict]:
     from .news.impact import affected_games
 
     news_by_game = affected_games(news_items, games)
+    availability = db.get_meta("availability", {}) or {}
 
     cards = []
     for game in games:
@@ -418,6 +419,10 @@ def game_cards(season: int, week: int) -> list[dict]:
                 },
                 "graded": graded.get(gid),
                 "news": news_by_game.get(gid, []),
+                "availability": {
+                    "home": availability.get(game["home"]),
+                    "away": availability.get(game["away"]),
+                },
             }
         )
     return cards

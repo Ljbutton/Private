@@ -483,10 +483,10 @@ class Pipeline:
         start = time.monotonic()
         try:
             if self.demo:
-                from .sources.demo import generate_news
+                from .sources.demo import generate_injuries, generate_news
 
                 items = generate_news(self.season())
-                injuries: list[dict] = []
+                injuries = generate_injuries(self.season())
             else:
                 from .sources.espn import EspnSource
                 from .sources.news_rss import NewsSource
@@ -516,15 +516,34 @@ class Pipeline:
                 ],
             )
             if injuries:
+                # Only write when a player's status has actually changed. The
+                # feed is polled every fifteen minutes; storing every player
+                # every time would add tens of thousands of identical rows a
+                # day and make "current status" a scan rather than a lookup.
+                current = {
+                    (r["team"], r["player"]): r["status"]
+                    for r in db.query(
+                        "SELECT i.team, i.player, i.status FROM injuries i "
+                        "JOIN (SELECT team, player, MAX(updated_at) AS m FROM injuries "
+                        "      GROUP BY team, player) x ON x.team = i.team "
+                        "AND x.player = i.player AND x.m = i.updated_at"
+                    )
+                }
+                changed = [
+                    i for i in injuries
+                    if current.get((i["team"], i["player"])) != i.get("status")
+                ]
                 db.executemany(
-                    "INSERT OR IGNORE INTO injuries(team, player, position, status, detail, updated_at) "
+                    "INSERT OR IGNORE INTO injuries"
+                    "(team, player, position, status, detail, updated_at) "
                     "VALUES(?,?,?,?,?,?)",
                     [
                         [i["team"], i["player"], i.get("position"), i.get("status"),
                          i.get("detail"), i.get("updated_at") or stamp]
-                        for i in injuries
+                        for i in changed
                     ],
                 )
+                injuries = changed
             detail = f"{len(tagged)} items, {len(injuries)} injury rows"
             result.record("news", True, detail, count=len(tagged))
             db.log_fetch("news", True, detail, int((time.monotonic() - start) * 1000))
@@ -599,6 +618,69 @@ class Pipeline:
                 continue
         return out
 
+    def quarterback_registry(self, season: int) -> tuple[dict[str, float], dict[str, list[str]]]:
+        """Rolling value per quarterback, and each team's passers, by name key.
+
+        Keyed by the normalised name rather than a player id because the injury
+        feed and the play-by-play share no identifier.
+        """
+        from .availability import normalize_name
+
+        rows = db.query(
+            "SELECT team, season, week, payload FROM team_game_stats "
+            "WHERE season >= ? ORDER BY season, week",
+            (season - 1,),
+        )
+        totals: dict[str, list[float]] = {}
+        volume: dict[str, float] = {}
+        depth: dict[str, list[str]] = {}
+        for row in rows:
+            try:
+                stats = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            key = normalize_name(stats.get("qb_name"))
+            if not key:
+                continue
+            epa = stats.get("qb_epa")
+            if epa is not None:
+                totals.setdefault(key, []).append(float(epa))
+            volume[key] = volume.get(key, 0.0) + float(stats.get("qb_dropbacks") or 0)
+            seen = depth.setdefault(row["team"], [])
+            if key in seen:
+                seen.remove(key)
+            seen.insert(0, key)   # most recent starter first
+
+        values: dict[str, float] = {}
+        for key, samples in totals.items():
+            weight = volume.get(key, 0.0) / (volume.get(key, 0.0) + 250.0)
+            values[key] = (sum(samples) / len(samples)) * weight
+        return values, depth
+
+    def availability_adjustments(self, season: int) -> dict[str, dict]:
+        """Current injury report turned into points per team."""
+        from .availability import build_adjustments, normalize_name
+
+        rows = db.query(
+            "SELECT i.team, i.player, i.position, i.status FROM injuries i "
+            "JOIN (SELECT team, player, MAX(updated_at) AS m FROM injuries "
+            "      GROUP BY team, player) x "
+            "ON x.team = i.team AND x.player = i.player AND x.m = i.updated_at"
+        )
+        if not rows:
+            return {}
+        by_team: dict[str, list[dict]] = {}
+        for row in rows:
+            by_team.setdefault(row["team"], []).append({
+                "player": normalize_name(row["player"]),
+                "player_name": row["player"],
+                "position": row["position"],
+                "status": row["status"],
+            })
+        values, depth = self.quarterback_registry(season)
+        built = build_adjustments(by_team, qb_values=values, depth=depth)
+        return {team: a.to_dict() for team, a in built.items()}
+
     # ------------------------------------------------------------- recompute
     def load_games(self, season: int | None = None) -> list[dict]:
         season = season or self.season()
@@ -668,7 +750,12 @@ class Pipeline:
             history, team_game_stats=self.load_team_game_stats(season)
         )
         frame = full_frame[full_frame["season"] == season] if not full_frame.empty else full_frame
-        predictions = self.predictor.predict_frame(frame, power)
+        availability = self.availability_adjustments(season)
+        db.set_meta("availability", availability)
+        predictions = self.predictor.predict_frame(
+            frame, power,
+            adjustments={t: a["adjustment"] for t, a in availability.items()},
+        )
         by_game = {p.game_id: p for p in predictions}
         upcoming = {g["game_id"] for g in games if g["status"] != "final"}
         db.executemany(

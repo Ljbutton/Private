@@ -295,3 +295,31 @@ def generate_news(season: int, count: int = 24) -> list[dict]:
             }
         )
     return sorted(items, key=lambda x: x["published_at"], reverse=True)
+
+
+DEMO_POSITIONS = ["QB", "RB", "WR", "TE", "LT", "EDGE", "CB", "S", "LB"]
+DEMO_STATUSES = ["Out", "Doubtful", "Questionable", "Injured Reserve"]
+
+
+def generate_injuries(season: int, per_team: int = 3) -> list[dict]:
+    """A plausible league-wide injury report for demo mode."""
+    from ..util import now
+
+    rng = random.Random(season * 811)
+    rows: list[dict] = []
+    stamp = now().replace(microsecond=0).isoformat()
+    initials = "ABCDEFGHJKLMPRSTW"
+    for team in ABBRS:
+        # Distinct initials per team so two entries never collide on name.
+        chosen = rng.sample(initials, per_team)
+        for i in range(rng.randint(0, per_team)):
+            position = rng.choice(DEMO_POSITIONS)
+            rows.append({
+                "team": team,
+                "player": f"{chosen[i]}.{TEAMS[team].name[:-1]}son",
+                "position": position,
+                "status": rng.choice(DEMO_STATUSES),
+                "detail": "Synthetic demo entry — enable live sources for the real report.",
+                "updated_at": stamp,
+            })
+    return rows
