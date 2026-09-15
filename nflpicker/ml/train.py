@@ -88,10 +88,15 @@ class TrainingReport:
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        import sklearn
+
         return {
             **asdict(self),
             "blind": asdict(self.blind),
             "aware": asdict(self.aware),
+            # The environment that produced the pickle, so a bundle that will
+            # not load back is diagnosable from the report beside it.
+            "sklearn_version": sklearn.__version__,
         }
 
 
@@ -286,9 +291,15 @@ def train(
 
     blind_features = NUMERIC_FEATURES
     aware_features = NUMERIC_FEATURES + MARKET_FEATURES
+    import sklearn
+
     bundle = {
         "model_version": MODEL_VERSION,
         "trained_at": report.trained_at,
+        # A bundle is a pickle of fitted scikit-learn estimators, so it is only
+        # guaranteed to load back under the version that wrote it. Recording
+        # that here turns "the sidebar says power-only" into a diagnosable fact.
+        "sklearn_version": sklearn.__version__,
         "blind_features": blind_features,
         "aware_features": aware_features,
         "residual_sd": report.residual_sd,

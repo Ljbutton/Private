@@ -674,16 +674,20 @@ echo ODDS_API_KEY=your-key-here >> %LOCALAPPDATA%\NFLPicker\.env
 Restart the app, then hit refresh. The Connections list in the sidebar will show
 `Odds API` with your month's usage instead of `no key`.
 
-**Then train the model.** Out of the box it runs `power-only` — Elo and form,
-no learned weights — which the sidebar reports honestly. Training downloads
-about twenty seasons of play-by-play and takes a few minutes:
+**The model.** A trained bundle ships in `data/models/`, so the sidebar should
+read `1.0@<date>` rather than `power-only` on a fresh clone. It is a pickle of
+fitted estimators and therefore only loads back under the scikit-learn version
+that wrote it, which is recorded in `training_report.json` beside it. If it will
+not load, the app says so in the log and falls back to power ratings — retrain
+and it is fixed:
 
 ```bash
 make refresh    # pull real data first
-make train      # walk-forward fit, writes data/models/
+make train      # walk-forward fit, ~25 seasons, a few minutes
 ```
 
-Training is a command-line step: it is a once-in-a-while job that prints a
+Retrain every few weeks in season: the shipped bundle is only as current as the
+day it was built. Training stays a command-line step because it prints a
 validation report you want to actually read, not something to fire from a button
 and hope about. The app picks up new weights on its next refresh.
 

@@ -23,6 +23,7 @@ and the raw disagreement is kept beside it as a diagnostic.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +54,9 @@ UNTRAINED_SD = 14.5
 # on.  Before that, ratings are still close to their priors, so any apparent
 # disagreement with the market is the model's ignorance rather than an edge.
 INFORMATION_FULL_AT = 5.0
+
+
+log = logging.getLogger("nflpicker.predict")
 
 
 @dataclass
@@ -330,7 +334,16 @@ def load_bundle(model_dir: Path | None = None) -> dict | None:
         import joblib
 
         return joblib.load(path)
-    except Exception:  # noqa: BLE001 - a corrupt/stale artifact must not brick the app
+    except Exception as exc:  # noqa: BLE001 - a stale artifact must not brick the app
+        # Falling back to power ratings is right; doing it silently is not. A
+        # bundle pickled under a different scikit-learn is the likely cause, and
+        # the only symptom would otherwise be the sidebar quietly reading
+        # "power-only" with no way to tell that from never having trained.
+        log.warning(
+            "could not load %s (%s: %s) — falling back to power ratings; "
+            "retrain with `nflpicker train` to rebuild it for this environment",
+            path, type(exc).__name__, exc,
+        )
         return None
 
 
