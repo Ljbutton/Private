@@ -41,7 +41,10 @@ exe = EXE(
     name="NFLPicker",
     debug=False,
     strip=False,
-    upx=True,
+    # UPX is off deliberately. It saves some size, but packed executables are
+    # a well-known antivirus false-positive trigger, and an unsigned build is
+    # already starting from a position of suspicion on Windows.
+    upx=False,
     console=False,          # no terminal window behind the app
     disable_windowed_traceback=False,
 )

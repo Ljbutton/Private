@@ -1,0 +1,103 @@
+# Builds the single-file desktop app.
+#
+# PyInstaller cannot cross-compile, so each target is built on its own runner.
+# Run it from the Actions tab ("Run workflow"), then download the artifact --
+# that is the whole point of this file: getting a Windows .exe without needing
+# a Python toolchain on the machine that will run it.
+name: Build desktop app
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "full (can train and read play-by-play) or lite (~40MB smaller, no pyarrow)"
+        type: choice
+        options: [full, lite]
+        default: full
+      targets:
+        description: "Which platforms to build"
+        type: choice
+        options: [windows, macos, both]
+        default: windows
+  push:
+    # Build when the packaging itself changes, on any branch. A manual run
+    # is only offered for workflows that already exist on the default branch,
+    # so without this there is no way to get a binary out of a feature branch.
+    # Scoped to the files that decide what the binary contains, so ordinary
+    # commits do not spend two runners each.
+    branches: ["main", "claude/**"]
+    paths:
+      - "nflpicker.spec"
+      - "scripts/desktop_entry.py"
+      - "pyproject.toml"
+      - ".github/workflows/build-desktop.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows
+            artifact: NFLPicker-windows
+          - os: macos-latest
+            target: macos
+            artifact: NFLPicker-macos
+    runs-on: ${{ matrix.os }}
+    # A manual run builds what was asked for; an automatic one builds Windows
+    # only, which is the target anyone is actually waiting on. macOS is one
+    # dropdown away rather than two runners on every packaging commit.
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.targets == 'both' || inputs.targets == matrix.target)) ||
+      (github.event_name != 'workflow_dispatch' && matrix.target == 'windows')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pywebview pyinstaller
+
+      # A build that ships a broken app is worse than no build, and the suite
+      # is fully offline, so there is no reason not to run it first.
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build
+        run: pyinstaller nflpicker.spec --noconfirm -- --profile ${{ inputs.profile || 'full' }}
+
+      # Confirms the frozen binary actually starts and serves, rather than
+      # only that PyInstaller exited 0 -- the failure this catches is a missing
+      # hidden import, which is invisible until first run.
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ matrix.target }}" = "windows" ]; then
+            BIN="dist/NFLPicker.exe"
+          else
+            BIN="dist/NFLPicker"
+          fi
+          test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist; exit 1; }
+          NFLPICKER_DEMO=1 "$BIN" --selftest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ inputs.profile || 'full' }}
+          path: |
+            dist/NFLPicker.exe
+            dist/NFLPicker
+          if-no-files-found: error
+          retention-days: 30

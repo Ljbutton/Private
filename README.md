@@ -312,7 +312,19 @@ loopback only, which matters because the app has no authentication.
 If no webview runtime is present it falls back to opening your browser rather
 than failing.
 
-### Building a single executable
+### Getting the executable
+
+**Without installing anything:** the *Build desktop app* workflow builds it on a
+real Windows runner and attaches it to the run. Actions tab → *Build desktop
+app* → *Run workflow* → download the `NFLPicker-windows-full` artifact. It
+unzips to one `.exe`.
+
+The build runs the test suite first and then boots the frozen binary with
+`--selftest`, because PyInstaller exiting 0 only means the bundle was written.
+The usual packaging failure is a hidden import that was never collected, and
+that stays invisible until someone double-clicks the icon.
+
+**Building it yourself:**
 
 ```bash
 make exe                 # full build
@@ -330,6 +342,14 @@ Two things to know:
   scores and news, and uses a model you trained earlier — but it cannot read
   nflverse parquet, so no training and no EPA refresh on that build. Train with
   the full install and copy `data/models/` across if you want both.
+
+- **Windows will not trust it, and that is expected.** The build is unsigned, so
+  SmartScreen shows "Windows protected your PC" on first run — *More info* →
+  *Run anyway*. Defender may also quarantine it. Code signing needs a
+  certificate (a few hundred dollars a year), which is not worth it for
+  something only you run. UPX compression is deliberately off in the spec for
+  the same reason: packed executables are a known false-positive trigger, and an
+  unsigned build starts from a position of suspicion already.
 
 Windows needs the Microsoft Edge WebView2 runtime, which ships with Windows 11
 and most Windows 10 installs.
