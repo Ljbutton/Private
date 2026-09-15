@@ -70,8 +70,16 @@ class Scheduler:
 
     # ------------------------------------------------------------- intervals
     def odds_interval(self) -> float:
-        """Stretch odds polling to fit the remaining monthly request budget."""
+        """Stretch odds polling to fit the remaining monthly request budget.
+
+        With one exception: when games have appeared on the schedule but have no
+        line yet, poll at the floor. Opening numbers are the softest of the week
+        and they exist only once — a budget-stretched interval can miss the open
+        entirely, and the open is precisely what the movement test needs.
+        """
         cfg = get_config()
+        if self._awaiting_opening_lines():
+            return max(300.0, min(cfg.refresh_odds, 600.0))
         if self.pipeline.demo or not cfg.has_odds_key:
             return cfg.refresh_odds
         try:
@@ -84,6 +92,17 @@ class Scheduler:
             )
         except Exception:  # noqa: BLE001
             return cfg.refresh_odds
+
+    @staticmethod
+    def _awaiting_opening_lines() -> bool:
+        """Are there upcoming games the market has not priced for us yet?"""
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM games g WHERE g.status = 'scheduled' "
+            "AND g.kickoff IS NOT NULL AND g.kickoff > ? "
+            "AND NOT EXISTS (SELECT 1 FROM consensus c WHERE c.game_id = g.game_id)",
+            (now_iso(),),
+        )
+        return bool(row and row["n"])
 
     def scores_interval(self) -> float:
         """Poll scores hard while games are live, gently otherwise."""

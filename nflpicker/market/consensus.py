@@ -97,6 +97,13 @@ def latest_per_book(quotes: list[dict]) -> dict[tuple[str, str], dict]:
 def build_consensus(game_id: str, quotes: list[dict], captured_at: str) -> Consensus | None:
     """Average the latest quote from every book into a single market view."""
     quotes = sportsbook_quotes(quotes)
+    # A snapshot describes the market as of `captured_at`, so a quote stamped
+    # later than that cannot be part of it. Without this, replaying history
+    # would quietly fold the closing line into the opening one.
+    quotes = [
+        q for q in quotes
+        if not q.get("captured_at") or str(q["captured_at"]) <= str(captured_at)
+    ]
     if not quotes:
         return None
     newest = latest_per_book(quotes)

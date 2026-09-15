@@ -690,9 +690,102 @@ async function renderPerformance() {
   calibrationChart($("#chart-calib"), r.calibration.buckets || [], { height: 240 });
 }
 
+// -------------------------------------------------------------------- edge
+async function renderEdge() {
+  const root = $("#view");
+  const data = await api("/api/edge");
+  const m = data.movement || {};
+  const cov = data.coverage || {};
+
+  if (!m.n) {
+    root.innerHTML = `<div class="panel">
+      <header><h2>Does the line move toward us?</h2></header>
+      <div class="empty">${esc(m.note || "Not enough observations yet.")}</div>
+      <div class="tiles" style="margin-top:14px">
+        <div class="tile"><div class="label">Games with a line</div>
+          <div class="value">${cov.games_with_any_line ?? 0}</div></div>
+        <div class="tile"><div class="label">Games with movement</div>
+          <div class="value">${cov.games_with_movement ?? 0}</div>
+          <div class="sub">need two observations each</div></div>
+        <div class="tile"><div class="label">Watching since</div>
+          <div class="value" style="font-size:15px">${cov.watching_since
+            ? when(cov.watching_since) : "–"}</div></div>
+      </div></div>`;
+    return;
+  }
+
+  const verdict = m.beats_coin_flip
+    ? "The line moves toward us more often than chance."
+    : "Not yet distinguishable from a coin flip.";
+
+  root.innerHTML = `<div class="panel">
+    <header><h2>Does the line move toward us?</h2>
+      <span class="hint">${m.n} games where we had a view before the market settled</span></header>
+    <div class="tiles">
+      <div class="tile"><div class="label">Line moved our way</div>
+        <div class="value ${m.beats_coin_flip ? "pos" : ""}">${pct(m.agreement_rate, 1)}</div>
+        <div class="sub">${m.agreed} of ${m.n} · 95% CI ${pct(m.ci_low, 1)}–${pct(m.ci_high, 1)}</div></div>
+      <div class="tile"><div class="label">Closing-line value</div>
+        <div class="value ${(m.avg_clv ?? 0) > 0 ? "pos" : "neg"}">${signed(m.avg_clv, 2)}</div>
+        <div class="sub">points per game vs the close</div></div>
+      <div class="tile"><div class="label">Positive CLV</div>
+        <div class="value">${pct(m.positive_clv_rate, 1)}</div>
+        <div class="sub">share of games</div></div>
+      <div class="tile"><div class="label">Average move</div>
+        <div class="value">${num(m.avg_move, 2)}</div>
+        <div class="sub">points, open to close</div></div>
+    </div>
+    <p class="note"><strong>${esc(verdict)}</strong> This is the sharpest test available,
+      and a different question from "did the pick win". If our number carries information the
+      opening market lacks, the line should drift toward us more often than away — that is
+      measurable without any opinion about the final score, and line movement is far less noisy
+      than results, so it needs a fraction of the sample an ATS record would.
+      A 50% rate is the coin flip: the line was always going to move one way or the other.</p>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel"><header><h2>By how early we formed the view</h2>
+      <span class="hint">an edge should be largest before the market has worked</span></header>
+      <table><thead><tr><th>Lead time</th><th>Games</th><th>Moved our way</th><th>CLV</th></tr></thead>
+      <tbody>${(m.by_lead_time || []).map((b) => `<tr>
+        <td class="team">${esc(b.window)}</td><td>${b.n}</td>
+        <td>${b.agreement_rate === null ? "–" : pct(b.agreement_rate, 1)}</td>
+        <td>${b.avg_clv === null ? "–" : signed(b.avg_clv, 2)}</td></tr>`).join("")}</tbody>
+      </table></div>
+    <div class="panel"><header><h2>What we have witnessed</h2>
+      <span class="hint">this measure cannot be backfilled</span></header>
+      <div class="tiles">
+        <div class="tile"><div class="label">Games with a line</div>
+          <div class="value">${cov.games_with_any_line ?? 0}</div></div>
+        <div class="tile"><div class="label">With movement</div>
+          <div class="value">${cov.games_with_movement ?? 0}</div></div>
+        <div class="tile"><div class="label">Snapshots</div>
+          <div class="value">${(cov.snapshots ?? 0).toLocaleString()}</div></div>
+      </div>
+      <p class="note">Nobody publishes a history of intraday NFL line movement, so this
+        accumulates only while the app is running before kickoff. Leaving it off between
+        Sundays is the one thing that stops this page from ever filling in.</p>
+    </div>
+  </div>
+
+  <div class="panel"><header><h2>Biggest moves</h2>
+    <span class="hint">where the market revised most after we had formed a view</span></header>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Game</th><th>Opened</th><th>Closed</th><th>Moved</th>
+        <th>Our lean</th><th>Agreed</th><th>CLV</th></tr></thead>
+      <tbody>${(m.biggest_moves || []).map((c) => `<tr>
+        <td class="team">${esc(c.away)} <span class="muted">@</span> ${esc(c.home)}</td>
+        <td>${num(c.open_spread, 1)}</td><td>${num(c.close_spread, 1)}</td>
+        <td>${signed(c.movement, 1)}</td><td>${signed(c.lean, 1)}</td>
+        <td>${c.agreed ? '<span class="badge" style="border-color:var(--good);color:var(--success-text)">yes</span>'
+             : '<span class="badge">no</span>'}</td>
+        <td>${signed(c.clv, 1)}</td></tr>`).join("")}</tbody>
+    </table></div></div>`;
+}
+
 // -------------------------------------------------------------------- shell
 const VIEWS = { games: renderGames, teams: renderTeams, picks: renderPicks,
-  news: renderNews, performance: renderPerformance };
+  news: renderNews, edge: renderEdge, performance: renderPerformance };
 
 async function render() {
   const view = VIEWS[state.tab] || renderGames;

@@ -257,6 +257,17 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         }
 
     # ------------------------------------------------------- performance
+    @app.get("/api/edge")
+    def edge(season: int | None = None) -> dict:
+        """Whether the line moves toward us — the sharpest test available."""
+        from .market.opening import coverage, movement_report
+
+        return {
+            "movement": movement_report(season if season else None),
+            "coverage": coverage(),
+            "clv": performance_report(season if season else None).get("clv"),
+        }
+
     @app.get("/api/performance")
     def performance(season: int | None = None) -> dict:
         report = performance_report(season if season else None)

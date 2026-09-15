@@ -283,6 +283,41 @@ Set `PREDICTION_MARKETS_ENABLED=0` to turn the panel off.
 
 ---
 
+## The Edge tab: does the line move toward us?
+
+Everything measured so far compares our number to the **closing** line, and the
+answer is that we do not beat it. But the closing line is the end of a week-long
+process — lines open on Sunday night and are softest before the market has
+chewed on them.
+
+That makes a sharper question available, and the Edge tab is built around it:
+**does our number predict which way the line moves?** If the model holds
+information the opening market lacks, the line should drift toward us more often
+than away.
+
+It is a better test than an ATS record for two reasons. It needs no opinion
+about the final score — only how the market revised. And line movement is far
+less noisy than game outcomes, so it reaches significance on a fraction of the
+sample. A 50% agreement rate is the baseline: the line was always going to move
+one way or the other.
+
+The tab also breaks results down by how far ahead of kickoff the view was
+formed, because if an edge exists anywhere it should be largest early, before
+the market has done its work.
+
+**This cannot be backfilled.** Nobody publishes a history of intraday NFL line
+movement, so it accumulates only while the app is running before kickoff — which
+is the practical argument for leaving it on rather than starting it on Sunday
+morning. The tab shows exactly how much it has witnessed so you can see whether
+a number is a verdict or a small slice.
+
+To make sure openers are actually captured, odds polling drops to its floor
+whenever scheduled games have no line yet, overriding the budget-stretched
+interval. Opening numbers exist once, and a stretched interval can miss them
+entirely.
+
+---
+
 ## Teasers: a real edge, mostly eaten by the price
 
 `nflpicker teasers` backtests 6-point teasers through the key numbers over every
@@ -404,7 +439,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 170 tests, fully offline
+make test     # 181 tests, fully offline
 make lint
 ```
 
@@ -437,7 +472,7 @@ nflpicker/
   ratings/     elo, efficiency, power
   ml/          features (leak-free), train (walk-forward), predict
   sim/         season monte carlo + playoff bracket
-  market/      consensus, de-vigging, line movement, prediction markets
+  market/      consensus, de-vigging, line movement, openers, prediction markets
   picks/       edges, pickem, survivor
   news/        impact classification
   backtest/    grading, CLV, calibration, teasers

@@ -108,3 +108,18 @@ def test_every_prediction_market_adapter_is_registered():
     assert is_sportsbook("draftkings")
     assert is_sportsbook("FanDuel")
     assert not is_sportsbook("")
+
+
+def test_a_snapshot_never_includes_a_later_quote():
+    """A consensus describes the market as of its own timestamp. Folding in a
+    later quote would make a replayed opening line show the closing number."""
+    quotes = [
+        {"book": "dk", "market": "spread", "captured_at": "2025-09-01T00:00:00+00:00",
+         "home_point": -2.5, "away_point": 2.5, "home_price": -110, "away_price": -110},
+        {"book": "dk", "market": "spread", "captured_at": "2025-09-05T00:00:00+00:00",
+         "home_point": -7.0, "away_point": 7.0, "home_price": -110, "away_price": -110},
+    ]
+    opening = build_consensus("g1", quotes, "2025-09-01T12:00:00+00:00")
+    assert opening.spread_home == -2.5      # not the later -7.0
+    closing = build_consensus("g1", quotes, "2025-09-06T00:00:00+00:00")
+    assert closing.spread_home == -7.0

@@ -226,9 +226,16 @@ def _generate_quotes(games: list[dict], rng: random.Random, through_week: int) -
         market_bias = rng.gauss(0.0, 2.1)
         total_bias = rng.gauss(0.0, 2.4)
         kickoff = dt.datetime.fromisoformat(game["kickoff"])
+        # History ends at kickoff or now, whichever comes first, and runs
+        # backwards from there. Anchoring purely on kickoff would date an
+        # upcoming game's "history" in the future, where it sorts after the
+        # live poll and makes the opening line look identical to the close.
+        from ..util import now as _now
+
+        latest = min(kickoff, _now())
         for step in range(snapshots):
             ago = dt.timedelta(hours=(snapshots - step) * 18)
-            captured = (kickoff - ago).replace(microsecond=0)
+            captured = (latest - ago).replace(microsecond=0)
             decay = (step + 1) / snapshots
             margin = game["_true_margin"] + market_bias * (1 - 0.6 * decay)
             total = game["_true_total"] + total_bias * (1 - 0.6 * decay)
