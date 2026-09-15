@@ -852,31 +852,44 @@ function comparisonBlock(con, data) {
             <td class="num muted">${r.best}–${r.worst}</td>
             <td class="num">${gapChip(gap)}</td>
           </tr>`;
-        }).join("")}</tbody></table></div>
-      <p class="note">Mean gap ${con.mean_abs_gap} places. Highlighted rows are
-        the ones worth arguing about: eight or more places apart on a team the
-        sources themselves agree about (a range of eight or less). A team they
-        cannot place is not evidence either way.</p>`
+        }).join("")}</tbody></table></div>`
       : ""}
-    <div class="import-box">
-      <h3>Add a list</h3>
-      <div class="controls">
-        <select id="rank-source">${(con?.available_sources || [])
-          .map((s) => `<option value="${esc(s.key)}">${esc(s.name)}</option>`).join("")}</select>
-        <select id="rank-week">${[1, 2, 3, 4, 5].map((w) =>
-          `<option value="${w}">Week ${w}</option>`).join("")}</select>
-        <button class="btn primary" id="rank-save">Import</button>
-        <span id="rank-msg" class="muted"></span>
+  </div>`;
+
+  /* Below both, because it describes both. Inside the right-hand panel it made
+     that column taller than its twin and read as though the highlighting were
+     a property of the consensus table alone. */
+  const footnote = hasData ? `<p class="note rank-note">Mean gap
+    ${con.mean_abs_gap} places. Highlighted rows in either table are the ones
+    worth arguing about: eight or more places apart on a team the sources
+    themselves agree about (a range of eight or less). A team they cannot place
+    is not evidence either way.</p>` : "";
+
+  const importer = `<div class="panel" data-nofold>
+    <header><h2>Add a published ranking</h2>
+      <span class="hint">${hasData
+        ? `${con.n_lists} list${con.n_lists === 1 ? "" : "s"} loaded · ${sources}`
+        : "nothing loaded yet"}</span></header>
+    <div class="import-grid">
+      <textarea id="rank-text" rows="5" placeholder="Paste a published top 32 — &#10;1. Seattle Seahawks&#10;2. Philadelphia Eagles&#10;3. Detroit Lions&#10;…"></textarea>
+      <div class="import-side">
+        <div class="controls">
+          <select id="rank-source">${(con?.available_sources || [])
+            .map((s) => `<option value="${esc(s.key)}">${esc(s.name)}</option>`).join("")}</select>
+          <select id="rank-week">${[1, 2, 3, 4, 5].map((w) =>
+            `<option value="${w}">Week ${w}</option>`).join("")}</select>
+          <button class="btn primary" id="rank-save">Import</button>
+        </div>
+        <div id="rank-msg" class="muted import-msg"></div>
+        <p class="note">Copy the list straight off the page; numbering, full team
+          names and trailing commentary are all fine. It is stored only if it
+          parses to a complete 1&ndash;32 — a half-read list would quietly drag
+          the average toward whichever teams happened to come through.</p>
       </div>
-      <textarea id="rank-text" rows="4" placeholder="Paste a published top 32 — &#10;1. Seattle Seahawks&#10;2. Philadelphia Eagles&#10;…"></textarea>
-      <p class="note">Copy the list straight off the page; numbering, full team
-        names and trailing commentary are all fine. It is stored only if it
-        parses to a complete 1&ndash;32 — a half-read list would quietly drag
-        the average toward whichever teams happened to come through.</p>
     </div>
   </div>`;
 
-  return `<div class="grid-2 rank-split" data-nofold>${left}${right}</div>`;
+  return `${importer}<div class="grid-2 rank-split" data-nofold>${left}${right}</div>${footnote}`;
 }
 
 async function renderTeams() {

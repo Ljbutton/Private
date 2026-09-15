@@ -343,8 +343,11 @@ that gap is the one thing a table sorted by record can never show.
 
 #### Ours against everybody else's
 
-The **Teams** page opens with two full rankings side by side: ours on the left,
-the average of published top-32s on the right, with an importer beneath it.
+The **Teams** page opens with the importer across the top, then two full
+rankings side by side: ours on the left, the average of published top-32s on the
+right. Both list all thirty-two teams without a scroll box, and both end level —
+a comparison you have to scroll one side of, then scroll the other side of to
+find the same team again, is not one.
 
 Both carry the same signed gap, so a team can be followed across. **+4** on the
 left means the published lists put that team four places lower than we do; the

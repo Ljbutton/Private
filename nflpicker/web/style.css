@@ -968,15 +968,39 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .drift.down { color: var(--critical); }
 
 /* ------------------------------------------- ours against everyone else's */
-.rank-split .table-scroll.tall { max-height: 520px; }
+/* All thirty-two on the page. A ranking read through a 520px window meant
+   scrolling one panel to find a team and then scrolling the other to find it
+   again, which is the one thing a side-by-side comparison exists to avoid.
+   Both tables are the same length, so they settle level with each other. */
+.rank-split .table-scroll.tall { max-height: none; overflow-y: visible; mask-image: none; }
+.rank-split > .panel { display: flex; flex-direction: column; }
+/* Both columns are the same table of the same thirty-two teams, so they should
+   end level rather than leaving a ragged edge. */
+.grid-2.rank-split { align-items: stretch; }
+.rank-note {
+  margin-top: 14px; max-width: none;
+}
 /* A disagreement worth arguing about: a wide gap on a team the sources
    themselves agree about. */
 .slate tr.flag td { background: color-mix(in srgb, var(--warning) 11%, transparent); }
-.import-box { margin-top: 14px; border-top: 1px solid var(--grid); padding-top: 12px; }
-.import-box h3 { font-size: 12px; margin-bottom: 7px; }
-.import-box textarea {
-  width: 100%; margin-top: 8px; font-family: var(--mono); font-size: 12px;
-  line-height: 1.5; resize: vertical; min-height: 78px;
+/* The importer runs across the top rather than living inside the right-hand
+   column, where it made that panel taller than its twin for no reason. */
+.import-grid {
+  display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 16px; align-items: stretch;
+}
+/* Stretched to its neighbour rather than left short, which put a block of
+   dead space under the one control the panel exists for. */
+.import-grid textarea {
+  width: 100%; height: 100%; font-family: var(--mono); font-size: 12px;
+  line-height: 1.5; resize: vertical; min-height: 116px;
+}
+.import-side { display: grid; gap: 9px; }
+.import-side .controls { flex-wrap: wrap; }
+.import-msg { font-size: 12px; min-height: 1.2em; }
+.import-side .note { margin: 0; }
+@media (max-width: 900px) {
+  .import-grid { grid-template-columns: 1fr; }
 }
 
 /* The signed gap between our ranking and the published consensus. Shown on
