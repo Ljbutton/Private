@@ -319,16 +319,20 @@ Windows and macOS runners and attaches the result to the run. Actions tab →
 *Build desktop app* → download the artifact for your platform.
 
 - **Windows** — `NFLPicker-windows-full` unzips to one `.exe`.
-- **macOS** — `NFLPicker-macos-full` contains a `.tar.gz`, not a loose app. A
-  GitHub artifact is a zip and a zip does not carry the executable bit, so an
-  unzipped `.app` would not launch at all. Extract it with `tar`, which
-  preserves the mode:
+- **macOS** — two layers, because a GitHub artifact is always a zip and a zip
+  does not carry the executable bit: an `.app` unzipped from one would not
+  launch at all. So the artifact is a zip *containing* a `.tar.gz`, and the tar
+  is what preserves the mode. Unwrap both:
 
   ```bash
+  cd ~/Downloads                          # where the browser put it
+  unzip -o NFLPicker-macos-full.zip       # skip if Safari already expanded it
   tar -xzf NFLPicker-macos.tar.gz
   xattr -dr com.apple.quarantine NFLPicker.app   # it was downloaded, so Gatekeeper
   open NFLPicker.app
   ```
+
+  Lost track of where it landed? `find ~ -maxdepth 3 -name "NFLPicker-macos*"`.
 
   Without the `xattr` line macOS says the app "is damaged and can't be opened".
   It is not damaged — that is what Gatekeeper says about anything unsigned that
