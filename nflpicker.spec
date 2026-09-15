@@ -1,4 +1,4 @@
-# PyInstaller spec for a single-file NFL Picker desktop build.
+# PyInstaller spec for the NFL Picker desktop build.
 #
 # Two profiles, because the dependency footprint is dominated by two packages:
 #   full  — everything, including downloading play-by-play and retraining
@@ -12,6 +12,8 @@ profile = "full"
 if "--profile" in sys.argv:
     profile = sys.argv[sys.argv.index("--profile") + 1]
 
+MACOS = sys.platform == "darwin"
+
 hidden = [
     "uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on",
@@ -23,8 +25,15 @@ hidden = [
     # meant to avoid.
     "webview",
 ]
-if sys.platform == "darwin":
-    hidden += ["webview.platforms.cocoa"]
+if MACOS:
+    # The Cocoa backend reaches the system frameworks through pyobjc, which
+    # binds them lazily by name at runtime. None of these appear in any import
+    # statement PyInstaller can follow, so each has to be asked for.
+    hidden += [
+        "webview.platforms.cocoa",
+        "objc", "Foundation", "AppKit", "WebKit", "Quartz",
+        "Security", "UniformTypeIdentifiers",
+    ]
 elif sys.platform == "win32":
     hidden += ["webview.platforms.edgechromium", "webview.platforms.winforms"]
 
@@ -45,8 +54,8 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
+
+common = dict(
     name="NFLPicker",
     debug=False,
     strip=False,
@@ -58,13 +67,20 @@ exe = EXE(
     disable_windowed_traceback=False,
 )
 
-# macOS wants an .app bundle, not a bare Unix executable. Double-clicking a
-# bare binary in Finder opens it in Terminal, which is not an application --
-# and without a bundle there is nowhere to say the app has no Dock tile to
-# share, no document types, and a window of its own.
-if sys.platform == "darwin":
+if MACOS:
+    # One directory, not one file. A .app is already a folder the user drags
+    # around as a single icon, so onefile buys nothing there and costs a great
+    # deal: a onefile build unpacks its entire payload to a temporary directory
+    # on *every* launch, and this payload is scipy, scikit-learn, pandas and
+    # pyarrow. That is a quarter of a gigabyte of extraction between the
+    # double-click and the window, every time, which reads as a hung app.
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="NFLPicker")
+
+    # macOS wants an .app bundle, not a bare Unix executable. Double-clicking a
+    # bare binary in Finder opens it in Terminal, which is not an application.
     app = BUNDLE(
-        exe,
+        coll,
         name="NFLPicker.app",
         icon=None,
         bundle_identifier="com.nflpicker.desktop",
@@ -73,9 +89,15 @@ if sys.platform == "darwin":
             "CFBundleDisplayName": "NFL Picker",
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "0.1.0",
-            # The dashboard renders in WKWebView against a loopback server, so
-            # the app never reaches the network itself and needs no exception.
+            # Without this the window renders at 1x and every line of text on
+            # a Retina display is soft.
             "NSHighResolutionCapable": True,
+            # It is a window with a menu bar, not a background agent.
+            "LSBackgroundOnly": False,
             "LSMinimumSystemVersion": "11.0",
         },
     )
+else:
+    # Windows gets a single .exe, which is the whole point there: one file to
+    # download and double-click, with no folder to keep it next to.
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], **common)

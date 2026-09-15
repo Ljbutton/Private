@@ -333,15 +333,20 @@ Windows and macOS runners and attaches the result to the run. Actions tab →
 *Build desktop app* → download the artifact for your platform.
 
 - **Windows** — `NFLPicker-windows-full` unzips to one `.exe`.
-- **macOS** — two layers, because a GitHub artifact is always a zip and a zip
-  does not carry the executable bit: an `.app` unzipped from one would not
-  launch at all. So the artifact is a zip *containing* a `.tar.gz`, and the tar
-  is what preserves the mode. Unwrap both:
+- **macOS** — two artifacts, one per architecture. Take
+  `NFLPicker-macos-arm-full` on any Mac with Apple silicon (M1 and later) and
+  `NFLPicker-macos-intel-full` on an Intel Mac. `uname -m` says which you have:
+  `arm64` or `x86_64`. The wrong one does not warn, it simply refuses to open.
+
+  There are two layers to unwrap, because a GitHub artifact is always a zip and
+  a zip carries neither the executable bit nor a code signature — an `.app`
+  unzipped straight from one would not launch. So the artifact is a zip
+  *containing* a `.tar.gz`, and the tar is what preserves both:
 
   ```bash
-  cd ~/Downloads                          # where the browser put it
-  unzip -o NFLPicker-macos-full.zip       # skip if Safari already expanded it
-  tar -xzf NFLPicker-macos.tar.gz
+  cd ~/Downloads                            # where the browser put it
+  unzip -o NFLPicker-macos-arm-full.zip     # skip if Safari already expanded it
+  tar -xzf NFLPicker-macos-arm.tar.gz
   xattr -dr com.apple.quarantine NFLPicker.app   # it was downloaded, so Gatekeeper
   open NFLPicker.app
   ```
@@ -354,8 +359,16 @@ Windows and macOS runners and attaches the result to the run. Actions tab →
   account; building it yourself avoids the question entirely, because a locally
   built app is never quarantined.
 
-The runner is Apple Silicon, so the macOS build is arm64. An Intel Mac needs a
-`macos-13` build instead.
+  The bundle *is* ad-hoc signed, which is a different thing and not optional:
+  an arm64 binary with no signature at all will not execute on Apple silicon
+  under any circumstances. That signature is what makes the code loadable; it
+  does nothing for Gatekeeper, which is what the `xattr` line is for.
+
+  The macOS app is a folder inside the `.app`, not a single packed file like
+  the Windows build. That is deliberate — a `.app` is already one icon to drag,
+  and a single-file build would re-extract a quarter of a gigabyte of scipy and
+  pyarrow to a temporary directory on every single launch, which reads as a
+  hung app rather than a slow one.
 
 The build runs the test suite first and then boots the frozen binary with
 `--selftest`, because PyInstaller exiting 0 only means the bundle was written.

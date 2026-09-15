@@ -1,9 +1,9 @@
-# Builds the single-file desktop app.
+# Builds the desktop app.
 #
 # PyInstaller cannot cross-compile, so each target is built on its own runner.
 # Run it from the Actions tab ("Run workflow"), then download the artifact --
-# that is the whole point of this file: getting a Windows .exe without needing
-# a Python toolchain on the machine that will run it.
+# that is the whole point of this file: getting a binary without needing a
+# Python toolchain on the machine that will run it.
 name: Build desktop app
 
 on:
@@ -51,14 +51,23 @@ jobs:
         # matrix context is not available to one -- that combination is not a
         # failing build, it is a workflow that never starts and reports no jobs
         # at all. Inputs are null outside a manual run, so an automatic run
-        # falls through to Windows, which is where this is being tested; macOS
-        # is one dropdown away rather than a second runner on every commit.
+        # falls through to Windows; macOS is one dropdown away rather than two
+        # more runners on every commit.
+        #
+        # "macos" means both architectures, deliberately. A Mac binary built
+        # for the wrong one does not warn, it simply refuses to open, and
+        # asking which Mac someone has is a worse answer than building both.
         target: >-
           ${{ fromJSON(
-            inputs.targets == 'macos' && '["macos"]'
-            || inputs.targets == 'both' && '["windows","macos"]'
+            inputs.targets == 'macos' && '["macos-arm","macos-intel"]'
+            || inputs.targets == 'both' && '["windows","macos-arm","macos-intel"]'
             || '["windows"]') }}
-    runs-on: ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-latest' }}
+
+    # macos-14 is Apple Silicon; macos-13 is the last Intel image.
+    runs-on: >-
+      ${{ matrix.target == 'windows' && 'windows-latest'
+          || matrix.target == 'macos-arm' && 'macos-14'
+          || 'macos-13' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -74,6 +83,19 @@ jobs:
           pip install -e ".[dev]"
           pip install pywebview pyinstaller
 
+      # pywebview's macOS backend talks to the system frameworks through
+      # pyobjc, which it declares as a dependency but which nothing else in
+      # this project would notice the absence of until the window failed to
+      # open on someone's desk.
+      - name: Check the macOS webview backend is installed
+        if: startsWith(matrix.target, 'macos')
+        run: |
+          python - <<'PY'
+          import webview.platforms.cocoa   # noqa: F401
+          import AppKit, Foundation, WebKit, objc   # noqa: F401
+          print("cocoa backend importable; pyobjc", objc.__version__)
+          PY
+
       # A build that ships a broken app is worse than no build, and the suite
       # is fully offline, so there is no reason not to run it first.
       - name: Test
@@ -82,9 +104,24 @@ jobs:
       - name: Build
         run: pyinstaller nflpicker.spec --noconfirm -- --profile ${{ inputs.profile || 'full' }}
 
+      # An unsigned arm64 binary will not execute at all on Apple Silicon --
+      # not "warns", not "asks", refuses. PyInstaller ad-hoc signs what it
+      # writes, but assembling the bundle afterwards invalidates that, so the
+      # .app is signed once more as a whole. Ad-hoc ("-") is not a developer
+      # identity and does nothing for Gatekeeper; it is what makes the code
+      # loadable.
+      - name: Ad-hoc sign the bundle
+        if: startsWith(matrix.target, 'macos')
+        run: |
+          set -e
+          codesign --force --deep --sign - dist/NFLPicker.app
+          codesign --verify --deep --strict --verbose=2 dist/NFLPicker.app
+
       # Confirms the frozen binary actually starts and serves, rather than
       # only that PyInstaller exited 0 -- the failure this catches is a missing
-      # hidden import, which is invisible until first run.
+      # hidden import, which is invisible until first run. On macOS it runs the
+      # binary *inside the bundle*, which is the one that ships; the loose copy
+      # beside it can work while the bundled one does not.
       - name: Smoke test
         shell: bash
         run: |
@@ -92,22 +129,25 @@ jobs:
           if [ "${{ matrix.target }}" = "windows" ]; then
             BIN="dist/NFLPicker.exe"
           else
-            BIN="dist/NFLPicker"
+            BIN="dist/NFLPicker.app/Contents/MacOS/NFLPicker"
           fi
-          test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist; exit 1; }
+          test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist | head -50; exit 1; }
           NFLPICKER_DEMO=1 "$BIN" --selftest
 
       # A GitHub artifact is a zip, and that zip does not carry the executable
       # bit. On Windows that is harmless; on macOS it means the .app unzips
       # without +x and simply will not launch, which looks like a broken build
-      # rather than a packaging detail. Tarring preserves the mode.
+      # rather than a packaging detail. Tarring preserves the mode -- and the
+      # code signature, which a zip round-trip through the artifact store can
+      # also break.
       - name: Package for macOS
-        if: matrix.target == 'macos'
+        if: startsWith(matrix.target, 'macos')
         run: |
           set -e
-          test -d dist/NFLPicker.app || { echo "no .app bundle"; ls -R dist; exit 1; }
-          tar -czf NFLPicker-macos.tar.gz -C dist NFLPicker.app
-          shasum -a 256 NFLPicker-macos.tar.gz
+          test -d dist/NFLPicker.app || { echo "no .app bundle"; ls -R dist | head -50; exit 1; }
+          tar -czf NFLPicker-${{ matrix.target }}.tar.gz -C dist NFLPicker.app
+          shasum -a 256 NFLPicker-${{ matrix.target }}.tar.gz
+          du -sh NFLPicker-${{ matrix.target }}.tar.gz
 
       - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
@@ -118,9 +158,9 @@ jobs:
           retention-days: 30
 
       - uses: actions/upload-artifact@v7
-        if: matrix.target == 'macos'
+        if: startsWith(matrix.target, 'macos')
         with:
-          name: NFLPicker-macos-${{ inputs.profile || 'full' }}
-          path: NFLPicker-macos.tar.gz
+          name: NFLPicker-${{ matrix.target }}-${{ inputs.profile || 'full' }}
+          path: NFLPicker-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 30
