@@ -54,6 +54,22 @@ function liveLabel(live) {
   return parts.join(" · ") || "Live";
 }
 
+/* The diagnostic gap: what the edge would be if we quoted the market-blind
+   model straight against the line, with no shrinking toward the market.
+
+   It is derived here rather than read from the payload because it was read
+   from `components`, where it has never existed -- so the subtitle rendered
+   "raw gap – before shrinking" and the dash read as punctuation rather than as
+   a missing number. Deriving it needs no new column: it is exactly the model
+   margin plus the posted home line, the same arithmetic the predictor does. */
+function rawSpreadEdge(game) {
+  const model = game.prediction?.margin_home;
+  const spread = game.market?.spread_home;
+  if (model === null || model === undefined) return null;
+  if (spread === null || spread === undefined) return null;
+  return Number(model) + Number(spread);
+}
+
 /* The one place the sign convention is turned into words. A home line of -3.5
    means the home team lays 3.5 points. */
 function spreadText(card) {
@@ -424,7 +440,7 @@ async function openGame(gameId) {
         <div class="sub">market-blind projection</div></div>
       <div class="tile"><div class="label">Actionable edge</div>
         <div class="value">${signed(g.prediction?.spread_edge)}</div>
-        <div class="sub">raw gap ${signed(g.components?.raw_spread_edge ?? null)} before shrinking</div></div>
+        <div class="sub">raw gap ${signed(rawSpreadEdge(g))} before shrinking</div></div>
       <div class="tile"><div class="label">Win probability</div>
         <div class="value">${pct(g.prediction?.home_win_prob)}</div>
         <div class="sub">${esc(g.home)} · market ${pct(g.market?.home_win_prob)}</div></div>
