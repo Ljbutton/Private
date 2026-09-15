@@ -19,7 +19,7 @@ from .ml.train import load_report
 from .pipeline import Pipeline
 from .scheduler import Scheduler
 from .teams import DIVISIONS, TEAMS, reference
-from .util import now_iso
+from .util import MARGIN_SD, margin_to_win_prob, now_iso
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -506,6 +506,18 @@ def game_cards(season: int, week: int) -> list[dict]:
             ids,
         )
     }
+    # The board shows the blind model as its own column, which needs a
+    # probability and not just a margin. Only the margin is stored -- the
+    # probability the row carries is built from the *blend* -- so it is derived
+    # here, once, from the same residual spread the predictor uses. Doing it in
+    # the browser would put a second copy of this arithmetic somewhere it could
+    # drift from the first.
+    blind_sd = float((load_report() or {}).get("residual_sd") or MARGIN_SD)
+    for row in predictions.values():
+        margin = row.get("margin_home")
+        row["blind_win_prob"] = (
+            None if margin is None else float(margin_to_win_prob(float(margin), sd=blind_sd)))
+
     graded = {r["game_id"]: r for r in db.query(
         f"SELECT * FROM graded WHERE game_id IN ({placeholders})", ids)}
     live = {r["game_id"]: r for r in db.query(

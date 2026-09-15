@@ -24,11 +24,17 @@ def _final(gid, week, home, away, home_score, away_score):
         (gid, week, home, away, home_score, away_score))
 
 
-def _model(gid, home_prob):
+def _model(gid, home_prob, blind_margin=None):
+    """One prediction row yields two pickers: the blind margin and the blended
+    probability. By default they agree, which is the ordinary case; pass
+    blind_margin to make them disagree."""
+    if blind_margin is None:
+        blind_margin = 0.0 if abs(home_prob - 0.5) < 1e-9 else (
+            3.0 if home_prob > 0.5 else -3.0)
     db.execute(
         "INSERT OR REPLACE INTO predictions(game_id, captured_at, model_version,"
-        " margin_home, total_points, home_win_prob) VALUES(?,'t','v',0,42,?)",
-        (gid, home_prob))
+        " margin_home, total_points, home_win_prob) VALUES(?,'t','v',?,42,?)",
+        (gid, blind_margin, home_prob))
 
 
 def _book(gid, home_prob):
@@ -290,3 +296,69 @@ def test_an_upcoming_game_never_borrows_the_book_s_pick(store):
 
     picks = scoreboard.picks_for(2026)
     assert scoreboard.MODEL not in picks.get("g9", {})
+
+
+# ------------------------------------------------- the blind model as a picker
+
+def test_the_blind_model_is_scored_separately_from_the_blend(store):
+    """The whole question the board exists to answer is whether blending with
+    the line adds anything, and it cannot be asked if one column is both."""
+    _final("g1", 1, "KC", "BUF", 30, 20)          # KC won
+    # Blind leans BUF; the blend, pulled toward a line that likes KC, says KC.
+    _model("g1", 0.7, blind_margin=-2.0)
+
+    picks = scoreboard.picks_for(2026)
+    assert picks["g1"][scoreboard.BLIND] == "BUF"
+    assert picks["g1"][scoreboard.MODEL] == "KC"
+
+    tallies = scoreboard.weekly(2026)[0].to_dict()["tallies"]
+    assert tallies["blind"]["wrong"] == 1
+    assert tallies["model"]["correct"] == 1
+
+
+def test_a_blind_margin_of_zero_is_not_a_pick(store):
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _model("g1", 0.7, blind_margin=0.0)
+    assert scoreboard.BLIND not in scoreboard.picks_for(2026)["g1"]
+
+
+def test_the_blind_model_never_borrows_the_book_s_pick(store):
+    """Only the blend inherits. Lending the blind model the book's pick would
+    make three columns identical and destroy the one comparison they are for."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _book("g1", 0.7)
+
+    picks = scoreboard.picks_for(2026)
+    assert picks["g1"][scoreboard.MODEL] == "KC"     # blend inherits
+    assert scoreboard.BLIND not in picks["g1"]       # blind does not
+
+
+# ------------------------------------------------------------------ coverage
+
+def test_a_source_with_no_picks_says_why_rather_than_showing_a_dash(store):
+    """A bare dash is indistinguishable from a broken fetch. The sportsbook
+    column is empty on an old week for a reason that can be stated."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _you("g1", 1, "KC")
+
+    cover = scoreboard.report(2026)["coverage"]
+    assert cover["you"] == {"picked": 1, "games": 1, "note": None}
+    assert cover["book"]["picked"] == 0
+    assert "cannot be backfilled" in cover["book"]["note"]
+    assert cover["market"]["note"]
+    assert cover["blind"]["note"]
+
+
+def test_coverage_is_silent_when_a_source_has_picks(store):
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _book("g1", 0.7)
+    cover = scoreboard.report(2026)["coverage"]
+    assert cover["book"] == {"picked": 1, "games": 1, "note": None}
+
+
+def test_coverage_says_nothing_at_all_before_any_game_is_final(store):
+    """Nothing is missing yet, so nothing should be explained."""
+    db.execute(
+        "INSERT OR REPLACE INTO games(game_id, season, week, home, away, status,"
+        " updated_at) VALUES('g9',2026,5,'KC','BUF','scheduled','t')")
+    assert all(v["note"] is None for v in scoreboard.report(2026)["coverage"].values())

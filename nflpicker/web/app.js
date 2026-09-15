@@ -278,6 +278,12 @@ async function renderScoreboard() {
     ? `<td class="num"><b>${pct(t.rate)}</b><span class="rec">${t.correct}-${t.wrong}</span></td>`
     : '<td class="num muted">–</td>');
 
+  /* A source with no record at all gets a reason rather than a dash. Empty
+     columns here are not a broken fetch: odds cannot be bought for a week that
+     has already been played, so any week that finished before this app was
+     running has none and never will. A dash says none of that. */
+  const cover = d.coverage || {};
+
   const totalRow = (key, label) => {
     const all = d.totals.all[key];
     const common = d.totals.common[key];
@@ -287,10 +293,13 @@ async function renderScoreboard() {
     // Saying how many keeps a record that is mostly borrowed from reading as
     // one the model earned.
     const borrowed = (d.totals.inherited || {})[key] || 0;
+    const note = (cover[key] || {}).note;
     return `<tr class="${lead ? "lead" : ""}">
       <td class="who">${esc(label)}${borrowed
         ? `<span class="rec" title="games from before the model existed, shown with the sportsbook's pick">${borrowed} inherited</span>`
-        : ""}</td>
+        : ""}
+        <div class="who-sub">${esc((d.descriptions || {})[key] || "")}</div>
+        ${note ? `<div class="who-note">${esc(note)}</div>` : ""}</td>
       ${cell(all)}${cell(common)}
     </tr>`;
   };
@@ -358,10 +367,16 @@ async function renderScoreboard() {
    wide: the left half identifies the team, the right half is the same three
    sources the rest of the app uses, one column each, read straight down.
 
-     ours   -- fair_margin and the win probability built from it, so the pick
-               and the spread can never disagree.
+     blind  -- margin_home: the model before it is ever shown the line. This
+               is the only column that is genuinely independent of the market.
+     blend  -- fair_margin and the win probability built from it, so the pick
+               and the spread can never disagree. What the app actually claims.
      book   -- the sportsbook consensus.
      market -- prediction markets, shown but never mixed into either.
+
+   Blind and blend sit next to each other deliberately: the gap between them
+   is the market's contribution, and with a fitted weight of 0.98 that gap is
+   most of the number. Seeing it is the point.
 
    The tick marks the side a source picked, which is what makes the card
    scannable: four ticks in a column is agreement, a split is a game worth
@@ -436,6 +451,8 @@ async function renderHome() {
     const p = g.prediction;
     const ownProb = p && p.home_win_prob !== null && p.home_win_prob !== undefined
       ? p.home_win_prob : null;
+    const blindHome = p && p.blind_win_prob !== null && p.blind_win_prob !== undefined
+      ? p.blind_win_prob : null;
     const bookHome = g.market?.home_win_prob ?? null;
 
     // A finished game the model never saw -- anything from before the app was
@@ -455,6 +472,8 @@ async function renderHome() {
     // card, so it is done once here rather than per cell.
     const ourLineHome = p && p.fair_margin !== null && p.fair_margin !== undefined
       ? -Number(p.fair_margin) : null;
+    const blindLineHome = p && p.margin_home !== null && p.margin_home !== undefined
+      ? -Number(p.margin_home) : null;
     const bookLineHome = g.market?.spread_home ?? null;
 
     const actualWinner = g.status === "final" && g.home_score !== null
@@ -514,6 +533,7 @@ async function renderHome() {
           esc(t.location || "")} ${side === "away" ? "" : "· home"}</span></span>
         <span class="tscore">${score === null || score === undefined ? "" : score}</span>
       </div>
+      ${cell("blind", blindHome, blindLineHome, side)}
       ${cell("ours", ourHome, ourLineHome, side)}
       ${cell("book", bookHome, bookLineHome, side)}
       ${cell("pmkt", mktHome, undefined, side)}`;
@@ -527,6 +547,7 @@ async function renderHome() {
            >${signed(moved)} ${moved > 0 ? "to us" : "against us"}</span>`;
 
     const ourTotal = p && p.fair_total ? num(p.fair_total, 1) : null;
+    const blindTotal = p && p.total_points ? num(p.total_points, 1) : null;
     const bookTotal = g.market?.total_points;
 
     return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
@@ -537,14 +558,16 @@ async function renderHome() {
       </div>
       <div class="gcard-grid">
         <div class="ghead you">You</div>
-        <div class="ghead ours"><span class="lg">Our model</span><span class="sm">Model</span></div>
-        <div class="ghead book"><span class="lg">Sportsbook</span><span class="sm">Book</span></div>
-        <div class="ghead pmkt"><span class="lg">Pred. mkt</span><span class="sm">Mkt</span></div>
+        <div class="ghead blind" title="Blind model — the projection before it is ever shown the line. The only column here independent of the market.">Blind</div>
+        <div class="ghead ours" title="Our blend — that same model blended with the line. This is what the app actually claims.">Blend</div>
+        <div class="ghead book" title="Sportsbook consensus, with the vig removed">Book</div>
+        <div class="ghead pmkt" title="Prediction markets — Kalshi and Polymarket contract prices">Market</div>
         ${teamRow("away")}
         ${teamRow("home")}
       </div>
       <div class="gcard-foot">
         <span class="flabel">Total points</span>
+        <span class="fval blind">${blindTotal === null ? "–" : blindTotal}</span>
         <span class="fval ours">${ourTotal === null ? "–" : ourTotal}</span>
         <span class="fval book">${num(bookTotal, 1)}</span>
         <span class="fval pmkt" title="Prediction markets quote who wins, not a total"></span>
@@ -554,8 +577,9 @@ async function renderHome() {
 
   root.innerHTML = `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
-      <span class="hint">A tick marks the side each source picked ·
-        click a card for detail</span></header>
+      <span class="hint">Blind = before the line · Blend = what we claim ·
+        Book = sportsbook · Market = Kalshi/Polymarket · a tick marks each
+        source's pick</span></header>
     <div class="gboard">${games.map(card).join("")}</div>
     ${anyInherited ? `<p class="note">* These games finished before the app was
       running, so the model has no pick of its own and the sportsbook's number is

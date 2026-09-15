@@ -291,6 +291,45 @@ history rather than 0.98 — but that is a dead inefficiency, not a live edge. O
 only**: a weight fitted across twenty years bakes a 2005-era inefficiency into
 today's recommendations and manufactures edges from it.
 
+#### The blind projection is compressed, and that is not a bug
+
+The blind column on the board never predicts a blowout. Measured out-of-sample
+over the same 5,981 walk-forward games:
+
+| | SD of the number | over 7 pts | over 10 pts | largest |
+|---|---|---|---|---|
+| Actual margin | 14.61 | 53.0% | 42.2% | 59 |
+| Closing line | 6.01 | 23.9% | 9.7% | 27 |
+| **Blind model** | **4.40** | 16.1% | 4.3% | **16.6** |
+
+It is smaller than the market's number on **69% of games**, and lands on the
+other side of the line on 16%. The compression is worst exactly where the
+market is most confident:
+
+| market's number | market says | blind says | actually was |
+|---|---|---|---|
+| 0–3 | 1.70 | 2.16 | 10.19 |
+| 3–7 | 4.21 | 3.27 | 10.78 |
+| 7–10 | 7.86 | 5.59 | 13.07 |
+| 10+ | 12.23 | **7.87** | 14.55 |
+
+This is what a squared-error model does when the signal is weak relative to the
+noise: shrinking toward the mean is the *correct* response to uncertainty under
+that loss, and the regression of outcomes on the blind number has a slope of
+1.21, so it is under-scaled by about a fifth.
+
+Rescaling it is tempting and does not help. Multiplying every blind projection
+by that fitted 1.21 moves MAE from 10.584 to **10.611** — slightly worse, because
+scaling up a weakly-correlated signal adds more variance than it removes bias.
+The number is honest as it stands: it is small because the model does not know
+much, and `corr(blind, actual)` is 0.364 against the line's 0.434.
+
+The consequence to watch is that an under-dispersed projection will
+*systematically* appear to like the underdog on every big favourite — on 10+
+point lines it is four points short by construction. That is a fake signal, and
+it is precisely why the app bets the blended number rather than the raw gap, and
+why `spread_edge` and `raw_spread_edge` are kept apart.
+
 So the honest summary is that a public model built from box scores, EPA and
 quarterback data lands within about a third of a point of the NFL closing line
 and carries no information the line does not already have. Closing that last gap
@@ -685,14 +724,28 @@ one column each, so a game is read by looking *down* a column rather than across
 a row:
 
 ```
- FINAL · 9/13                                        View game info ›
-                              OUR MODEL   SPORTSBOOK   PRED. MKT
-  ○  Bears      Chicago  37       +0.3         +0.3
-                                   49%          49%         46%
-  ✕  Vikings   Minnesota 33       −0.3         −0.3
-                                  51% ✓        51% ✓       54% ✓
- TOTAL                            42.5         42.5           –
+ FINAL · 9/17                                     View game info ›
+                           BLIND    BLEND    BOOK    MARKET
+  ✕  Packers  Green Bay 17  −6.4     +1.3    +1.5
+                            68% ✓     46%     46%       –
+  ○  Vikings  Minnesota 24  +6.4     −1.3    −1.5
+                            32%      54% ✓   54% ✓      –
+ TOTAL POINTS               44.3     44.7    44.8
 ```
+
+Four sources, and the first two are the same model:
+
+- **Blind** — the projection before it is ever shown the line. The only column
+  on the board that is independent of the market.
+- **Blend** — that same model blended with the line. What the app actually
+  claims, and what every probability and edge elsewhere is built from.
+- **Book** — the sportsbook consensus, de-vigged.
+- **Market** — Kalshi and Polymarket contract prices.
+
+Blind sits next to blend deliberately. The fitted market weight is 0.98, so
+the distance between those two columns is almost entirely the market's
+contribution — and in the row above, it is the difference between picking
+Green Bay and picking Minnesota. Seeing that gap is the point of showing both.
 
 The prediction-market column carries a win probability only. Kalshi and
 Polymarket quote who wins, not a line or a total, so that column has no spread
@@ -765,7 +818,11 @@ The point of the column is to be able to disagree: with the model, with the
 book, or with both.
 
 The **Scoreboard** then scores everyone on straight-up winners, which is the one
-question all four can be asked without a spread or a price to argue about. Two
+question all five can be asked without a spread or a price to argue about. The
+blind model and the blend are scored as separate pickers from the same
+prediction row — the blind margin's sign against the blended probability —
+because whether the blend is adding anything or the market is simply carrying
+it cannot be asked while one column is both. Two
 columns, and the second is the honest one:
 
 - **All their picks** — each picker's record over the games it had a view on.
@@ -774,7 +831,23 @@ columns, and the second is the honest one:
   quiet on the rest.
 
 A source with no opinion is not scored as wrong, a tie is a push for everyone,
-and an exact 50% is not a pick.
+an exact 50% is not a pick, and neither is a blind margin of exactly zero.
+
+**A source with no record at all says why, instead of showing a dash.** This
+matters more than it sounds: the commonest case is not a bug but a limit. A
+sportsbook line is a snapshot of what was on offer at a moment, and nobody
+sells the past — so a week that finished before this app was running, or
+before an Odds API key was configured, has no odds and never will, and
+backfilling a season brings in schedules and scores only. The same goes for
+prediction-market prices: a contract price exists while the contract is open.
+An empty sportsbook column on an old week is therefore permanent and expected,
+and a bare dash was indistinguishable from a failed fetch.
+
+That also explains an empty *blend* column on those weeks. The blend inherits
+the book's pick when it has none of its own, so where there is no book there is
+nothing to inherit. The blind model never inherits at all — lending it the
+book's pick would make three columns identical and destroy the only comparison
+they exist for.
 
 **By team** asks a different question: of the games each team played, how often
 did each picker call them right? A team everybody keeps missing is either

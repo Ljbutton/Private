@@ -19,10 +19,11 @@ from . import db
 
 # Picker keys, fixed so the UI and the totals cannot drift apart.
 YOU = "you"
-MODEL = "model"
+BLIND = "blind"          # the model before it is shown the line
+MODEL = "model"          # that same model blended with the line
 BOOK = "book"
 MARKET = "market"
-PICKERS = (YOU, MODEL, BOOK, MARKET)
+PICKERS = (YOU, BLIND, MODEL, BOOK, MARKET)
 
 # Not a picker: a marker stored alongside them recording which picks were not
 # that picker's own. See picks_for().
@@ -30,9 +31,19 @@ INHERITED = "_inherited"
 
 LABELS = {
     YOU: "You",
-    MODEL: "Our model",
+    BLIND: "Blind model",
+    MODEL: "Our blend",
     BOOK: "Sportsbook",
     MARKET: "Prediction markets",
+}
+
+# What each source is, in one line, for the places that have room to say it.
+DESCRIPTIONS = {
+    YOU: "Your own picks, recorded on the board.",
+    BLIND: "The model's own view, fitted without ever seeing the line.",
+    MODEL: "That same model blended with the market — what the app actually claims.",
+    BOOK: "The sportsbook consensus, de-vigged.",
+    MARKET: "Kalshi and Polymarket contract prices.",
 }
 
 
@@ -121,6 +132,24 @@ def picks_for(season: int, week: int | None = None) -> dict[str, dict[str, str]]
     ids = tuple(games)
 
     # Latest prediction and latest consensus per game.
+    #
+    # Two picks come out of one prediction row. `margin_home` is the model
+    # before it is shown the line and `home_win_prob` is built from the blend
+    # afterwards, so scoring them separately is the only way to see whether the
+    # blend is adding anything or whether the market is carrying it.
+    for row in db.query(
+        f"SELECT p.game_id, p.margin_home FROM predictions p JOIN "
+        f"(SELECT game_id, MAX(captured_at) m FROM predictions "
+        f" WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
+        f"ON x.game_id = p.game_id AND x.m = p.captured_at", ids,
+    ):
+        margin = row["margin_home"]
+        if margin is None or abs(float(margin)) < 1e-9:
+            continue
+        game = games[row["game_id"]]
+        out.setdefault(row["game_id"], {})[BLIND] = (
+            game["home"] if float(margin) > 0 else game["away"])
+
     for row in db.query(
         f"SELECT p.game_id, p.home_win_prob FROM predictions p JOIN "
         f"(SELECT game_id, MAX(captured_at) m FROM predictions "
@@ -305,13 +334,58 @@ def by_team(season: int) -> list[dict]:
     return out
 
 
+# Why a source has no record at all. A bare dash is indistinguishable from a
+# broken fetch, and every one of these has a different answer -- one is a
+# missing key, one is a limit of what can ever be bought, one is just that you
+# have not picked anything yet.
+def coverage(season: int) -> dict[str, dict]:
+    """For each source, how many of the season's finished games it had a view
+    on, and — when that is none — why not."""
+    finals = db.query(
+        "SELECT game_id FROM games WHERE season = ? AND status = 'final'", (season,))
+    total = len(finals)
+    picks = picks_for(season)
+    counts = dict.fromkeys(PICKERS, 0)
+    for game_id in (g["game_id"] for g in finals):
+        for picker in PICKERS:
+            if picks.get(game_id, {}).get(picker):
+                counts[picker] += 1
+
+    reasons = {
+        YOU: "You have not recorded a pick on a finished game yet — click the "
+             "circle beside a team on the board.",
+        BLIND: "No stored projection covers these games. The model only writes "
+               "a prediction for games it saw before kickoff.",
+        MODEL: "No stored projection covers these games, and no sportsbook "
+               "number to stand in for one.",
+        BOOK: "No sportsbook odds are stored for these games. Odds are a "
+              "snapshot of what was on offer at a moment and cannot be "
+              "backfilled — a week that finished before this app was running "
+              "(or before an Odds API key was configured) has none and never "
+              "will. Backfilling a season brings in schedules and scores only.",
+        MARKET: "No prediction-market prices are stored for these games. Same "
+                "limit as the sportsbook odds: a contract price exists while "
+                "the contract is open, and nobody sells the past.",
+    }
+    return {
+        picker: {
+            "picked": counts[picker],
+            "games": total,
+            "note": reasons[picker] if total and not counts[picker] else None,
+        }
+        for picker in PICKERS
+    }
+
+
 def report(season: int) -> dict:
     rows = weekly(season)
     return {
         "season": season,
         "labels": LABELS,
+        "descriptions": DESCRIPTIONS,
         "pickers": list(PICKERS),
         "weeks": [r.to_dict() for r in rows],
         "totals": season_totals(rows),
         "teams": by_team(season),
+        "coverage": coverage(season),
     }
