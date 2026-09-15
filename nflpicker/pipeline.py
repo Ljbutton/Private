@@ -698,13 +698,38 @@ class Pipeline:
         start = time.monotonic()
         try:
             if self.demo:
-                from .sources.demo import generate_team_efficiency
+                from .sources.demo import (
+                    generate_game_team_stats,
+                    generate_team_efficiency,
+                )
 
                 season = self.season()
                 rows = generate_team_efficiency(season)
                 db.set_meta("team_epa", {"season": season, "captured_at": now_iso(),
                                          "rows": rows})
-                result.record("stats", True, f"demo EPA for {len(rows)} teams",
+
+                # Per-game detail too, so the demo exercises the market-blind
+                # feature path rather than leaving half the model untested.
+                stamp = now_iso()
+                detail = []
+                for past in range(season - DEMO_HISTORY_SEASONS, season + 1):
+                    games = db.query(
+                        "SELECT * FROM games WHERE season = ? AND status = 'final'",
+                        (past,),
+                    )
+                    detail.extend(generate_game_team_stats(games, past))
+                db.executemany(
+                    "INSERT OR REPLACE INTO team_game_stats"
+                    "(game_id, team, season, week, opponent, payload, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    [
+                        [r["game_id"], r["team"], r["season"], r["week"],
+                         r["opponent"], json.dumps(r), stamp]
+                        for r in detail
+                    ],
+                )
+                result.record("stats", True,
+                              f"demo EPA for {len(rows)} teams, {len(detail)} game-team rows",
                               count=len(rows))
                 return
             from .sources.nflverse import NflverseSource
@@ -754,6 +779,41 @@ class Pipeline:
             rows,
         )
         return len(rows)
+
+    def team_situational(self, season: int) -> dict[str, dict]:
+        """Season-to-date situational rates per team, for display.
+
+        Averaged over the season's games rather than exponentially weighted:
+        this is a season summary a reader is comparing across teams, not the
+        decayed form the model runs on.
+        """
+        rows = db.query(
+            "SELECT team, payload FROM team_game_stats WHERE season = ?", (season,)
+        )
+        buckets: dict[str, dict[str, list[float]]] = {}
+        keys = (
+            "third_down_rate", "def_third_down_rate", "red_zone_td_rate",
+            "explosive_rate", "def_explosive_rate", "sack_rate",
+            "sack_rate_forced", "penalty_yards", "turnover_margin", "st_epa",
+        )
+        for row in rows:
+            try:
+                stats = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            team = buckets.setdefault(row["team"], {k: [] for k in keys})
+            for key in keys:
+                value = stats.get(key)
+                if value is not None:
+                    team[key].append(float(value))
+
+        return {
+            team: {
+                key: (round(sum(vals) / len(vals), 4) if vals else None)
+                for key, vals in stats.items()
+            } | {"games": max((len(v) for v in stats.values()), default=0)}
+            for team, stats in buckets.items()
+        }
 
     def load_team_game_stats(self, season: int) -> dict[str, dict]:
         """game_id -> {team: stats}, for the feature builder."""

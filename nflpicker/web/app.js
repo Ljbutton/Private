@@ -362,6 +362,28 @@ async function renderTeams() {
     <td>${pct(t.sb_prob, 1)}</td>
   </tr>`).join("");
 
+  // Only render the situational block when play-by-play has actually been
+  // loaded; a table of dashes is worse than no table.
+  const hasSituational = data.teams.some((t) => (t.situational || {}).games);
+  const sitRows = !hasSituational ? "" : data.teams
+    .filter((t) => (t.situational || {}).games)
+    .sort((a, b) => (b.situational.third_down_rate || 0) - (a.situational.third_down_rate || 0))
+    .map((t) => {
+      const s2 = t.situational;
+      return `<tr>
+        <td class="team">${esc(t.team)} <span class="muted">${esc(t.name)}</span></td>
+        <td>${pct(s2.third_down_rate, 1)}</td>
+        <td>${pct(s2.def_third_down_rate, 1)}</td>
+        <td>${pct(s2.red_zone_td_rate, 1)}</td>
+        <td>${pct(s2.explosive_rate, 1)}</td>
+        <td>${pct(s2.def_explosive_rate, 1)}</td>
+        <td>${pct(s2.sack_rate, 1)}</td>
+        <td>${pct(s2.sack_rate_forced, 1)}</td>
+        <td>${signed(s2.turnover_margin, 1)}</td>
+        <td>${num(s2.penalty_yards, 0)}</td>
+      </tr>`;
+    }).join("");
+
   root.innerHTML = `<div class="panel">
     <header><h2>Power ratings &amp; season projections</h2>
       <span class="hint">Power is points better than an average team on a neutral field.
@@ -376,6 +398,22 @@ async function renderTeams() {
       : "No season win-total lines are available from the odds feed right now, so those "
         + "columns are hidden. The simulated win distribution below is unaffected."}</p>
   </div>
+  ${hasSituational ? `<div class="panel">
+    <header><h2>How teams are actually playing</h2>
+      <span class="hint">season to date, from play-by-play</span></header>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Team</th><th>3rd down</th><th>3rd down allowed</th>
+        <th>Red zone TD</th><th>Explosive</th><th>Explosive allowed</th>
+        <th>Sacks taken</th><th>Sacks forced</th><th>Turnover margin</th>
+        <th>Penalty yds</th></tr></thead>
+      <tbody>${sitRows}</tbody></table></div>
+    <p class="note">Rates rather than counts throughout, because counts mostly measure how
+      many possessions a team happened to get. These carry only a small amount of extra
+      predictive power over the efficiency ratings above — measured at about 0.002 points of
+      margin error — so they are here to be read rather than to drive the model.
+      An "explosive" play gains 20 yards or more.</p>
+  </div>` : ""}
+
   <div class="panel" id="team-detail-panel">
     <header><h2>Simulated win distribution</h2>
       <span class="hint">Select a team above</span></header>

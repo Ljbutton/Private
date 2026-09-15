@@ -388,3 +388,59 @@ def generate_weather(games: list[dict]) -> dict[str, dict]:
             "precip_pct": round(rng.uniform(0, 70), 1),
         }
     return out
+
+
+def generate_game_team_stats(games: list[dict], season: int) -> list[dict]:
+    """Per-game, per-team detail for completed demo games.
+
+    Without this the demo exercises none of the market-blind feature path —
+    quarterback value, opponent-adjusted efficiency, special teams, turnover
+    luck and the situational rates are all empty — so a whole half of the model
+    goes untested by the demo and unseen in the interface.
+
+    Values are generated from the same hidden strengths the season was built
+    from, so a good team really does convert more third downs.
+    """
+    strengths = _true_strengths(season)
+    paces = _pace(season)
+    rng = random.Random(season * 1223)
+    rows: list[dict] = []
+
+    for game in games:
+        if game.get("status") != "final":
+            continue
+        for team, opponent, is_home in (
+            (game["home"], game["away"], 1),
+            (game["away"], game["home"], 0),
+        ):
+            edge = strengths[team] - strengths[opponent]
+            off = (paces[team] + strengths[team]) / 2.0
+            deff = (paces[team] - strengths[team]) / 2.0
+            rows.append({
+                "game_id": game["game_id"], "team": team, "opponent": opponent,
+                "season": season, "week": game["week"], "is_home": is_home,
+                "off_epa": round(off / 63.0 + rng.gauss(0, 0.05), 5),
+                "def_epa": round(deff / 63.0 + rng.gauss(0, 0.05), 5),
+                "off_pass_epa": round(off / 55.0 + rng.gauss(0, 0.07), 5),
+                "off_rush_epa": round(off / 90.0 + rng.gauss(0, 0.06), 5),
+                "st_epa": round(rng.gauss(0, 0.25), 5),
+                "qb_id": f"{team}-QB1",
+                "qb_name": f"{team[0]}.{TEAMS[team].name[:-1]}",
+                "qb_epa": round(strengths[team] / 30.0 + rng.gauss(0, 0.08), 5),
+                "qb_dropbacks": rng.randint(26, 44),
+                "turnover_margin": float(rng.randint(-3, 3)),
+                "turnover_luck": round(rng.gauss(0, 0.9), 3),
+                "third_down_rate": round(_clip(0.39 + edge / 60.0 + rng.gauss(0, 0.07)), 4),
+                "def_third_down_rate": round(_clip(0.39 - edge / 60.0 + rng.gauss(0, 0.07)), 4),
+                "red_zone_td_rate": round(_clip(0.22 + edge / 90.0 + rng.gauss(0, 0.05)), 4),
+                "explosive_rate": round(_clip(0.06 + edge / 300.0 + rng.gauss(0, 0.015)), 4),
+                "def_explosive_rate": round(_clip(0.06 - edge / 300.0 + rng.gauss(0, 0.015)), 4),
+                "sack_rate": round(_clip(0.065 - edge / 400.0 + rng.gauss(0, 0.02)), 4),
+                "sack_rate_forced": round(_clip(0.065 + edge / 400.0 + rng.gauss(0, 0.02)), 4),
+                "penalty_yards": float(max(0, round(rng.gauss(50, 18)))),
+            })
+    return rows
+
+
+def _clip(value: float, low: float = 0.005, high: float = 0.95) -> float:
+    return max(low, min(high, value))

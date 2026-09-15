@@ -139,10 +139,12 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                 "ON x.team = p.team AND x.m = p.captured_at", (season,)
             )
         }
+        situational = pipeline.team_situational(season)
         rows = []
         for abbr, team in TEAMS.items():
             rating = ratings.get(abbr, {})
             projection = projections.get(abbr, {})
+            detail = situational.get(abbr, {})
             distribution = {}
             with contextlib.suppress(Exception):
                 distribution = json.loads(projection.get("distribution") or "{}")
@@ -174,6 +176,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                     "win_total_line": projection.get("win_total_line"),
                     "over_prob": projection.get("over_prob"),
                     "distribution": distribution,
+                    "situational": detail,
                 }
             )
         rows.sort(key=lambda r: (r["power"] is None, -(r["power"] or 0)))

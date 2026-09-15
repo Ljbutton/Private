@@ -175,11 +175,95 @@ GAME_STAT_COLUMNS = [
     "passer_player_name", "success", "pass", "rush", "wp",
     "interception", "fumble", "fumble_lost",
     "punt_attempt", "field_goal_attempt", "kickoff_attempt", "extra_point_attempt",
+    # Situational detail: how drives actually end, and how often a play breaks.
+    "down", "ydstogo", "first_down", "yardline_100", "touchdown", "yards_gained",
+    "sack", "penalty_yards", "penalty_team", "series_success",
 ]
+
+# A gain of at least this many yards is an "explosive" play. Explosive-play rate
+# is more stable week to week than yards per game and is one of the better
+# public predictors of scoring.
+EXPLOSIVE_YARDS = 20
+
+# Inside the opponent's twenty.
+RED_ZONE_YARDLINE = 20
 
 # League-average fumble recovery rate. Recoveries are close to a coin flip, so a
 # team's recovery share is mostly luck and should not be projected forward.
 FUMBLE_RECOVERY_RATE = 0.5
+
+
+def _rate(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    """Safe rate: no attempts means no rate, not zero."""
+    out = numerator / denominator.replace(0, np.nan)
+    return out.astype(float)
+
+
+# Columns _situational always returns, so downstream code can rely on the shape
+# rather than on a game happening to contain a third down.
+SITUATIONAL_COLUMNS = (
+    "third_down_rate", "third_down_attempts", "red_zone_td_rate",
+    "explosive_rate", "sack_rate", "penalty_yards",
+)
+
+
+def _situational(df: pd.DataFrame, scrimmage: pd.DataFrame) -> pd.DataFrame:
+    """Third-down, red-zone, explosive, sack and penalty rates per game.
+
+    These are all *rates*, deliberately. Counts are dominated by how many
+    possessions a team happened to get; rates are what carries from week to
+    week.
+
+    Every column is always present, even when nothing qualifies. Emitting a
+    column only when the play type occurred made the whole extraction fail on a
+    slice with no third downs — which a partial or in-progress file can be.
+    """
+    key = ["game_id", "posteam"]
+    if scrimmage.empty:
+        return pd.DataFrame(
+            columns=list(SITUATIONAL_COLUMNS),
+            index=pd.MultiIndex.from_arrays([[], []], names=key),
+        )
+
+    out = pd.DataFrame(index=scrimmage.groupby(key).size().index)
+    for column in SITUATIONAL_COLUMNS:
+        out[column] = np.nan
+
+    # ---- third down: attempts and conversions
+    third = scrimmage[scrimmage["down"] == 3]
+    if not third.empty:
+        attempts = third.groupby(key).size()
+        converted = third.groupby(key)["first_down"].sum()
+        out["third_down_rate"] = _rate(converted, attempts)
+        out["third_down_attempts"] = attempts
+
+    # ---- red zone: trips that end in a touchdown
+    red = scrimmage[scrimmage["yardline_100"] <= RED_ZONE_YARDLINE]
+    if not red.empty:
+        red_plays = red.groupby(key).size()
+        red_tds = red.groupby(key)["touchdown"].sum()
+        out["red_zone_td_rate"] = _rate(red_tds, red_plays)
+
+    # ---- explosives: how often a play breaks for real yardage
+    explosive = (scrimmage["yards_gained"] >= EXPLOSIVE_YARDS).astype(float)
+    out["explosive_rate"] = scrimmage.assign(_x=explosive).groupby(key)["_x"].mean()
+
+    # ---- pressure: sacks taken per dropback
+    dropbacks = df[df["qb_dropback"] == 1]
+    if not dropbacks.empty:
+        taken = dropbacks.groupby(key)["sack"].sum()
+        attempts = dropbacks.groupby(key).size()
+        out["sack_rate"] = _rate(taken, attempts)
+
+    # ---- discipline: penalty yards charged to this team, per game
+    if "penalty_team" in df.columns and "penalty_yards" in df.columns:
+        penalties = df[df["penalty_team"].notna()]
+        if not penalties.empty:
+            charged = penalties.groupby(["game_id", "penalty_team"])["penalty_yards"].sum()
+            charged.index = charged.index.set_names(key)
+            out["penalty_yards"] = charged
+
+    return out
 
 
 def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -223,6 +307,10 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
         "plays": competitive.groupby(["game_id", "posteam"]).size(),
     })
 
+    # ---- situational: third downs, red zone, explosives, sacks, penalties
+    situational = _situational(df, scrimmage)
+    stats = stats.join(situational, how="left")
+
     # ---- special teams: punts, field goals, kickoffs and extra points
     special = df[df["play_type"].isin(
         ["punt", "field_goal", "kickoff", "extra_point"]) & df["epa"].notna()]
@@ -264,7 +352,9 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     stats["is_home"] = (stats["team"] == stats["home_team"]).astype(int)
 
     mirror_cols = ["off_epa", "off_pass_epa", "off_rush_epa", "off_success",
-                   "fumbles", "fumbles_lost", "interceptions"]
+                   "fumbles", "fumbles_lost", "interceptions",
+                   "third_down_rate", "red_zone_td_rate", "explosive_rate",
+                   "sack_rate"]
     opponent_view = stats[["game_id", "team", *mirror_cols]].rename(
         columns={"team": "opponent", **{c: f"opp_{c}" for c in mirror_cols}}
     )
@@ -275,6 +365,11 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     stats["def_pass_epa"] = stats["opp_off_pass_epa"]
     stats["def_rush_epa"] = stats["opp_off_rush_epa"]
     stats["def_success"] = stats["opp_off_success"]
+    # A defence's situational numbers are what it allowed, i.e. the opponent's.
+    stats["def_third_down_rate"] = stats["opp_third_down_rate"]
+    stats["def_red_zone_td_rate"] = stats["opp_red_zone_td_rate"]
+    stats["def_explosive_rate"] = stats["opp_explosive_rate"]
+    stats["sack_rate_forced"] = stats["opp_sack_rate"]
 
     # ---- turnover margin, and how much of it was fumble luck
     stats["giveaways"] = stats["fumbles_lost"].fillna(0) + stats["interceptions"].fillna(0)
@@ -295,4 +390,8 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     )
     stats["turnover_luck"] = stats["turnover_margin"] - stats["expected_turnover_margin"]
 
-    return stats.drop(columns=[c for c in stats.columns if c.startswith("opp_off_")])
+    drop = [c for c in stats.columns
+            if c.startswith("opp_off_") or c in {
+                "opp_third_down_rate", "opp_red_zone_td_rate",
+                "opp_explosive_rate", "opp_sack_rate"}]
+    return stats.drop(columns=drop)

@@ -135,6 +135,7 @@ with it. Play-by-play parquet (optional) adds EPA.
 | Quarterback | starter's shrunk EPA per dropback, career dropbacks, starter-changed flag |
 | Efficiency | opponent-adjusted offensive and defensive EPA (exponentially weighted) |
 | Hidden components | special-teams EPA, turnover luck (margin minus its fumble-recovery-neutral expectation) |
+| Situational | third-down conversion and allowed, red-zone touchdown rate, explosive-play rate and allowed, sack rate taken and forced, penalty yards |
 | Situation | rest days, short week, off bye, travel miles, time-zone shift, divisional, week, neutral site |
 | Environment | roof, surface, temperature, wind |
 | Form | rolling points for/against, decayed scoring margin, Pythagorean win expectation |
@@ -150,6 +151,14 @@ before that game* — moving the ball on a good defence counts for more.
 turnover margin is part skill and part luck. Recording the gap between the
 actual margin and a recovery-neutral expectation lets the model treat the lucky
 part as the noise it is rather than projecting it forward.
+
+**Situational rates, not counts.** A count of third-down conversions mostly
+measures how many possessions a team got. The rate is the property of the team.
+Honest note on these: an A/B test over the full walk-forward history moved
+margin error by **0.002 points** — essentially nothing — while nudging
+straight-up accuracy from 64.2% to 64.6% and improving Brier slightly. They are
+kept because they cost nothing extra to compute, help calibration a little, and
+are genuinely worth reading on the Teams tab. They are not why the model works.
 
 **Quarterback.** The largest week-to-week swing a power rating misses. Starter
 identity comes from one source only: the schedule feed records the *starter*
@@ -524,7 +533,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 218 tests, fully offline
+make test     # 226 tests, fully offline
 make lint
 ```
 
