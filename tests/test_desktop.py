@@ -14,10 +14,6 @@ def test_a_free_port_is_loopback_only():
     assert ServerThread(port=port).url.startswith("http://127.0.0.1:")
 
 
-def test_two_calls_do_not_collide():
-    assert free_port() != free_port() or True   # ports may be reused after close
-
-
 def test_availability_is_a_boolean_not_an_exception():
     """Headless machines must get False rather than a traceback — importing
     pywebview succeeds even with no GUI backend, and only fails later."""
@@ -34,8 +30,9 @@ def test_the_server_starts_and_stops_cleanly():
     finally:
         server.stop()
 
-    # After stopping, the port must no longer answer.
-    with pytest.raises(Exception):
+    # After stopping, the port must no longer answer — a lingering server
+    # would hold the port and the next launch would pick a different one.
+    with pytest.raises(httpx.HTTPError):
         httpx.get(f"{url}/api/state", timeout=2)
 
 
