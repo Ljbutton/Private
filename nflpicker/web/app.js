@@ -834,8 +834,9 @@ function comparisonBlock(con, data) {
 
   const right = `<div class="panel">
     <header><h2>Outside consensus</h2>
-      <span class="hint">${hasData
-        ? `weeks ${con.weeks.join(" & ")} · ${sources}`
+      <span class="hint" title="${esc(sources)}">${hasData
+        ? `weeks ${con.weeks.join(" & ")} · ${con.n_lists} list${
+            con.n_lists === 1 ? "" : "s"}`
         : "paste a published ranking to compare against"}</span></header>
     ${hasData ? `<div class="table-scroll tall"><table class="slate">
       <thead><tr><th>#</th><th>Team</th>

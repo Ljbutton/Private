@@ -977,6 +977,18 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 /* Both columns are the same table of the same thirty-two teams, so they should
    end level rather than leaving a ragged edge. */
 .grid-2.rank-split { align-items: stretch; }
+/* ...and *start* level. The headers sit above the tables, so a hint long enough
+   to wrap in one panel and not the other pushed that table down by a row and
+   put the two rankings permanently out of step -- which is exactly the thing
+   you are trying to read across. Fixed two lines each, whatever the text. */
+.rank-split > .panel > header {
+  flex-direction: column; align-items: flex-start; gap: 2px;
+  min-height: 40px; margin-bottom: 12px;
+}
+.rank-split > .panel > header .hint {
+  margin-left: 0; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .rank-note {
   margin-top: 14px; max-width: none;
 }
