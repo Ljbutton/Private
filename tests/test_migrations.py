@@ -120,3 +120,33 @@ def test_data_survives_closing_and_reopening(tmp_path, monkeypatch):
     assert db.get_meta("captured") == {"lines": 41}
     assert db.query("SELECT game_id FROM games")[0]["game_id"] == "g"
     db.close_all()
+
+
+def test_a_packaged_app_can_be_configured_from_its_data_directory(tmp_path, monkeypatch):
+    """A frozen build's __file__ lives in PyInstaller's temp extraction dir,
+    which is recreated every launch — so a .env beside the "repo root" can
+    never be read or written. The data directory is the only place that
+    survives, and without this there is no way to give the .app an API key
+    short of launching it from a terminal."""
+    (tmp_path / ".env").write_text("ODDS_API_KEY=from-data-dir\n")
+    monkeypatch.setenv("NFLPICKER_DATA_DIR", str(tmp_path))
+
+    import importlib
+
+    from nflpicker import config as config_module
+
+    importlib.reload(config_module)
+    assert config_module.get_config().odds_api_key == "from-data-dir"
+
+
+def test_a_real_environment_variable_beats_the_file(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("ODDS_API_KEY=from-file\n")
+    monkeypatch.setenv("NFLPICKER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ODDS_API_KEY", "from-environment")
+
+    import importlib
+
+    from nflpicker import config as config_module
+
+    importlib.reload(config_module)
+    assert config_module.get_config().odds_api_key == "from-environment"

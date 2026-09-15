@@ -638,6 +638,57 @@ easy to get silently wrong:
 
 ---
 
+## Turning on real data
+
+Demo mode is off unless you ask for it, so a normal launch is already live. Most
+of what the app reads needs no account at all:
+
+| Source | Needs a key? | What it gives you |
+|---|---|---|
+| ESPN | no | schedule, scores, live in-game state, one consensus line |
+| nflverse | no | play-by-play, EPA, injuries, depth charts, snap counts |
+| News RSS | no | headlines and injury reports |
+| Open-Meteo | no | kickoff weather |
+| Polymarket, Kalshi | no | prediction-market prices, shown for comparison |
+| **The Odds API** | **yes** | **every sportsbook separately** |
+
+Without an Odds API key the app still works and says so — it falls back to
+ESPN's single consensus line. What you lose is the spread *between* books, which
+is what best-available pricing and closing-line value are computed from. The
+free tier is 500 requests a month; at the default 15-minute cadence that is
+comfortably inside it.
+
+Get a key at [the-odds-api.com](https://the-odds-api.com/), then:
+
+```bash
+# from source
+echo "ODDS_API_KEY=your-key-here" >> .env
+
+# packaged app, macOS
+echo "ODDS_API_KEY=your-key-here" >> ~/Library/Application\ Support/NFLPicker/.env
+
+# packaged app, Windows
+echo ODDS_API_KEY=your-key-here >> %LOCALAPPDATA%\NFLPicker\.env
+```
+
+Restart the app, then hit refresh. The Connections list in the sidebar will show
+`Odds API` with your month's usage instead of `no key`.
+
+**Then train the model.** Out of the box it runs `power-only` — Elo and form,
+no learned weights — which the sidebar reports honestly. Training downloads
+about twenty seasons of play-by-play and takes a few minutes:
+
+```bash
+make refresh    # pull real data first
+make train      # walk-forward fit, writes data/models/
+```
+
+Training is a command-line step: it is a once-in-a-while job that prints a
+validation report you want to actually read, not something to fire from a button
+and hope about. The app picks up new weights on its next refresh.
+
+---
+
 ## Updating, and where your data lives
 
 Everything the app has learned is one SQLite file. Nothing is held in memory

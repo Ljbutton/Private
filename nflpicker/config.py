@@ -24,7 +24,28 @@ def _load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
+def _default_data_dir() -> Path:
+    """Where a packaged build keeps its data, mirroring scripts/desktop_entry.py."""
+    import sys
+
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "NFLPicker"
+
+
+# Source checkout first, then the data directory. The second one is what makes a
+# packaged build configurable at all: in a frozen app ``__file__`` lives inside
+# PyInstaller's temp extraction directory, which is recreated on every launch,
+# so a .env beside the "repo root" is both unreachable and unwritable. The data
+# directory is the one place that survives, so it is where a settings file has
+# to live -- otherwise the only way to give the app an API key is to launch it
+# from a terminal with the variable exported.
 _load_dotenv(_REPO_ROOT / ".env")
+_load_dotenv(Path(os.environ.get("NFLPICKER_DATA_DIR") or _default_data_dir()) / ".env")
 
 
 def _int(name: str, default: int) -> int:
