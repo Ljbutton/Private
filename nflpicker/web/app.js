@@ -192,10 +192,15 @@ async function renderHome() {
     const homePick = prob !== null && prob >= 0.5;
     const winner = homePick ? g.home : g.away;
     const loser = homePick ? g.away : g.home;
-    const conf = prob === null ? null : (homePick ? prob : 1 - prob);
 
-    // Both sides of every comparison are quoted from the same team's view, so
-    // "ours vs theirs" is a subtraction the reader does not have to do.
+    // Every probability on the row is quoted for the *same* side -- the one we
+    // picked -- so they can be compared straight across. Flipping some to the
+    // home team and others to our pick would make the row unreadable.
+    const ourProb = prob === null ? null : (homePick ? prob : 1 - prob);
+    const bookHome = g.market?.home_win_prob;
+    const bookProb = bookHome === null || bookHome === undefined
+      ? null : (homePick ? bookHome : 1 - bookHome);
+
     const line = (margin) => {
       if (margin === null || margin === undefined) return "–";
       if (Math.abs(margin) < 0.05) return "PK";
@@ -221,29 +226,39 @@ async function renderHome() {
       <td class="match">
         <b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>
       </td>
-      <td class="conf">${conf === null ? "–" : pct(conf)}</td>
+      <td class="ours edge-col">${ourProb === null ? "–" : pct(ourProb)}</td>
       <td class="ours">${esc(line(fair))}</td>
+      <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
+      <td class="book edge-col">${bookProb === null ? "–" : pct(bookProb)}</td>
       <td class="book">${esc(line(bookSpread === null || bookSpread === undefined
         ? null : -bookSpread))}</td>
-      <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
       <td class="book">${num(g.market?.total_points, 1)}</td>
-      <td class="pmkt">${mktProb === null ? "–" : pct(mktProb)}</td>
+      <td class="pmkt edge-col">${mktProb === null ? "–" : pct(mktProb)}</td>
       <td class="moved ${movedCls}">${movedText}</td>
     </tr>`;
   }).join("");
 
   root.innerHTML = `<div class="panel board">
     <header><h2>Week ${data.week} — the whole slate</h2>
-      <span class="hint">Ours is the blend the win probability is built from ·
+      <span class="hint">Every probability is for the side we picked ·
         click a row for detail</span></header>
     <table class="slate">
-      <thead><tr>
-        <th></th><th>Pick</th><th class="conf">Win</th>
-        <th class="ours">Our spread</th><th class="book">Book</th>
-        <th class="ours">Our total</th><th class="book">Book</th>
-        <th class="pmkt">Pred. mkt</th>
-        <th class="moved" title="Points the line has moved toward our side since it opened">Moved to us</th>
-      </tr></thead>
+      <thead>
+        <tr class="groups">
+          <th colspan="2"></th>
+          <th colspan="3" class="g-ours">Our model</th>
+          <th colspan="3" class="g-book">Sportsbook</th>
+          <th class="g-pmkt">Pred. mkt</th>
+          <th></th>
+        </tr>
+        <tr>
+          <th></th><th>Pick</th>
+          <th class="ours edge-col">Win</th><th class="ours">Spread</th><th class="ours">Total</th>
+          <th class="book edge-col">Win</th><th class="book">Spread</th><th class="book">Total</th>
+          <th class="pmkt edge-col">Win</th>
+          <th class="moved" title="Points the line has moved toward our side since it opened">Moved to us</th>
+        </tr>
+      </thead>
       <tbody>${rows}</tbody>
     </table>
   </div>`;

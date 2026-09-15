@@ -418,15 +418,28 @@ td.team { font-weight: 600; }
 /* ------------------------------------------------------------- the board */
 /* Sixteen games on one screen. Every size here is chosen so the whole slate
    clears a laptop viewport without scrolling; the card view is where a single
-   game gets room to explain itself. */
-.panel.board { padding: 16px 18px 10px; }
-.slate { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.slate th {
+   game gets room to explain itself.
+
+   The columns are grouped by *who is claiming it* -- our model, the
+   sportsbooks, the prediction markets -- because the whole question the board
+   answers is where those three disagree. Interleaving them would make the row
+   read as one set of numbers with no author. */
+.panel.board { padding: 16px 18px 10px; overflow-x: auto; }
+.slate { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums;
+  min-width: 340px; }
+
+.slate thead th {
   font-size: 9.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em;
-  color: var(--text-muted); text-align: right; padding: 0 9px 8px;
-  border-bottom: 1px solid var(--grid); white-space: nowrap;
+  color: var(--text-muted); text-align: right; padding: 0 9px 8px; white-space: nowrap;
 }
-.slate th:nth-child(1), .slate th:nth-child(2) { text-align: left; }
+.slate thead tr:last-child th { border-bottom: 1px solid var(--grid); }
+.slate thead th:nth-child(1), .slate thead th:nth-child(2) { text-align: left; }
+
+/* The group row names the source once, over its own columns. */
+.slate tr.groups th { padding-bottom: 5px; text-align: center; font-size: 9px; }
+.slate tr.groups .g-ours { color: var(--series-1); }
+.slate tr.groups .g-book, .slate tr.groups .g-pmkt { color: var(--text-muted); }
+
 .slate td {
   padding: 0 9px; height: 34px; text-align: right; white-space: nowrap;
   border-bottom: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
@@ -440,20 +453,14 @@ td.team { font-weight: 600; }
 .slate .match b { font-weight: 660; }
 .slate .match .beat { color: var(--text-muted); font-size: 10.5px; margin: 0 6px; }
 .slate .match .lose { color: var(--text-secondary); }
-.slate .conf { font-weight: 640; width: 58px; }
 
-/* Ours and theirs are adjacent and weighted differently on purpose: the eye
-   should land on our number first and read the book's as the reference. */
+/* Ours reads first, the book's as the reference beside it. */
 .slate td.ours { font-weight: 640; color: var(--text-primary); }
 .slate td.book { color: var(--text-secondary); font-weight: 500; }
-.slate th.ours { color: var(--text-secondary); }
-.slate td.pmkt, .slate th.pmkt { color: var(--text-muted); }
-/* A vertical rule marks where our numbers stop and other people's begin, so
-   the three sources never read as one row of interchangeable figures. */
-.slate th.ours:first-of-type, .slate td.ours:first-of-type {
-  border-left: 1px solid var(--grid);
-}
-.slate th.pmkt, .slate td.pmkt { border-left: 1px solid var(--grid); }
+.slate td.pmkt, .slate th.pmkt { color: var(--text-muted); font-weight: 500; }
+/* The win column leads each group, so it carries the rule that separates them. */
+.slate th.edge-col, .slate td.edge-col { border-left: 1px solid var(--grid); }
+.slate td.ours.edge-col { color: var(--series-1); }
 
 .slate .moved { font-weight: 650; width: 84px; }
 .slate td.moved.good { color: var(--good); }
@@ -461,21 +468,22 @@ td.team { font-weight: 600; }
 .slate td.moved.flat { color: var(--text-muted); }
 .slate .live-dot { width: 6px; height: 6px; margin-right: 5px; }
 
-@media (max-width: 960px) {
-  .slate th:nth-child(8), .slate td:nth-child(8) { display: none; }  /* pred. mkt */
+/* Columns drop in order of what a narrow screen can least afford to keep:
+   the third opinion first, then both totals, then the kickoff time. */
+@media (max-width: 1180px) {
+  .slate th:nth-child(9), .slate td:nth-child(9) { display: none; }   /* pred mkt */
+  .slate tr.groups .g-pmkt { display: none; }
+}
+@media (max-width: 900px) {
+  .slate th:nth-child(5), .slate td:nth-child(5),
+  .slate th:nth-child(8), .slate td:nth-child(8) { display: none; }   /* totals */
+  .slate tr.groups .g-ours, .slate tr.groups .g-book { }
 }
 @media (max-width: 760px) {
-  .slate th:nth-child(6), .slate td:nth-child(6),
-  .slate th:nth-child(7), .slate td:nth-child(7) { display: none; }  /* totals */
   .slate .when { display: none; }
   .slate th, .slate td { padding: 0 6px; }
   .panel.board { padding: 14px 10px 8px; }
 }
-/* Dropping columns buys most of the width back, but not all of it on the
-   narrowest phones. The table gets its own scroller so it can be read there
-   without the whole page scrolling sideways. */
-.panel.board { overflow-x: auto; }
-.slate { min-width: 340px; }
 
 /* --------------------------------------------------------------- misc */
 .badge {
