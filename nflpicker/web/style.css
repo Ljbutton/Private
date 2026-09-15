@@ -603,6 +603,10 @@ td.team { font-weight: 600; }
   border-bottom: 1px solid var(--grid);
 }
 .ghead.ours { color: var(--series-1); }
+/* The pick column is the only one about the reader rather than about a
+   source, and unlabelled beside the team's own mark the circle read as
+   something about the team. */
+.ghead.you { text-align: left; padding-left: 1px; }
 /* Narrow columns get the short name rather than a wrapped or clipped one. */
 .ghead .sm { display: none; }
 @media (max-width: 640px) {
@@ -655,6 +659,11 @@ td.team { font-weight: 600; }
    until the game is decided -- green here means "was right", the same as it
    does everywhere else in the app, and a pick is not a result. */
 .tick { width: 12px; height: 12px; fill: currentColor; }
+/* A borrowed number is still the book's, and the blank spread beside it is
+   deliberate rather than missing: copying the book's number into the model's
+   column would read as the model agreeing on it. */
+.gcell.borrowed { opacity: .72; cursor: help; }
+.gcell.borrowed .gprob { font-style: italic; font-weight: 550; }
 .gcell.hit  .gprob { color: var(--good); }
 .gcell.miss .gprob { color: var(--critical); }
 

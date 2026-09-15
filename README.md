@@ -675,6 +675,11 @@ a row:
  TOTAL                            42.5         42.5           –
 ```
 
+The prediction-market column carries a win probability only. Kalshi and
+Polymarket quote who wins, not a line or a total, so that column has no spread
+and no total to show — those slots are empty by nature rather than by oversight,
+and stay empty however much data you have.
+
 The tick marks the side each source picked, which is what makes a card
 scannable: ticks in a line is agreement, a split is a game worth opening. It
 stays the source's own colour until the game is decided and turns green or red
@@ -720,8 +725,11 @@ across, since week numbers only mean something within a season, and the header
 names the season being viewed so a past board cannot be mistaken for this one.
 
 **Where the model has no pick on a finished game** — anything from before the
-app was running — the board shows the sportsbook's pick instead of a blank, and
-the scoreboard says how many were inherited. On those games the model and the
+app was running — the board shows the sportsbook's pick instead of a blank,
+dimmed and marked with an asterisk, and the scoreboard says how many were
+inherited. Only the pick is borrowed: the spread and total stay blank rather
+than being copied across, because a duplicate of the book's number sitting in
+the model's column would read as the model agreeing on it. On those games the model and the
 book agree by construction, so a record that is mostly borrowed should not read
 as one the model earned. This applies only to games already played: for an
 upcoming game the model has its own view, and lending it the book's would be
@@ -729,9 +737,13 @@ inventing an opinion rather than filling in a missing one.
 
 ## Your picks, and who is actually right
 
-Click the circle beside a team on its card to pick that team; click it again to
-clear it, or click the other team to switch. The point is to be able to
-disagree: with the model, with the book, or with both.
+The circle beside each team, under the **You** heading, is your own pick and
+nothing else — it is not a marker for who won. Click it to pick that team, click
+it again to clear it, or click the other team to switch. It is blue while the
+game is undecided and becomes a green tick or a red cross once it is settled.
+Who actually won is shown by the score, and by the losing team's line dimming.
+The point of the column is to be able to disagree: with the model, with the
+book, or with both.
 
 The **Scoreboard** then scores everyone on straight-up winners, which is the one
 question all four can be asked without a spread or a price to argue about. Two

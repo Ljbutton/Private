@@ -481,10 +481,14 @@ async function renderHome() {
       // them then reads as a contradiction rather than as a close call. One
       // decimal, only where the rounding is what hides the difference.
       const digits = prob !== null && Math.abs(prob - 0.5) < 0.005 ? 1 : 0;
-      return `<div class="gcell ${kind}${picked ? " picked" : ""}${verdict}">
+      const borrowed = kind === "ours" && inherited;
+      return `<div class="gcell ${kind}${picked ? " picked" : ""}${verdict}${
+        borrowed ? " borrowed" : ""}"${borrowed
+        ? ' title="This game finished before the app was running, so the model has no number of its own. Its pick is the sportsbook\'s; the spread and total are left blank rather than copied, which would read as the model agreeing on them."'
+        : ""}>
         <span class="gline">${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
         <span class="gprob">${prob === null ? "–" : pct(prob, digits)}${
-          kind === "ours" && inherited ? "*" : ""}${picked ? `
+          borrowed ? "*" : ""}${picked ? `
           <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>` : ""}</span>
       </div>`;
     };
@@ -532,7 +536,7 @@ async function renderHome() {
         <span class="gopen">View game info<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
       </div>
       <div class="gcard-grid">
-        <div class="ghead"></div>
+        <div class="ghead you">You</div>
         <div class="ghead ours"><span class="lg">Our model</span><span class="sm">Model</span></div>
         <div class="ghead book"><span class="lg">Sportsbook</span><span class="sm">Book</span></div>
         <div class="ghead pmkt"><span class="lg">Pred. mkt</span><span class="sm">Mkt</span></div>
@@ -540,10 +544,10 @@ async function renderHome() {
         ${teamRow("home")}
       </div>
       <div class="gcard-foot">
-        <span class="flabel">Total</span>
+        <span class="flabel">Total points</span>
         <span class="fval ours">${ourTotal === null ? "–" : ourTotal}</span>
         <span class="fval book">${num(bookTotal, 1)}</span>
-        <span class="fval pmkt">–</span>
+        <span class="fval pmkt" title="Prediction markets quote who wins, not a total"></span>
       </div>
     </article>`;
   };
