@@ -261,10 +261,12 @@ def by_team(season: int) -> list[dict]:
             "games": played,
             "tallies": {k: v.to_dict() for k, v in row.items()},
         })
-    # Hardest to read first: the teams where the model is furthest from right
-    # are the interesting rows, and an alphabetical list buries them.
+    # Ordered by how well the model reads each team, best first. Teams it has
+    # no opinion on sort last rather than to one end of the scale, where a
+    # missing rate would otherwise read as a score of zero.
     out.sort(key=lambda r: (r["tallies"][MODEL]["rate"] is None,
-                            r["tallies"][MODEL]["rate"] or 0.0))
+                            -(r["tallies"][MODEL]["rate"] or 0.0),
+                            r["team"]))
     return out
 
 

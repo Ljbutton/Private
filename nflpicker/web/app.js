@@ -232,7 +232,7 @@ async function renderScoreboard() {
   <div class="panel" style="margin-top:16px">
     <header><h2>By team</h2>
       <span class="hint">how often each picker called that team's games right ·
-        hardest for the model first</span></header>
+        sorted by our model, best first</span></header>
     <div class="table-scroll"><table class="slate">
       <thead><tr><th>Team</th><th class="num">Games</th>${(d.pickers || []).map((p) =>
         `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>

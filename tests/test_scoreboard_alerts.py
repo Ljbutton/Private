@@ -197,14 +197,26 @@ def test_by_team_scores_every_game_a_team_played(store):
         "correct": 1, "wrong": 0, "push": 0, "n": 1, "rate": 1.0}
 
 
-def test_by_team_puts_the_model_s_worst_reads_first(store):
+def test_by_team_is_sorted_by_the_model_best_first(store):
     _final("g1", 1, "KC", "BUF", 30, 20)
     _model("g1", 0.1)                          # badly wrong about KC and BUF
     _final("g2", 1, "SF", "SEA", 30, 20)
     _model("g2", 0.9)                          # right about SF and SEA
 
     order = [r["team"] for r in scoreboard.by_team(2026)]
-    assert order.index("KC") < order.index("SF")
+    assert order.index("SF") < order.index("KC")
+
+
+def test_teams_the_model_never_picked_sort_last(store):
+    """A missing rate is not a score of zero, so it must not land at the bottom
+    of the scale among the teams the model actually reads badly."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _model("g1", 0.1)                          # wrong: 0% on KC and BUF
+    _final("g2", 1, "SF", "SEA", 30, 20)
+    _you("g2", 1, "SF")                        # only you picked this one
+
+    order = [r["team"] for r in scoreboard.by_team(2026)]
+    assert order[-2:] == ["SEA", "SF"]         # no model opinion, so last
 
 
 def test_alerts_can_be_fetched_for_one_game(store):

@@ -673,8 +673,9 @@ and an exact 50% is not a pick.
 
 **By team** asks a different question: of the games each team played, how often
 did each picker call them right? A team everybody keeps missing is either
-genuinely volatile or priced on a reputation nobody has updated. Sorted with the
-model's worst reads first, because an alphabetical list buries them.
+genuinely volatile or priced on a reputation nobody has updated. Sorted by the
+model's accuracy, best first; teams it has no opinion on sort last rather than
+to the bottom of the scale, where a missing rate would read as a score of zero.
 
 Once a game is final the board marks every number right or wrong — green or red
 on each percentage, and on your own chip, which is blue until the game is
