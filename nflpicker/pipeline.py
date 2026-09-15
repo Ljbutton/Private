@@ -1169,18 +1169,34 @@ class Pipeline:
         efficiencies = {}
         if epa_meta.get("season") == season and epa_meta.get("rows"):
             efficiencies = from_epa_frame(pd.DataFrame(epa_meta["rows"]))
+        # Points for and against **this season**, which is what the Pythagorean
+        # term is built from. The `completed` list deliberately spans every
+        # season so Elo carries over, and summing a team's whole career here
+        # would make the term a constant that never moves.
+        records: dict[str, list[float]] = {}
+        for g in (x for x in completed if int(x["season"]) == int(season)):
+            hs, as_ = g.get("home_score"), g.get("away_score")
+            if hs is None or as_ is None:
+                continue
+            for team, scored, allowed in ((g["home"], hs, as_), (g["away"], as_, hs)):
+                bucket = records.setdefault(team, [0.0, 0.0])
+                bucket[0] += float(scored)
+                bucket[1] += float(allowed)
+
         power = build_power_ratings(
-            elo.as_points(), efficiencies, week=week, elo_raw=elo.snapshot()
+            elo.as_points(), efficiencies, week=week, elo_raw=elo.snapshot(),
+            records={t: (pf, pa) for t, (pf, pa) in records.items()},
         )
 
         stamp = now_iso()
         db.executemany(
             "INSERT OR REPLACE INTO team_ratings"
-            "(team, season, captured_at, elo, off_epa, def_epa, pace, power, off_rating, def_rating) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "(team, season, captured_at, elo, off_epa, def_epa, pace, power,"
+            " pythagorean, off_rating, def_rating) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             [
                 [t.team, season, stamp, t.elo, t.off_epa, t.def_epa, None,
-                 t.power, t.off_rating, t.def_rating]
+                 t.power, t.pythagorean, t.off_rating, t.def_rating]
                 for t in power.teams.values()
             ],
         )

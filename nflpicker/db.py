@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -35,6 +35,10 @@ COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = (
     # different numbers.
     ("predictions", "fair_margin", "REAL"),
     ("predictions", "fair_total", "REAL"),
+    # v8: the power rating is now shrunk Elo plus Pythagorean expectation, and
+    # the Pythagorean term is shown on the Teams page as the reason a team is
+    # rated above or below its record.
+    ("team_ratings", "pythagorean", "REAL"),
 )
 
 SCHEMA = """
@@ -130,6 +134,7 @@ CREATE TABLE IF NOT EXISTS team_ratings (
     def_epa     REAL,
     pace        REAL,
     power       REAL,                   -- points better than average vs neutral opponent
+    pythagorean REAL,                   -- win expectation from points for/against
     off_rating  REAL,
     def_rating  REAL,
     UNIQUE(team, captured_at)

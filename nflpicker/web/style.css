@@ -958,3 +958,9 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .chat-input input { flex: 1; min-width: 200px; }
 .chat-suggest { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .btn.tiny { font-size: 11px; padding: 3px 9px; color: var(--text-secondary); }
+
+/* How far a team sits from where its record would rank it. The whole argument
+   for a power ranking is that these two numbers differ. */
+.drift { margin-left: 7px; font-size: 10.5px; font-weight: 700; }
+.drift.up { color: var(--good); }
+.drift.down { color: var(--critical); }

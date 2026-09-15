@@ -775,12 +775,24 @@ async function renderTeams() {
   // columns of dashes read as a bug, so drop them when nothing has one.
   const hasWinTotals = data.teams.some(
     (t) => t.win_total_line !== null && t.win_total_line !== undefined);
+  /* Where the projection disagrees with the table. A team rated well above
+     its record is one the model thinks has been unlucky -- that gap is the
+     single most useful column here, and it is what a ranking sorted by record
+     can never show. */
+  const drift = (t) => {
+    if (!t.record_rank || !t.rank) return "";
+    const d = t.record_rank - t.rank;
+    if (Math.abs(d) < 3) return "";
+    return `<span class="drift ${d > 0 ? "up" : "down"}">${d > 0 ? "▲" : "▼"}${Math.abs(d)}</span>`;
+  };
   const rows = data.teams.map((t) => `<tr data-team="${esc(t.team)}" style="cursor:pointer">
-    <td class="team">${t.rank}. ${esc(t.team)} <span class="muted">${esc(t.name)}</span></td>
+    <td class="team">${t.rank}. ${esc(t.team)} <span class="muted">${esc(t.name)}</span>${drift(t)}</td>
     <td>${t.record.wins ?? 0}-${t.record.losses ?? 0}${t.record.ties ? `-${t.record.ties}` : ""}</td>
+    <td><b>${num(t.exp_wins, 1)}</b></td>
+    <td class="muted">${t.pythagorean === null || t.pythagorean === undefined
+      ? "–" : pct(t.pythagorean)}</td>
     <td>${signed(t.power)}</td>
     <td>${num(t.elo, 0)}</td>
-    <td>${num(t.exp_wins, 1)}</td>
     <td class="muted">${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}</td>
     ${hasWinTotals ? `<td>${num(t.win_total_line, 1)}</td><td>${pct(t.over_prob)}</td>` : ""}
     <td>${pct(t.playoff_prob)}</td>
@@ -811,11 +823,16 @@ async function renderTeams() {
     }).join("");
 
   root.innerHTML = `<div class="panel">
-    <header><h2>Power ratings &amp; season projections</h2>
-      <span class="hint">Power is points better than an average team on a neutral field.
-        Projections come from 20,000 simulated seasons.</span></header>
+    <header><h2>Power ranking</h2>
+      <span class="hint">Ranked by projected finish, not by record · ▲▼ is how
+        far a team sits from where its record would put it · rating is points
+        better than average on a neutral field</span></header>
     <div class="table-scroll"><table>
-      <thead><tr><th>Team</th><th>Record</th><th>Power</th><th>Elo</th><th>Exp. wins</th>
+      <thead><tr><th>Team</th><th>Record</th>
+        <th title="Expected wins from 20,000 simulations of the remaining schedule — what the ranking is sorted by">Proj. wins</th>
+        <th title="Win expectation implied by points scored and allowed. Point differential predicts the rest of the season better than the record does.">Pythag</th>
+        <th title="Points better than an average team on a neutral field">Rating</th>
+        <th>Elo</th>
         <th>80% range</th>${hasWinTotals ? "<th>Win total</th><th>Over</th>" : ""}
         <th>Playoff</th><th>Division</th><th>Title</th></tr></thead>
       <tbody>${rows}</tbody></table></div>

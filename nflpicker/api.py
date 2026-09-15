@@ -247,6 +247,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                         "ties": projection.get("ties_actual"),
                     },
                     "exp_wins": projection.get("exp_wins"),
+                    "pythagorean": rating.get("pythagorean"),
                     "wins_p10": projection.get("wins_p10"),
                     "wins_p90": projection.get("wins_p90"),
                     "playoff_prob": projection.get("playoff_prob"),
@@ -259,9 +260,29 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                     "situational": detail,
                 }
             )
-        rows.sort(key=lambda r: (r["power"] is None, -(r["power"] or 0)))
+        # Ranked by where each team is projected to *finish*, not by how it has
+        # gone so far. That is what a power ranking is for: expected wins comes
+        # out of 20,000 simulations of the remaining schedule, so it already
+        # carries both the rating and who is left to play. The rating breaks
+        # ties, because two teams can project to the same win total off very
+        # different strength.
+        rows.sort(key=lambda r: (
+            r["exp_wins"] is None and r["power"] is None,
+            -(r["exp_wins"] if r["exp_wins"] is not None else -99),
+            -(r["power"] or 0),
+        ))
         for i, row in enumerate(rows, start=1):
             row["rank"] = i
+        # Where the projection disagrees with the table is the interesting
+        # column: a team five places better than its record is one the model
+        # thinks has been unlucky.
+        by_record = sorted(
+            rows,
+            key=lambda r: -((r["record"] or {}).get("wins") or 0)
+            + ((r["record"] or {}).get("losses") or 0) * 0.001)
+        record_rank = {r["team"]: i for i, r in enumerate(by_record, start=1)}
+        for row in rows:
+            row["record_rank"] = record_rank.get(row["team"])
         return {"season": season, "teams": rows, "divisions": DIVISIONS}
 
     @app.get("/api/team/{abbr}/history")

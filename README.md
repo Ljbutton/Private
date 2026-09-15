@@ -291,6 +291,56 @@ history rather than 0.98 — but that is a dead inefficiency, not a live edge. O
 only**: a weight fitted across twenty years bakes a 2005-era inefficiency into
 today's recommendations and manufactures edges from it.
 
+#### The power rating was worse than using Elo alone
+
+A power rating is a forecast, not a summary, so the test it has to pass is:
+freeze it after week W, predict every remaining game of that season, and see
+how close you get. Measured that way over **20,007 rest-of-season games from
+2006 to 2025**:
+
+| rating | margin MAE | corr | straight-up |
+|---|---|---|---|
+| Elo + EPA blend (what was here) | 11.145 | 0.320 | 62.3% |
+| Elo alone | 10.903 | 0.327 | 62.5% |
+| **0.50 × Elo + 3 × Pythagorean** | **10.930** | **0.335** | 62.2% |
+
+The EPA blend was the problem. It ramped to 60% weight by week 10, and net EPA
+turns out to carry almost nothing about the *rest of the season* once Elo and
+point differential are in — adding it to the pair above moves MAE from 10.8350
+to 10.8341. Four decimal places, for most of the rating's weight.
+
+Two changes replace it:
+
+- **Elo is shrunk by half.** Regressing rest-of-season margin on the Elo
+  difference gives a slope near 0.56, not 1.0. Elo is an excellent ordering and
+  an overconfident spread, and it was being quoted at full strength.
+- **Pythagorean expectation is added.** Points scored and allowed predict future
+  results better than the results do, which is the actual complaint a power
+  ranking answers: a 1-1 team that won by 20 and lost by 2 is not the same as
+  one that did the reverse. It is faded in by games played, so one blowout does
+  not rank a team.
+
+The gain grows through the season, which is what you would expect from a term
+that needs games: correlation is 0.007 *worse* at week 2, then +0.012 by week 4,
++0.018 by week 8 and +0.021 by week 12. On a fully held-out sample (coefficients
+chosen on 2006–2015, tested on 2016+) MAE goes 10.840 → 10.594 and correlation
+0.308 → 0.316. Straight-up accuracy is a shade worse, 61.7% → 61.3%: the rating
+orders teams better and calls individual winners very slightly less often.
+
+EPA has not gone away — it still drives `off_rating` and `def_rating`, which
+project **totals**. It simply does not belong in the margin forecast.
+
+Known gain not taken: quarterback value is the second-strongest predictor here
+(1.23 points of spread, behind Elo's 2.77), and adding it reaches MAE 10.845 and
+correlation 0.343. It needs the quarterback tracker from the feature pipeline,
+which the ratings module cannot currently reach.
+
+The **Teams** page is ranked by projected finish rather than by rating or
+record, since expected wins already carries both the rating and who is left to
+play. The ▲▼ beside a team is how far it sits from where its record alone would
+put it — a team five places higher is one the model thinks has been unlucky, and
+that gap is the one thing a table sorted by record can never show.
+
 #### The blind projection is compressed, and that is not a bug
 
 The blind column on the board never predicts a blowout. Measured out-of-sample

@@ -1,3 +1,5 @@
+import pytest
+
 from nflpicker.ratings.elo import ELO_PER_POINT, EloConfig, EloRatings, mov_multiplier, run_elo
 from nflpicker.sources import demo
 
@@ -78,3 +80,64 @@ def test_ratings_convert_to_points_on_the_conventional_scale():
     elo = EloRatings()
     elo.ratings["KC"] = 1505 + ELO_PER_POINT * 4     # four points better
     assert abs(elo.as_points()["KC"] - 4.0) < 1e-9
+
+
+# ------------------------------------------------------- the power rating
+
+def test_point_differential_separates_teams_with_the_same_elo():
+    """The complaint a power ranking answers: a 1-1 team that won by 20 and
+    lost by 2 is not the same as one that did the reverse, and Elo alone
+    barely tells them apart."""
+    from nflpicker.ratings.power import build_power_ratings
+
+    r = build_power_ratings(
+        {"KC": 5.0, "BUF": 5.0}, week=8,
+        records={"KC": (240.0, 150.0), "BUF": (150.0, 240.0)})
+    assert r.get("KC").power > r.get("BUF").power
+    assert r.get("KC").pythagorean > r.get("BUF").pythagorean
+
+
+def test_elo_is_quoted_shrunk_not_at_full_strength():
+    """Regressing rest-of-season margin on the Elo difference gives a slope
+    near 0.5, so quoting Elo at full strength overstates every gap."""
+    from nflpicker.ratings.power import ELO_SHRINK, build_power_ratings
+
+    r = build_power_ratings({"KC": 10.0, "BUF": -10.0}, week=4)
+    gap = r.get("KC").power - r.get("BUF").power
+    assert abs(gap - ELO_SHRINK * 20.0) < 1e-6
+
+
+def test_one_blowout_does_not_rank_a_team():
+    """Pythagorean is faded in by games played. A week-1 win by 40 is not
+    evidence of a 17-0 season."""
+    from nflpicker.ratings.power import build_power_ratings
+
+    early = build_power_ratings({"KC": 0.0}, week=1, records={"KC": (45.0, 5.0)})
+    late = build_power_ratings({"KC": 0.0}, week=10, records={"KC": (450.0, 50.0)})
+    assert early.get("KC").power < late.get("KC").power
+
+
+def test_a_team_with_no_games_yet_is_rated_on_elo_alone():
+    from nflpicker.ratings.power import ELO_SHRINK, build_power_ratings
+
+    r = build_power_ratings({"KC": 6.0}, week=1, records={})
+    assert r.get("KC").pythagorean is None
+    # Recentring shifts it, but nothing from a record it does not have.
+    assert r.get("KC").power == pytest.approx(ELO_SHRINK * 6.0 - ELO_SHRINK * 6.0 / 32, abs=0.3)
+
+
+def test_efficiency_no_longer_moves_the_margin_rating():
+    """Measured over 20,007 rest-of-season games, adding net EPA to Elo and
+    Pythagorean moved MAE from 10.8350 to 10.8341 while taking most of the
+    rating's weight. It stays out of `power` and keeps driving totals."""
+    from nflpicker.ratings.efficiency import TeamEfficiency
+    from nflpicker.ratings.power import build_power_ratings
+
+    plain = build_power_ratings({"KC": 4.0}, week=10, records={"KC": (250.0, 200.0)})
+    with_epa = build_power_ratings(
+        {"KC": 4.0},
+        {"KC": TeamEfficiency(team="KC", off_epa=0.25, def_epa=-0.25, plays=600)},
+        week=10, records={"KC": (250.0, 200.0)})
+    assert with_epa.get("KC").power == pytest.approx(plain.get("KC").power, abs=1e-9)
+    # ...but it still reaches the totals projection.
+    assert with_epa.get("KC").off_rating != plain.get("KC").off_rating
