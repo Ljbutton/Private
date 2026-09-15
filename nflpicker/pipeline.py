@@ -30,9 +30,7 @@ from .ratings.power import build_power_ratings
 from .sim.season import simulate_season
 from .sources.base import SourceError
 from .util import (
-    american_to_prob,
     current_season,
-    devig,
     estimate_week,
     now_iso,
     to_utc,
@@ -408,32 +406,47 @@ class Pipeline:
             if not self.config.prediction_markets_enabled:
                 result.record("prediction_markets", True, "disabled by configuration")
                 return
+            stamp = now_iso()
+            rows: list[dict] = []
+            reached: list[str] = []
+            failed: list[str] = []
+
             if self.demo:
-                quotes = _demo_prediction_market(self)
+                rows = [q.to_quote_row(stamp) for q in _demo_prediction_market(self)]
+                reached = sorted({r["book"] for r in rows})
             else:
+                from .sources.kalshi import KalshiSource
                 from .sources.polymarket import PolymarketSource
 
-                quotes = PolymarketSource().fetch(with_depth=True)
-            if not quotes:
-                raise SourceError("no NFL markets returned")
+                # Each venue is fetched independently: one being down or having
+                # renamed a series must not cost us the other.
+                for name, fetch in (
+                    ("polymarket", lambda: PolymarketSource().fetch(with_depth=False)),
+                    ("kalshi", lambda: KalshiSource().fetch()),
+                ):
+                    try:
+                        venue_quotes = fetch()
+                    except Exception as exc:  # noqa: BLE001
+                        failed.append(f"{name}: {exc}")
+                        continue
+                    if venue_quotes:
+                        rows.extend(q.to_quote_row(stamp) for q in venue_quotes)
+                        reached.append(name)
 
-            stamp = now_iso()
-            rows = [q.to_quote_row(stamp) for q in quotes]
+            if not rows:
+                raise SourceError("; ".join(failed) or "no NFL markets returned")
+
             matched, unmatched = self.match_quotes(rows)
             # Orientation: our schedule decides home and away, so a market that
             # named the teams the other way round is flipped rather than dropped.
             oriented = self._orient_prediction_quotes(matched)
             stored = self.store_quotes(oriented)
 
-            depth = {}
-            for quote, row in zip(quotes, rows, strict=False):
-                gid = next((m["game_id"] for m in oriented
-                            if m.get("provider_event_id") == row.get("provider_event_id")), None)
-                if gid and quote.depth:
-                    depth[gid] = quote.depth
-            db.set_meta("prediction_market_depth", depth)
-
-            detail = f"{stored} quotes from polymarket ({unmatched} unmatched)"
+            detail = f"{stored} quotes from {', '.join(reached) or 'no venue'}"
+            if unmatched:
+                detail += f" ({unmatched} unmatched)"
+            if failed:
+                detail += f" — unavailable: {'; '.join(failed)[:120]}"
             result.record("prediction_markets", True, detail, stored=stored)
             db.log_fetch("prediction_markets", True, detail,
                          int((time.monotonic() - start) * 1000))
@@ -769,11 +782,11 @@ class Pipeline:
         used = db.get_meta("survivor_used_teams", []) or []
         survivor = plan_survivor(season, week, by_week, used_teams=used, horizon=6).to_dict()
 
-        cross = self._cross_market_edges(season, week, upcoming, consensus)
+        comparisons = self._prediction_market_view(week, upcoming, consensus, by_game)
 
         for contest, payload in (
             ("ats", {"edges": edges}),
-            ("crossmarket", {"edges": cross}),
+            ("prediction_markets", {"games": comparisons}),
             ("pickem", boards),
             ("survivor", survivor),
         ):
@@ -843,45 +856,44 @@ class Pipeline:
         )
         return len(predictions)
 
-    def _cross_market_edges(self, season: int, week: int, upcoming: list[dict],
-                            consensus: dict) -> list[dict]:
-        """Where a prediction market disagrees with the sportsbook consensus."""
-        from .picks.crossmarket import find_cross_market_edges
-        from .sources.polymarket import VENUE
+    def _prediction_market_view(self, week: int, upcoming: list[dict],
+                                consensus: dict, by_game: dict) -> list[dict]:
+        """Prediction-market prices beside the books, for display only.
+
+        Produces no recommendation and feeds no model — it is a second opinion
+        rendered next to the first.
+        """
+        from .market.prediction_markets import VENUES, build_comparisons
 
         games = [g for g in upcoming if int(g["week"]) == week]
         if not games:
             return []
         ids = [g["game_id"] for g in games]
         placeholders = ",".join("?" for _ in ids)
-        rows = db.query(
-            "SELECT o.game_id, o.home_price, o.away_price FROM odds_snapshots o "
-            "JOIN (SELECT game_id, MAX(captured_at) AS m FROM odds_snapshots "
-            f"      WHERE book = ? AND market = 'moneyline' AND game_id IN ({placeholders}) "
-            "       GROUP BY game_id) x "
-            "ON x.game_id = o.game_id AND x.m = o.captured_at "
-            "WHERE o.book = ? AND o.market = 'moneyline'",
-            [VENUE, *ids, VENUE],
-        )
-        probs: dict[str, float] = {}
-        for row in rows:
-            pair = devig(
-                american_to_prob(row["home_price"]), american_to_prob(row["away_price"])
+
+        venue_quotes: dict[str, dict[str, dict]] = {}
+        for venue in VENUES:
+            rows = db.query(
+                "SELECT o.game_id, o.home_price, o.away_price, o.captured_at "
+                "FROM odds_snapshots o JOIN (SELECT game_id, MAX(captured_at) AS m "
+                "  FROM odds_snapshots WHERE book = ? AND market = 'moneyline' "
+                f"  AND game_id IN ({placeholders}) GROUP BY game_id) x "
+                "ON x.game_id = o.game_id AND x.m = o.captured_at "
+                "WHERE o.book = ? AND o.market = 'moneyline'",
+                [venue, *ids, venue],
             )
-            if pair:
-                probs[row["game_id"]] = pair[0]
-        if not probs:
+            if rows:
+                venue_quotes[venue] = {r["game_id"]: r for r in rows}
+        if not venue_quotes:
             return []
 
-        consensus_objects = {
-            gid: _consensus_from_row(consensus[gid], gid)
-            for gid in probs if gid in consensus
+        predictions = {
+            gid: {"home_win_prob": p.home_win_prob} for gid, p in by_game.items()
         }
-        depths = db.get_meta("prediction_market_depth", {}) or {}
-        found = find_cross_market_edges(
-            games, consensus_objects, probs, depths=depths, venue=VENUE
-        )
-        return [e.to_dict() for e in found]
+        return [
+            c.to_dict()
+            for c in build_comparisons(games, consensus, venue_quotes, predictions)
+        ]
 
     # ------------------------------------------------------------ full refresh
     def refresh(self, stages: list[str] | None = None, *, force_odds: bool = False) -> RefreshResult:
@@ -924,6 +936,7 @@ def _demo_prediction_market(pipeline) -> list:
     """
     import random
 
+    from .sources.kalshi import KalshiQuote
     from .sources.polymarket import PolymarketQuote
 
     season = pipeline.season()
@@ -943,20 +956,28 @@ def _demo_prediction_market(pipeline) -> list:
         fair = (row or {}).get("home_win_prob")
         if fair is None:
             continue
-        # A thin venue that lags: mostly close, occasionally well off.
-        drift = rng.gauss(0, 0.03) + (rng.choice([-0.09, 0.09]) if rng.random() < 0.25 else 0)
-        price = min(0.97, max(0.03, float(fair) + drift))
-        quote = PolymarketQuote(
-            home=game["home"], away=game["away"],
-            home_price=price, away_price=1 - price,
-            kickoff=game["kickoff"], market_id=f"demo-pm-{game['game_id']}",
-            volume=rng.uniform(2000, 60000),
-        )
-        quote.depth = {
-            game["home"]: rng.uniform(100, 4000),
-            game["away"]: rng.uniform(100, 4000),
-        }
-        quotes.append(quote)
+        # Thin venues that lag: mostly close to the books, occasionally well
+        # off, and not identical to each other.
+        for venue in ("polymarket", "kalshi"):
+            drift = rng.gauss(0, 0.03) + (
+                rng.choice([-0.09, 0.09]) if rng.random() < 0.20 else 0
+            )
+            price = min(0.97, max(0.03, float(fair) + drift))
+            if venue == "polymarket":
+                quotes.append(PolymarketQuote(
+                    home=game["home"], away=game["away"],
+                    home_price=price, away_price=1 - price,
+                    kickoff=game["kickoff"], market_id=f"demo-pm-{game['game_id']}",
+                    volume=rng.uniform(2000, 60000),
+                ))
+            else:
+                quotes.append(KalshiQuote(
+                    home=game["home"], away=game["away"],
+                    home_price=price, away_price=1 - price,
+                    kickoff=game["kickoff"],
+                    event_ticker=f"demo-kalshi-{game['game_id']}",
+                    volume=rng.uniform(2000, 60000),
+                ))
     return quotes
 
 

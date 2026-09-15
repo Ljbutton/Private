@@ -30,15 +30,15 @@ from typing import Any
 
 from ..teams import TEAMS, try_resolve
 from ..util import iso
+from ..venues import POLYMARKET
 from .base import HttpClient, SourceError
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 
-# Venue key used in storage. Anything listed here is excluded from the
-# sportsbook consensus.
-VENUE = "polymarket"
-PREDICTION_MARKET_VENUES = {VENUE}
+# Venue key used in storage. The registry in :mod:`nflpicker.venues` is what
+# excludes it from the sportsbook consensus and from best-available pricing.
+VENUE = POLYMARKET
 
 # "Will the Chiefs beat the Broncos?" — the subject wins if Yes resolves.
 _BEAT_RE = re.compile(r"\bwill\s+the\s+(.+?)\s+(?:beat|defeat)\s+the\s+(.+?)\s*\??$", re.I)

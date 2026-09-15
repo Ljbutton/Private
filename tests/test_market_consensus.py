@@ -91,3 +91,20 @@ def test_a_game_priced_only_by_a_prediction_market_has_no_consensus():
                "captured_at": "2025-09-02T00:00:00+00:00",
                "home_price": 100, "away_price": -120}]
     assert build_consensus("g1", quotes, "2025-09-02T01:00:00+00:00") is None
+
+
+def test_every_prediction_market_adapter_is_registered():
+    """The venue registry is what keeps prediction markets out of the
+    sportsbook consensus and out of best-available pricing. An adapter that
+    forgets to register reintroduces a bug that has already been fixed twice —
+    once for Polymarket, once for Kalshi — so this fails the build instead."""
+    from nflpicker.sources import kalshi, polymarket
+    from nflpicker.venues import PREDICTION_MARKET_VENUES, is_sportsbook
+
+    for module in (polymarket, kalshi):
+        assert module.VENUE in PREDICTION_MARKET_VENUES, module.__name__
+        assert not is_sportsbook(module.VENUE)
+
+    assert is_sportsbook("draftkings")
+    assert is_sportsbook("FanDuel")
+    assert not is_sportsbook("")

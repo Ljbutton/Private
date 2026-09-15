@@ -8,7 +8,7 @@ from nflpicker import db
 
 @pytest.fixture()
 def booted(pipeline):
-    pipeline.refresh(["schedule", "odds", "news", "recompute"])
+    pipeline.refresh(["schedule", "odds", "prediction_markets", "news", "recompute"])
     return pipeline
 
 
@@ -160,7 +160,7 @@ def test_sportsbook_edges_are_never_priced_against_a_prediction_market(booted):
     sportsbook recommendation to a book that never offered it."""
     import json
 
-    from nflpicker.sources.polymarket import VENUE
+    from nflpicker.venues import PREDICTION_MARKET_VENUES
 
     booted.recompute()
     row = db.query_one(
@@ -168,21 +168,26 @@ def test_sportsbook_edges_are_never_priced_against_a_prediction_market(booted):
         "ORDER BY captured_at DESC LIMIT 1"
     )
     edges = json.loads(row["payload"])["edges"] if row else []
-    books = {e.get("book") for e in edges}
-    assert VENUE not in books, f"sportsbook edges priced at {VENUE}: {books}"
+    books = {(e.get("book") or "").lower() for e in edges}
+    leaked = books & PREDICTION_MARKET_VENUES
+    assert not leaked, f"sportsbook edges priced at a prediction market: {leaked}"
 
 
-def test_cross_market_edges_are_priced_against_the_consensus(booted):
+def test_prediction_market_view_is_comparison_only(booted):
+    """It must carry no recommendation: no stake, no expected value, no rating."""
     import json
 
     booted.recompute()
     row = db.query_one(
-        "SELECT payload FROM pick_history WHERE contest = 'crossmarket' "
+        "SELECT payload FROM pick_history WHERE contest = 'prediction_markets' "
         "ORDER BY captured_at DESC LIMIT 1"
     )
-    edges = json.loads(row["payload"])["edges"] if row else []
-    for e in edges:
-        assert e["n_books"] >= 3, "consensus must rest on several books"
-        assert e["depth"] > 0, "an edge with no depth is not tradeable"
-        assert e["max_stake"] <= e["depth"] + 1e-6
-        assert abs((e["fair_prob"] - e["venue_price"]) - e["gap"]) < 1e-6
+    games = json.loads(row["payload"])["games"] if row else []
+    assert games, "expected prediction-market comparisons in demo mode"
+    for g in games:
+        assert g["venues"], "a row exists only because some venue priced it"
+        assert not {"expected_value", "kelly", "stake", "confidence"} & set(g)
+        if g["gap"] is not None and g["book_prob"] is not None:
+            # Each field is rounded to 4dp for the payload, so the identity
+            # holds only to within that rounding, not exactly.
+            assert abs((g["venue_prob"] - g["book_prob"]) - g["gap"]) < 5e-4

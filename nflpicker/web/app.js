@@ -339,7 +339,7 @@ async function renderPicks() {
   const root = $("#view");
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
   const edges = data.ats?.edges || [];
-  const cross = data.crossmarket?.edges || [];
+  const markets = data.prediction_markets?.games || [];
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
@@ -373,37 +373,53 @@ async function renderPicks() {
     <td>${pct(a.win_prob, 1)}</td><td>${pct(a.path_survival, 1)}</td>
     <td>${a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`}</td></tr>`).join("");
 
-  const crossRows = cross.map((e) => `<tr>
-    <td class="team">${esc(e.team)} <span class="muted">vs ${esc(e.opponent)}</span></td>
-    <td>${esc(e.venue)}</td>
-    <td>${pct(e.venue_price, 1)}</td>
-    <td>${pct(e.fair_prob, 1)}</td>
-    <td>${signed(e.gap * 100, 1)}pp</td>
-    <td>${pct(e.expected_value, 1)}</td>
-    <td>$${Math.round(e.depth).toLocaleString()}</td>
-    <td>$${Math.round(e.max_stake).toLocaleString()}</td>
-    <td><span class="badge ${e.confidence === "suspect" ? "qb" : ""}">${esc(e.confidence)}</span></td>
-  </tr>`).join("");
+  // Venue columns are built from whatever actually priced this week, so a
+  // venue being down removes its column rather than filling it with dashes.
+  const venueKeys = [];
+  for (const g of markets) {
+    for (const v of g.venues || []) {
+      if (!venueKeys.some((k) => k.venue === v.venue)) {
+        venueKeys.push({ venue: v.venue, label: v.label });
+      }
+    }
+  }
+  const marketRows = markets.map((g) => {
+    const byVenue = Object.fromEntries((g.venues || []).map((v) => [v.venue, v]));
+    const cells = venueKeys.map((k) => {
+      const v = byVenue[k.venue];
+      return `<td>${v ? pct(v.home_prob, 0) : '<span class="muted">–</span>'}</td>`;
+    }).join("");
+    const gapStyle = g.notable
+      ? `color:${(g.gap || 0) > 0 ? "var(--div-pos)" : "var(--div-neg)"};font-weight:600`
+      : "color:var(--text-muted)";
+    return `<tr>
+      <td class="team">${esc(g.away)} <span class="muted">@</span> ${esc(g.home)}</td>
+      <td>${pct(g.book_prob, 0)} <span class="muted">(${g.n_books})</span></td>
+      <td>${pct(g.model_prob, 0)}</td>
+      ${cells}
+      <td style="${gapStyle}">${signed((g.gap || 0) * 100, 1)}pp</td>
+      <td>${g.leans ? `<span class="badge">${esc(g.leans)}</span>`
+          : '<span class="muted">agrees</span>'}</td>
+    </tr>`;
+  }).join("");
 
   root.innerHTML = `
   <div class="panel">
-    <header><h2>Cross-market — prediction venues vs the sportsbooks</h2>
-      <span class="hint">Fair value is the sportsbook consensus, not our model</span></header>
+    <header><h2>Prediction markets</h2>
+      <span class="hint">All probabilities are for the home team, vig removed</span></header>
     <div class="table-scroll"><table>
-      <thead><tr><th>Side</th><th>Venue</th><th>You pay</th><th>Books imply</th>
-        <th>Gap</th><th>EV</th><th>Depth</th><th>Max stake</th><th>Rating</th></tr></thead>
-      <tbody>${crossRows || `<tr><td colspan="9" class="muted">
-        No qualifying cross-market gaps right now.${data.crossmarket ? ""
-          : " Prediction-market data has not been fetched yet."}</td></tr>`}</tbody>
+      <thead><tr><th>Game</th><th>Sportsbooks</th><th>Our model</th>
+        ${venueKeys.map((k) => `<th>${esc(k.label)}</th>`).join("")}
+        <th>Gap vs books</th><th>Leans</th></tr></thead>
+      <tbody>${marketRows || `<tr><td colspan="${5 + venueKeys.length}" class="muted">
+        No prediction-market prices for this week yet.</td></tr>`}</tbody>
     </table></div>
-    <p class="note">This is a different, weaker claim than the rest of the app, and that is
-      the point: it does not require our model to beat anything. Fair value is the
-      <strong>sportsbook consensus itself</strong>, and the bet is that a thinner venue is
-      lagging the deepest market in American sport. Sizing is against real order-book
-      depth, because a gap you cannot trade at size is not an edge. A
-      <strong>suspect</strong> rating means the gap is large enough that news, a
-      resolution-rule difference, or a market heading for a void is the likelier
-      explanation.</p>
+    <p class="note">Shown for comparison only — nothing here changes the suggestions below,
+      and none of it feeds the model. Prediction markets draw on a different crowd than the
+      sportsbooks, so a gap is worth a second look rather than an instruction: it may mean the
+      thinner venue is lagging, or that it has priced news the books have not. "Gap" is the
+      venue average minus the sportsbook consensus, in percentage points, and a game is only
+      marked as leaning once that reaches five.</p>
   </div>
 
   <div class="panel">

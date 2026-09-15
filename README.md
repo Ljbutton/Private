@@ -248,67 +248,38 @@ weight.
 
 ---
 
-## Cross-market: the one edge that does not need us to be right
+## Prediction markets
 
-The finding above — that the model cannot beat the closing line — is usually
-read as a disappointment. It is also an asset. If the sportsbook consensus is
-within a third of a point of the best estimate anyone has, then it is an
-excellent *signal*, and the question becomes where else that signal is not yet
-priced in.
+Polymarket and Kalshi run the same games with a different crowd than the
+sportsbooks. Their prices are shown on the Picks tab beside the book consensus
+and our own number, de-vigged and expressed as a home-team probability.
 
-Prediction markets like Polymarket run the same games with a different, smaller
-participant base. When one sits several points away from the de-vigged
-sportsbook consensus, the likelier explanation is that the thinner venue is
-lagging, not that the deepest market in American sport is wrong.
+**It is a display, not a recommendation.** Nothing there changes a suggestion,
+sizes a stake, or feeds a model. A gap is worth a second look — it may mean the
+thinner venue is lagging the books, or that it has priced news the books have
+not — but which of those it is depends on the game, and the app does not pretend
+to know. Games are sorted by disagreement, and one is only marked as leaning
+once the venues sit five percentage points from the books.
 
-So the cross-market panel inverts the usual claim:
+The separation is enforced rather than assumed. Prediction venues never enter
+the sportsbook consensus and are never used for best-available pricing; mixing
+them in would move the benchmark toward the number being judged, and would quote
+a model edge at a venue that never offered it. That bug has been found twice —
+once for Polymarket, once when Kalshi was added — so the venue list now lives in
+one registry (`nflpicker/venues.py`) and a test fails the build if an adapter
+forgets to register.
 
-| | Fair value | The bet | What it assumes |
-|---|---|---|---|
-| Best bets | our model | a sportsbook line | our model beats the market — *measured as false* |
-| **Cross-market** | **the sportsbook consensus** | a prediction-market price | a thin venue lags a deep one |
+Kalshi prices are read from the bid/ask mid rather than the last trade: on a
+thin market the last trade can be hours old and several points from anything
+transactable.
 
-The second is a far weaker assumption, which is precisely why it is the more
-promising of the two. Note the direction: this is not contrarian betting against
-the prediction market's conclusion, it is taking the sharp consensus price *into*
-the softer venue.
+**Check whether trading on either venue is available to you where you live**
+before acting on anything shown here. Access for US persons has differed between
+the two and the regulatory picture has been changing; this project reads public
+market data only and does not track it. Resolution rules also differ from a
+sportsbook's on ties, postponements and voids.
 
-Three things are enforced in code rather than left to judgement:
-
-- **Prediction markets never enter the sportsbook consensus.** Averaging a noisy
-  price into the benchmark would move it toward the very number being judged,
-  and the comparison would partly be against itself. The same exclusion applies
-  to best-available pricing, so a model edge is never quoted at a venue that
-  never offered it.
-- **Depth, not price.** Every edge is sized against the live order book. A
-  twelve-point probability gap with $200 behind it is not an opportunity, and
-  recommended stakes are capped by what the book can actually absorb.
-- **Consensus quality.** One book is not a consensus. At least three must agree
-  before their average is treated as fair value.
-
-A gap past 20 points is rated `suspect` rather than recommended: at that size,
-news the thin venue has priced and the books have not, a resolution-rule
-difference, or a market heading for a void are all likelier than a gift.
-
-**Before acting on any of this, check whether trading on the venue is available
-to you where you live.** Prediction-market access for US persons has been
-restricted and the regulatory picture has been changing; this project does not
-attempt to track it and reads public market data only. Resolution rules also
-differ from a sportsbook's — ties, postponements and voids are not handled the
-same way, and that difference can be the entire "edge".
-
-Set `PREDICTION_MARKETS_ENABLED=0` to turn the whole thing off.
-
-### A note on using it as a model feature
-
-The natural next thought is to feed the prediction-market price into the
-market-aware model. Two reasons it is not wired that way yet: there is no
-historical price series to train on, and the venue's best use is as a *target*
-to bet into rather than an input. What the app does instead is snapshot every
-price from now on, exactly as it does sportsbook lines — so after a season of
-collection, "how far Polymarket sits from the consensus" becomes a feature with
-real history behind it, and walk-forward validation can say whether it carries
-information rather than anyone guessing.
+Set `PREDICTION_MARKETS_ENABLED=0` to turn the panel off.
 
 ---
 
@@ -354,7 +325,7 @@ Each source has its own interval, because they age at very different rates:
 |---|---|---|
 | Scores | 5 min | 60s while games are in progress; hourly when the next kickoff is over a day away |
 | Odds | 15 min | stretched to fit the remaining monthly API budget |
-| Prediction markets | 10 min | polled faster than the books — the lag is the whole point, and it is what closes |
+| Prediction markets | 10 min | Polymarket and Kalshi, fetched independently so one being down costs only its column |
 | News | 15 min | — |
 | EPA / stats | 6 h | — |
 
@@ -386,7 +357,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 142 tests, fully offline
+make test     # 148 tests, fully offline
 make lint
 ```
 
@@ -415,12 +386,12 @@ easy to get silently wrong:
 
 ```
 nflpicker/
-  sources/     espn, odds_api, polymarket, nflverse, news_rss, weather, demo
+  sources/     espn, odds_api, polymarket, kalshi, nflverse, news_rss, weather, demo
   ratings/     elo, efficiency, power
   ml/          features (leak-free), train (walk-forward), predict
   sim/         season monte carlo + playoff bracket
-  market/      consensus, de-vigging, line movement
-  picks/       edges, crossmarket, pickem, survivor
+  market/      consensus, de-vigging, line movement, prediction markets
+  picks/       edges, pickem, survivor
   news/        impact classification
   backtest/    grading, CLV, calibration
   web/         dashboard (vanilla JS, no build step)

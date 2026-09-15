@@ -205,7 +205,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "season": season,
             "week": week,
             "ats": latest_pick("ats", season, week),
-            "crossmarket": latest_pick("crossmarket", season, week),
+            "prediction_markets": latest_pick("prediction_markets", season, week),
             "pickem": latest_pick("pickem", season, week),
             "survivor": latest_pick("survivor", season, week),
             "survivor_used": db.get_meta("survivor_used_teams", []) or [],

@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from ..sources.polymarket import PREDICTION_MARKET_VENUES
 from ..util import american_to_prob, devig, mean, median, prob_to_american
+from ..venues import is_sportsbook
 
 
 @dataclass
@@ -80,7 +80,7 @@ def sportsbook_quotes(quotes: list[dict]) -> list[dict]:
     benchmark toward the very price we want to measure against, and the
     cross-market comparison would partly be comparing that price to itself.
     """
-    return [q for q in quotes if (q.get("book") or "").lower() not in PREDICTION_MARKET_VENUES]
+    return [q for q in quotes if is_sportsbook(q.get("book"))]
 
 
 def latest_per_book(quotes: list[dict]) -> dict[tuple[str, str], dict]:
