@@ -62,6 +62,9 @@ class Config:
     refresh_scores: int = field(default_factory=lambda: _int("REFRESH_SCORES_SECONDS", 300))
     refresh_news: int = field(default_factory=lambda: _int("REFRESH_NEWS_SECONDS", 900))
     refresh_stats: int = field(default_factory=lambda: _int("REFRESH_STATS_SECONDS", 21600))
+    refresh_weather: int = field(
+        default_factory=lambda: _int("REFRESH_WEATHER_SECONDS", 10800)
+    )
     refresh_prediction_markets: int = field(
         default_factory=lambda: _int("REFRESH_PREDICTION_MARKETS_SECONDS", 600)
     )

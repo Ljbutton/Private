@@ -378,6 +378,10 @@ def game_cards(season: int, week: int) -> list[dict]:
     }
     graded = {r["game_id"]: r for r in db.query(
         f"SELECT * FROM graded WHERE game_id IN ({placeholders})", ids)}
+    live = {r["game_id"]: r for r in db.query(
+        f"SELECT * FROM live_state WHERE game_id IN ({placeholders})", ids)}
+    weather = {r["game_id"]: r for r in db.query(
+        f"SELECT * FROM game_weather WHERE game_id IN ({placeholders})", ids)}
 
     news_items = db.query(
         "SELECT id, title, url, source, published_at, teams, category, impact, line_impact "
@@ -429,6 +433,8 @@ def game_cards(season: int, week: int) -> list[dict]:
                     "points": move["points"][-40:],
                 },
                 "graded": graded.get(gid),
+                "live": live.get(gid),
+                "weather": weather.get(gid),
                 "news": news_by_game.get(gid, []),
                 "availability": {
                     "home": availability.get(game["home"]),

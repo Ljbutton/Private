@@ -38,6 +38,13 @@ available* number at any single book, which is the one you would actually bet.
 so each game has a movement chart showing the consensus, the individual books,
 and our number over time — plus a full prediction history.
 
+**Tracks games while they are being played.** In-progress games sort to the top
+with the clock, down and distance, who has the ball, and a live win probability
+that updates as the scoreboard does. The live model is a time-decay
+approximation: the pregame projection dominates early and fades as the game
+resolves it, and uncertainty shrinks with the square root of time remaining. It
+is display only — nothing there feeds a pick or a stake.
+
 **Flags news that matters.** Aggregates ESPN, ProFootballTalk, CBS, Yahoo and
 NFL.com, classifies each item (QB / injury / suspension / transaction /
 coaching / weather), attributes it to teams, estimates its effect on the spread
@@ -444,6 +451,7 @@ Each source has its own interval, because they age at very different rates:
 | Source | Default | Adaptive behaviour |
 |---|---|---|
 | Scores | 5 min | 60s while games are in progress; hourly when the next kickoff is over a day away |
+| Weather | 3 h | forecasts move slowly and only matter near kickoff |
 | Odds | 15 min | stretched to fit the remaining monthly API budget |
 | Prediction markets | 10 min | Polymarket and Kalshi, fetched independently so one being down costs only its column |
 | News | 15 min | — |
@@ -477,7 +485,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 186 tests, fully offline
+make test     # 206 tests, fully offline
 make lint
 ```
 
@@ -496,7 +504,8 @@ easy to get silently wrong:
   feeds routinely omit.
 - **Feature wiring.** That inference actually supplies the per-game detail the
   model was trained on. Training with columns that silently arrive as NaN in
-  production is invisible without a test for it.
+  production is invisible without a test for it — it has now happened twice, to
+  the play-by-play features and to temperature and wind.
 - **Venue separation.** That a prediction market never reaches the sportsbook
   consensus or the best-available price, in either direction.
 
@@ -513,6 +522,8 @@ nflpicker/
   market/      consensus, de-vigging, line movement, openers, prediction markets
   picks/       edges, pickem, survivor
   news/        impact classification
+  live.py      in-game win probability
+  availability.py  injury-adjusted projections
   backtest/    grading, CLV, calibration, teasers
   web/         dashboard (vanilla JS, no build step)
   pipeline.py  refresh orchestration

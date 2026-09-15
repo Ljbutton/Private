@@ -282,7 +282,27 @@ td.team { font-weight: 600; }
   font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
 }
 .newsline { margin-top: 9px; font-size: 11px; color: var(--text-secondary);
-  display: flex; gap: 5px; align-items: center; }
+  display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+
+/* ---- live game affordances ---- */
+.live-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--critical); margin-right: 6px; vertical-align: middle;
+  animation: live-pulse 2s var(--ease) infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--critical) 55%, transparent); }
+  70%      { box-shadow: 0 0 0 6px transparent; }
+}
+.card:has(.live-dot) { border-color: color-mix(in srgb, var(--critical) 35%, var(--border)); }
+.row-team .ball {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-primary); margin-left: -3px;
+}
+.lastplay {
+  margin-top: 7px; font-size: 11px; color: var(--text-muted);
+  border-left: 2px solid var(--border-strong); padding-left: 8px; line-height: 1.45;
+}
 
 /* --------------------------------------------------------------- misc */
 .badge {

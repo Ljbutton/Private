@@ -366,3 +366,25 @@ def generate_team_efficiency(season: int) -> list[dict]:
             "plays": 1000,
         })
     return rows
+
+
+def generate_weather(games: list[dict]) -> dict[str, dict]:
+    """Plausible kickoff forecasts for demo mode, including a few windy ones."""
+    rng = random.Random(len(games) * 31 + 7)
+    out: dict[str, dict] = {}
+    for game in games:
+        team = TEAMS.get(game["home"])
+        if team is None:
+            continue
+        if team.roof in {"dome", "retractable"}:
+            out[game["game_id"]] = {"roof": team.roof, "indoor": True,
+                                    "temp_f": 70.0, "wind_mph": 0.0, "precip_pct": 0.0}
+            continue
+        out[game["game_id"]] = {
+            "roof": "outdoor", "indoor": False,
+            "temp_f": round(rng.uniform(28, 82), 1),
+            # A long tail, so the 15mph threshold that matters is exercised.
+            "wind_mph": round(max(0.0, rng.gauss(8, 6)), 1),
+            "precip_pct": round(rng.uniform(0, 70), 1),
+        }
+    return out

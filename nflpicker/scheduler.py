@@ -60,6 +60,9 @@ class Scheduler:
             "odds": Job("odds", cfg.refresh_odds, ["odds"]),
             "news": Job("news", cfg.refresh_news, ["news"]),
             "stats": Job("stats", cfg.refresh_stats, ["stats"]),
+            # Forecasts move slowly and only matter near kickoff, so this is
+            # the cheapest job on the board.
+            "weather": Job("weather", cfg.refresh_weather, ["weather"]),
         }
         if cfg.prediction_markets_enabled:
             # Polled more often than the sportsbooks: a thin venue's whole value

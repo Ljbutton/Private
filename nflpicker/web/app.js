@@ -41,6 +41,19 @@ function ago(iso) {
   return `${Math.round(secs / 86400)}d ago`;
 }
 
+/* A compact "Q3 · 4:05 · 2nd & 7 · red zone" for a game in progress. */
+function liveLabel(live) {
+  const parts = [];
+  if (live.period) parts.push(live.period > 4 ? `OT${live.period - 4}` : `Q${live.period}`);
+  if (live.clock) parts.push(live.clock);
+  if (live.down) {
+    const ord = { 1: "1st", 2: "2nd", 3: "3rd", 4: "4th" }[live.down] || `${live.down}`;
+    parts.push(`${ord} & ${live.distance ?? "?"}`);
+  }
+  if (live.red_zone) parts.push("red zone");
+  return parts.join(" · ") || "Live";
+}
+
 /* The one place the sign convention is turned into words. A home line of -3.5
    means the home team lays 3.5 points. */
 function spreadText(card) {
@@ -101,9 +114,15 @@ async function renderGames() {
     return;
   }
 
+  // Games in progress lead: they are the ones changing while you look at them.
+  data.games.sort((a, b) => {
+    const rank = (g) => (g.status === "in_progress" ? 0 : g.status === "final" ? 2 : 1);
+    return rank(a) - rank(b) || String(a.kickoff).localeCompare(String(b.kickoff));
+  });
   const cards = data.games.map((card) => {
     const p = card.prediction;
     const final = card.status === "final";
+    const live = card.status === "in_progress" ? card.live : null;
     const movePoints = (card.movement.points || []).map((pt) => pt.value);
     const spark = movePoints.length > 1 ? sparkline(movePoints) : "";
     const homeProb = p ? p.home_win_prob : null;
@@ -115,16 +134,34 @@ async function renderGames() {
       const color = isHome ? card.home_color : card.away_color;
       const score = isHome ? card.home_score : card.away_score;
       const prob = homeProb === null ? null : (isHome ? homeProb : 1 - homeProb);
-      const right = final
-        ? `<span class="score">${score ?? "–"}</span>`
+      // While a game is live the score is the headline and the probability is
+      // the live one, not the pregame projection.
+      const liveProb = live && live.win_prob_home !== null && live.win_prob_home !== undefined
+        ? (isHome ? live.win_prob_home : 1 - live.win_prob_home) : null;
+      const right = (final || live)
+        ? `<span class="score">${score ?? "–"}</span>` +
+          (liveProb !== null ? `<span class="prob" style="margin-left:10px">${pct(liveProb)}</span>` : "")
         : `<span class="prob">${pct(prob)}</span>`;
+      const hasBall = live && live.possession === abbr
+        ? '<span class="ball" title="has possession"></span>' : "";
       return `<div class="row-team"><span class="swatch" style="background:${color}"></span>` +
-        `<span class="nm">${esc(abbr)}</span>` +
+        `<span class="nm">${esc(abbr)}</span>${hasBall}` +
         `<span class="rec">${esc(name.replace(abbr, "").trim())}</span>${right}</div>`;
     };
 
     const news = (card.news || []).slice(0, 2).map((n) =>
       `<span class="badge ${esc(n.category)}">${esc(n.category)}</span>`).join(" ");
+    // Only surface weather when it is the kind that moves a total. A mild
+    // afternoon is not information.
+    const w = card.weather;
+    const weatherFlag = (w && !w.indoor && (
+      (w.wind_mph ?? 0) >= 15 || (w.temp_f ?? 50) <= 32 || (w.precip_pct ?? 0) >= 60))
+      ? `<span class="badge weather">${(w.wind_mph ?? 0) >= 15
+          ? `${Math.round(w.wind_mph)} mph wind` : ""}${
+          (w.wind_mph ?? 0) >= 15 && (w.temp_f ?? 50) <= 32 ? " · " : ""}${
+          (w.temp_f ?? 50) <= 32 ? `${Math.round(w.temp_f)}°F` : ""}${
+          (w.precip_pct ?? 0) >= 60 ? ` · ${Math.round(w.precip_pct)}% precip` : ""}</span>`
+      : "";
     const hits = ["away", "home"]
       .map((side) => [side === "home" ? card.home : card.away, card.availability?.[side]])
       .filter(([, a]) => a && a.adjustment <= -1.0)
@@ -132,8 +169,12 @@ async function renderGames() {
         `${a.qb_change ? " QB" : ""}</span>`).join(" ");
 
     return `<article class="card" data-game="${esc(card.game_id)}" tabindex="0">
-      <div class="kick"><span>${final ? "Final" : when(card.kickoff)}</span>
+      <div class="kick">
+        <span>${live
+          ? `<span class="live-dot"></span>${esc(liveLabel(live))}`
+          : (final ? "Final" : when(card.kickoff))}</span>
         <span>${card.movement.steam ? "⚡ steam move" : (spark || "")}</span></div>
+      ${live && live.last_play ? `<div class="lastplay">${esc(live.last_play)}</div>` : ""}
       <div class="teams">${teamRow("away")}${teamRow("home")}</div>
       <div class="numbers">
         <div>Market<strong>${esc(spreadText(card))}</strong></div>
@@ -145,6 +186,7 @@ async function renderGames() {
         <div>Model total<strong>${num(p?.total_points, 1)}</strong></div>
         <div>Line move<strong>${signed(card.movement.spread_move)}</strong></div>
       </div>
+      ${weatherFlag ? `<div class="newsline">${weatherFlag}<span class="muted">conditions at kickoff</span></div>` : ""}
       ${hits ? `<div class="newsline">${hits}<span class="muted">injury adjustment applied</span></div>` : ""}
       ${news ? `<div class="newsline">${news}<span class="muted">news affecting this game</span></div>` : ""}
     </article>`;

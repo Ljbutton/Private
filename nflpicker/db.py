@@ -18,7 +18,7 @@ from typing import Any
 
 from .config import get_config
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -206,6 +206,42 @@ CREATE TABLE IF NOT EXISTS graded (
     log_loss       REAL
 );
 CREATE INDEX IF NOT EXISTS idx_graded_week ON graded(season, week);
+
+-- Forecast at kickoff, per game. The model trains on temperature and wind from
+-- historical records, so without this they arrive as NaN at inference for every
+-- upcoming game — trained-on columns that are always empty in production.
+CREATE TABLE IF NOT EXISTS game_weather (
+    game_id     TEXT PRIMARY KEY,
+    updated_at  TEXT NOT NULL,
+    roof        TEXT,
+    indoor      INTEGER NOT NULL DEFAULT 0,
+    temp_f      REAL,
+    wind_mph    REAL,
+    precip_pct  REAL
+);
+
+-- Live in-game state. Its own table rather than columns on `games` so an
+-- existing database picks it up with CREATE TABLE IF NOT EXISTS, without a
+-- migration to add columns.
+CREATE TABLE IF NOT EXISTS live_state (
+    game_id        TEXT PRIMARY KEY,
+    updated_at     TEXT NOT NULL,
+    period         INTEGER,
+    clock          TEXT,
+    seconds_left   REAL,          -- in the whole game, not the quarter
+    possession     TEXT,          -- team abbr with the ball
+    down           INTEGER,
+    distance       INTEGER,
+    yard_line      INTEGER,       -- yards from the possessing team's own goal
+    red_zone       INTEGER NOT NULL DEFAULT 0,
+    home_timeouts  INTEGER,
+    away_timeouts  INTEGER,
+    last_play      TEXT,
+    detail         TEXT,
+    home_score     INTEGER,
+    away_score     INTEGER,
+    win_prob_home  REAL           -- live, recomputed each poll
+);
 
 -- Per-game, per-team detail behind the market-blind features. Kept in its own
 -- table rather than recomputed from play-by-play on every refresh, which would

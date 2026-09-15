@@ -101,8 +101,60 @@ def parse_scoreboard(payload: dict) -> list[dict]:
         odds = _parse_event_odds(comp, game)
         if odds:
             game["espn_odds"] = odds
+        if game["status"] == "in_progress":
+            live = _parse_live_state(comp, home["abbr"], away["abbr"])
+            if live:
+                game["live"] = live
         games.append(game)
     return games
+
+
+def _parse_live_state(comp: dict, home: str, away: str) -> dict | None:
+    """Down, distance, possession and clock for a game in progress.
+
+    Possession comes back as a team *id*, so it is resolved against this
+    event's own competitors rather than a global table — ESPN's ids are stable
+    but there is no reason to carry a second mapping when the answer is here.
+    """
+    from ..live import parse_clock, seconds_remaining
+
+    status = comp.get("status") or {}
+    period = status.get("period")
+    clock = parse_clock(status.get("displayClock")) or _num(status.get("clock"))
+
+    by_id: dict[str, str] = {}
+    for competitor in comp.get("competitors") or []:
+        team_id = str(_dig(competitor, "team", "id") or "")
+        abbr = try_resolve(_dig(competitor, "team", "abbreviation"))
+        if team_id and abbr:
+            by_id[team_id] = abbr
+
+    situation = comp.get("situation") or {}
+    possession = by_id.get(str(situation.get("possession") or ""))
+
+    return {
+        "period": int(period) if period else None,
+        "clock": status.get("displayClock"),
+        "seconds_left": seconds_remaining(int(period) if period else None, clock),
+        "possession": possession,
+        "down": _int_or_none(situation.get("down")),
+        "distance": _int_or_none(situation.get("distance")),
+        "yard_line": _int_or_none(situation.get("yardLine")),
+        "red_zone": bool(situation.get("isRedZone")),
+        "home_timeouts": _int_or_none(situation.get("homeTimeouts")),
+        "away_timeouts": _int_or_none(situation.get("awayTimeouts")),
+        "last_play": (_dig(situation, "lastPlay", "text") or "")[:300] or None,
+        "detail": _dig(status, "type", "detail"),
+        "home": home,
+        "away": away,
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_event_odds(comp: dict, game: dict) -> dict | None:

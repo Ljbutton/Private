@@ -297,10 +297,16 @@ class Pipeline:
                 for past in range(season - DEMO_HISTORY_SEASONS, season):
                     count += self.upsert_games(_demo_season(past, 18)["games"])
                 payload = _demo_season(season, max(0, week - 1))
-                count += self.upsert_games(payload["games"])
+                games = _demo_live_games(payload["games"], week)
+                count += self.upsert_games(games)
+                live = self.store_live_state(games)
+                if live:
+                    self.refresh_live_probabilities()
                 detail = (
                     f"demo seasons {season - DEMO_HISTORY_SEASONS}-{season}, {count} games"
                 )
+                if live:
+                    detail += f", {live} live"
             else:
                 from .sources.espn import EspnSource
 
@@ -310,13 +316,90 @@ class Pipeline:
                 if not games:
                     raise SourceError("ESPN returned no games")
                 count = self.upsert_games(games)
+                live = self.store_live_state(games)
+                if live:
+                    self.refresh_live_probabilities()
                 detail = f"{count} games from ESPN"
+                if live:
+                    detail += f", {live} live"
                 self._store_espn_fallback_odds(games)
             result.record("schedule", True, detail, count=count)
             db.log_fetch("schedule", True, detail, int((time.monotonic() - start) * 1000))
         except Exception as exc:  # noqa: BLE001
             result.record("schedule", False, str(exc))
             db.log_fetch("schedule", False, str(exc), int((time.monotonic() - start) * 1000))
+
+    def store_live_state(self, games: list[dict]) -> int:
+        """Persist in-game state, and clear it once a game is final."""
+        stamp = now_iso()
+        rows = []
+        finished = []
+        for game in games:
+            live = game.get("live")
+            if game.get("status") == "final" or not live:
+                finished.append(game["game_id"])
+                continue
+            rows.append([
+                game["game_id"], stamp, live.get("period"), live.get("clock"),
+                live.get("seconds_left"), live.get("possession"), live.get("down"),
+                live.get("distance"), live.get("yard_line"), int(bool(live.get("red_zone"))),
+                live.get("home_timeouts"), live.get("away_timeouts"),
+                live.get("last_play"), live.get("detail"),
+                game.get("home_score"), game.get("away_score"), None,
+            ])
+        db.executemany(
+            "INSERT OR REPLACE INTO live_state(game_id, updated_at, period, clock, "
+            "seconds_left, possession, down, distance, yard_line, red_zone, "
+            "home_timeouts, away_timeouts, last_play, detail, home_score, away_score, "
+            "win_prob_home) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        # A finished game is no longer live; leaving the row behind would show a
+        # stale third-quarter clock next to a final score.
+        if finished:
+            placeholders = ",".join("?" for _ in finished)
+            db.execute(
+                f"DELETE FROM live_state WHERE game_id IN ({placeholders})", finished
+            )
+        return len(rows)
+
+    def refresh_live_probabilities(self) -> int:
+        """Recompute live win probability for every game in progress.
+
+        Kept separate from the scoreboard fetch so it can run on the cheap
+        cadence the scoreboard already uses, without waiting for a full
+        recompute — the pregame projection it leans on changes far more slowly
+        than the scoreboard does.
+        """
+        from .live import LiveState, win_probability
+
+        rows = db.query(
+            "SELECT l.*, g.home, g.away FROM live_state l "
+            "JOIN games g ON g.game_id = l.game_id"
+        )
+        updates = []
+        for row in rows:
+            prediction = db.query_one(
+                "SELECT margin_home FROM predictions WHERE game_id = ? "
+                "ORDER BY captured_at DESC LIMIT 1",
+                (row["game_id"],),
+            )
+            pregame = float((prediction or {}).get("margin_home") or 0.0)
+            state = LiveState(
+                period=row["period"], seconds_left=row["seconds_left"],
+                possession=row["possession"], down=row["down"],
+                distance=row["distance"], yard_line=row["yard_line"],
+                red_zone=bool(row["red_zone"]),
+                home_score=int(row["home_score"] or 0),
+                away_score=int(row["away_score"] or 0),
+            )
+            updates.append([
+                win_probability(state, pregame, row["home"]), row["game_id"]
+            ])
+        db.executemany(
+            "UPDATE live_state SET win_prob_home = ? WHERE game_id = ?", updates
+        )
+        return len(updates)
 
     def _store_espn_fallback_odds(self, games: list[dict]) -> None:
         """ESPN posts one consensus line; without an Odds API key it is all we have."""
@@ -478,6 +561,65 @@ class Pipeline:
                 continue
             out.append(q)
         return out
+
+    def refresh_weather(self, result: RefreshResult) -> None:
+        """Forecast at kickoff for upcoming games.
+
+        The model already has temperature and wind as features because the
+        historical record carries them, but nothing was filling them for games
+        that had not been played — so two trained-on columns arrived empty at
+        inference every time. Wind is the one that matters: above roughly
+        15 mph it is the largest weather effect on scoring.
+        """
+        start = time.monotonic()
+        try:
+            games = db.query(
+                "SELECT game_id, home, kickoff FROM games "
+                "WHERE status = 'scheduled' AND kickoff IS NOT NULL AND kickoff > ? "
+                "ORDER BY kickoff LIMIT 48",
+                (now_iso(),),
+            )
+            if not games:
+                result.record("weather", True, "no upcoming games")
+                return
+
+            if self.demo:
+                from .sources.demo import generate_weather
+
+                forecasts = generate_weather(games)
+            else:
+                from .sources.weather import WeatherSource
+
+                source = WeatherSource()
+                forecasts = {}
+                for game in games:
+                    forecast = source.for_game(game["home"], game["kickoff"])
+                    if forecast:
+                        forecasts[game["game_id"]] = forecast
+
+            stamp = now_iso()
+            db.executemany(
+                "INSERT OR REPLACE INTO game_weather"
+                "(game_id, updated_at, roof, indoor, temp_f, wind_mph, precip_pct) "
+                "VALUES(?,?,?,?,?,?,?)",
+                [
+                    [gid, stamp, f.get("roof"), int(bool(f.get("indoor"))),
+                     f.get("temp_f"), f.get("wind_mph"), f.get("precip_pct")]
+                    for gid, f in forecasts.items()
+                ],
+            )
+            windy = sum(1 for f in forecasts.values() if (f.get("wind_mph") or 0) >= 15)
+            detail = f"{len(forecasts)} forecasts"
+            if windy:
+                detail += f", {windy} windy"
+            result.record("weather", True, detail, count=len(forecasts))
+            db.log_fetch("weather", True, detail, int((time.monotonic() - start) * 1000))
+        except Exception as exc:  # noqa: BLE001
+            result.record("weather", False, str(exc))
+            db.log_fetch("weather", False, str(exc), int((time.monotonic() - start) * 1000))
+
+    def load_weather(self) -> dict[str, dict]:
+        return {r["game_id"]: r for r in db.query("SELECT * FROM game_weather")}
 
     def refresh_news(self, result: RefreshResult) -> None:
         start = time.monotonic()
@@ -748,11 +890,19 @@ class Pipeline:
             "SELECT * FROM games WHERE season <= ? ORDER BY season, week, kickoff", (season,)
         )
         consensus_all = self.latest_consensus()
+        weather = self.load_weather()
         for g in history:
             row = consensus_all.get(g["game_id"])
             if row:
                 g["spread_home"] = row["spread_home"]
                 g["market_total"] = row["total_points"]
+            forecast = weather.get(g["game_id"])
+            # Only fill what the historical record has not already supplied.
+            if forecast and g.get("temp") is None:
+                g["temp"] = forecast["temp_f"]
+                g["wind"] = forecast["wind_mph"]
+            if forecast and forecast["indoor"]:
+                g["roof"] = forecast["roof"] or g.get("roof")
         full_frame = build_features(
             history, team_game_stats=self.load_team_game_stats(season)
         )
@@ -992,7 +1142,8 @@ class Pipeline:
     # ------------------------------------------------------------ full refresh
     def refresh(self, stages: list[str] | None = None, *, force_odds: bool = False) -> RefreshResult:
         stages = stages or [
-            "schedule", "odds", "prediction_markets", "news", "stats", "recompute",
+            "schedule", "odds", "prediction_markets", "news", "weather", "stats",
+            "recompute",
         ]
         result = RefreshResult()
         if "schedule" in stages:
@@ -1001,6 +1152,8 @@ class Pipeline:
             self.refresh_odds(result, force=force_odds)
         if "prediction_markets" in stages:
             self.refresh_prediction_markets(result)
+        if "weather" in stages:
+            self.refresh_weather(result)
         if "news" in stages:
             self.refresh_news(result)
         if "stats" in stages:
@@ -1073,6 +1226,52 @@ def _demo_prediction_market(pipeline) -> list:
                     volume=rng.uniform(2000, 60000),
                 ))
     return quotes
+
+
+def _demo_live_games(games: list[dict], week: int) -> list[dict]:
+    """Put a couple of the current week's games in progress, for demo mode."""
+    import random
+
+    from .live import seconds_remaining
+
+    upcoming = [g for g in games if g["week"] == week and g["status"] == "scheduled"]
+    if len(upcoming) < 2:
+        return games
+
+    rng = random.Random(week * 97)
+    chosen = {g["game_id"] for g in upcoming[:2]}
+    out = []
+    for game in games:
+        if game["game_id"] not in chosen:
+            out.append(game)
+            continue
+        period = rng.choice([2, 3, 4])
+        clock = rng.uniform(60, 880)
+        home_score = rng.choice([7, 10, 13, 17, 20, 24])
+        away_score = rng.choice([3, 7, 14, 17, 21])
+        yard_line = rng.randint(5, 95)
+        out.append({
+            **game,
+            "status": "in_progress",
+            "home_score": home_score,
+            "away_score": away_score,
+            "live": {
+                "period": period,
+                "clock": f"{int(clock // 60)}:{int(clock % 60):02d}",
+                "seconds_left": seconds_remaining(period, clock),
+                "possession": rng.choice([game["home"], game["away"]]),
+                "down": rng.randint(1, 4),
+                "distance": rng.randint(1, 15),
+                "yard_line": yard_line,
+                # Consistent with field position rather than rolled separately.
+                "red_zone": yard_line >= 80,
+                "home_timeouts": rng.randint(0, 3),
+                "away_timeouts": rng.randint(0, 3),
+                "last_play": "Synthetic demo drive — enable live sources for real plays.",
+                "detail": f"Q{period}",
+            },
+        })
+    return out
 
 
 def _over_prob(team_season, line: float | None) -> float | None:
