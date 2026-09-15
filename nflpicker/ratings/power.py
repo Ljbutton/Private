@@ -5,11 +5,19 @@ it after week W, predict every remaining game of that season, and see how close
 you get. Measured that way over 20,007 rest-of-season games from 2006 to 2025,
 the formula this replaced was **worse than using Elo alone**:
 
-    formula                      MAE     corr    straight-up
-    Elo + EPA (what was here)  11.145    0.320      62.3%
-    Elo alone                  10.903    0.327      62.5%
-    Elo + Pythagorean          10.930    0.335      62.2%
-    0.50*Elo + 3*Pythagorean   10.930    0.335      62.2%
+    formula                       MAE     corr   straight-up   slope
+    Elo + EPA (what was here)   11.145    0.320     62.3%       0.66
+    Elo alone                   10.903    0.327     62.5%        --
+    0.50*Elo + 3.0*Pythagorean  10.930    0.335     62.2%       1.59
+    0.80*Elo + 4.8*Pythagorean  10.864    0.335     62.9%       1.00
+
+"slope" is the regression of actual margin on the rating's own prediction; 1.0
+means a rating that reads +7 describes a team that wins by 7. The old formula
+was over-dispersed (0.66) because EPA added spread that was mostly noise, and
+the straightforward fitted replacement was *under*-dispersed (1.59) because a
+squared-error fit shrinks toward the mean. Scaling the fitted pair up by 1.6
+fixes the scale, and since a positive scalar cannot reorder anything it is free:
+it is also the RMSE optimum and better on both MAE and straight-up.
 
 The EPA blend was the problem. It ramped to 60% weight by week 10, and net EPA
 turns out to carry almost nothing about the *rest of the season* once Elo and
@@ -46,12 +54,16 @@ from .efficiency import LEAGUE_POINTS_PER_GAME, TeamEfficiency, shrink
 # League-average home-field advantage in points. Modern NFL sits near 1.8.
 HOME_FIELD_POINTS = 1.8
 
-# Fitted against rest-of-season margin; see the module docstring. Elo is an
-# excellent ordering quoted at roughly twice the spread it earns, and
-# Pythagorean expectation on a 0-1 scale is worth about three points of margin
-# end to end.
-ELO_SHRINK = 0.50
-PYTHAGOREAN_POINTS = 3.0
+# Fitted against rest-of-season margin, then scaled so the rating means what it
+# says. The ridge fit gives 0.56 and 3.4, but a squared-error fit deliberately
+# under-disperses: at those values the regression of actual margin on the
+# rating has a slope of 1.59, i.e. a rating that reads +7 is describing a team
+# that actually wins by 11. Scaling the pair up by 1.6 puts that slope at 1.00
+# and, because ordering is untouched, costs nothing -- it is simultaneously the
+# RMSE optimum (13.928) and better on MAE and straight-up than the fitted
+# values. See the module docstring for the table.
+ELO_SHRINK = 0.80
+PYTHAGOREAN_POINTS = 4.8
 
 # Below this many games a team's points for and against are noise, and the
 # Pythagorean term is faded in rather than trusted from one blowout.

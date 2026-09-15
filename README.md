@@ -341,6 +341,28 @@ play. The ▲▼ beside a team is how far it sits from where its record alone wo
 put it — a team five places higher is one the model thinks has been unlucky, and
 that gap is the one thing a table sorted by record can never show.
 
+#### Ours against everybody else's
+
+The **Teams** page opens with two panels: the biggest disagreements between this
+app's rating and the average of published top-32s, and that consensus itself
+with an importer beneath it.
+
+Those lists are editorial opinion, so the consensus is not a scoreboard and
+agreeing with it is not a goal. What it is good for is finding outliers: where
+our rating and a *tight* consensus differ by a dozen places, one of the two has
+found something. The spread between sources is shown on every row, because
+disagreeing with a team the sources themselves cannot place is not evidence of
+anything — that is why a row is only flagged when the gap is eight or more
+places **and** the sources are within eight of each other.
+
+Rankings are pasted in rather than scraped. They are articles, not APIs: the URL
+shape changes every season and the markup changes more often, and a parser that
+half-works would store eleven teams and quietly drag the average toward whoever
+it managed to read. Everything — paste or fetch — goes through a validator that
+demands exactly 32 distinct teams ranked 1 to 32, and refuses the lot otherwise
+with a message naming what is missing. Copy the list straight off the page;
+numbering, full team names and trailing commentary are all handled.
+
 #### The blind projection is compressed, and that is not a bug
 
 The blind column on the board never predicts a blowout. Measured out-of-sample

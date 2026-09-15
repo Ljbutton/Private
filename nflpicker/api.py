@@ -339,6 +339,55 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         return {"contest": contest, "season": season, "entries": rows}
 
     # ------------------------------------------------------------- news
+    # ------------------------------------------------- outside rankings
+    @app.get("/api/rankings")
+    def external_rankings(season: int | None = None, weeks: str = "1,2") -> dict:
+        """The consensus of published rankings, and how ours compares."""
+        from . import rankings as rankings_module
+
+        season = season or pipeline.season()
+        wanted = tuple(int(w) for w in weeks.split(",") if w.strip().isdigit())
+        our_order = [
+            r["team"] for r in db.query(
+                "SELECT t.team, t.power FROM team_ratings t JOIN (SELECT team, "
+                "MAX(captured_at) m FROM team_ratings WHERE season = ? GROUP BY team) x "
+                "ON x.team = t.team AND x.m = t.captured_at ORDER BY t.power DESC",
+                (season,))
+        ]
+        result = rankings_module.compare(season, our_order, wanted or (1, 2))
+        result["available_sources"] = [
+            {"key": src.key, "name": src.name, "note": src.note}
+            for src in rankings_module.SOURCES
+        ]
+        return result
+
+    @app.post("/api/rankings/import")
+    def import_ranking(payload: dict) -> dict:
+        """Paste a published top-32 in. Refused unless it is a complete 1-32."""
+        from . import rankings as rankings_module
+
+        season = int(payload.get("season") or pipeline.season())
+        week = int(payload.get("week") or 1)
+        source = str(payload.get("source") or "user").strip().lower()
+        try:
+            ranks = rankings_module.parse_text(str(payload.get("text") or ""))
+        except rankings_module.RankingError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        stored = rankings_module.store(source, season, week, ranks)
+        return {"stored": stored, "source": source, "season": season, "week": week}
+
+    @app.delete("/api/rankings/{source}")
+    def delete_ranking(source: str, season: int | None = None,
+                       week: int | None = None) -> dict:
+        season = season or pipeline.season()
+        sql = "DELETE FROM external_rankings WHERE source = ? AND season = ?"
+        params: list[Any] = [source, season]
+        if week:
+            sql += " AND week = ?"
+            params.append(week)
+        db.execute(sql, params)
+        return {"deleted": source}
+
     # --------------------------------------------------------- settings
     @app.get("/api/settings")
     def read_settings() -> dict:

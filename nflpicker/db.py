@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -140,6 +140,22 @@ CREATE TABLE IF NOT EXISTS team_ratings (
     UNIQUE(team, captured_at)
 );
 CREATE INDEX IF NOT EXISTS idx_ratings_team ON team_ratings(team, captured_at);
+
+-- Published power rankings from other outlets, one row per team per list.
+-- Kept whole: a partial list is rejected before it reaches here, so anything
+-- stored is a complete 1-32 and the consensus cannot be dragged by a parser
+-- that only half-worked.
+CREATE TABLE IF NOT EXISTS external_rankings (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source      TEXT NOT NULL,
+    season      INTEGER NOT NULL,
+    week        INTEGER NOT NULL,
+    team        TEXT NOT NULL,
+    rank        INTEGER NOT NULL,
+    captured_at TEXT NOT NULL,
+    UNIQUE(source, season, week, team)
+);
+CREATE INDEX IF NOT EXISTS idx_extrank ON external_rankings(season, week);
 
 CREATE TABLE IF NOT EXISTS season_projections (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

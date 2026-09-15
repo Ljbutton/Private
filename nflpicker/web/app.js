@@ -207,6 +207,9 @@ function foldPanels(root) {
   panels.forEach((panel, index) => {
     const header = $("header", panel);
     if (!header || panel.closest("details")) return;
+    // Some panels are the point of their page rather than reference material
+    // behind it. Folding the ranking comparison hid the comparison.
+    if (panel.closest("[data-nofold]")) return;
 
     const details = document.createElement("details");
     details.className = panel.className + " fold";
@@ -768,9 +771,88 @@ async function openGame(gameId) {
 }
 
 // ------------------------------------------------------------------- teams
+/* Ours against everybody else's, side by side.
+
+   The consensus is the average of published top-32s from ESPN, NFL.com, CBS and
+   the rest, pooled over weeks 1 and 2. It is opinion rather than measurement,
+   so it is not a scoreboard -- but where our rating and a *tight* consensus
+   disagree by a dozen places, one of us has found something and it is worth
+   knowing which. A team the sources themselves cannot place is not evidence of
+   anything, so the spread between them is shown beside every row. */
+function comparisonBlock(con, data) {
+  const hasData = con && con.n_lists > 0 && (con.comparison || []).length;
+  const sources = hasData
+    ? con.sources.map((k) => esc(con.source_names[k] || k)).join(", ") : "";
+
+  const left = `<div class="panel">
+    <header><h2>Biggest disagreements</h2>
+      <span class="hint">${hasData
+        ? `us vs ${con.n_lists} published list${con.n_lists === 1 ? "" : "s"} ·
+           mean gap ${con.mean_abs_gap} places`
+        : "nothing imported yet"}</span></header>
+    ${hasData ? `<table class="slate">
+      <thead><tr><th>Team</th><th class="num">Ours</th><th class="num">Them</th>
+        <th class="num">Gap</th><th class="num" title="How far apart the sources are on this team">Spread</th></tr></thead>
+      <tbody>${con.comparison.slice(0, 12).map((r) => {
+        const strong = Math.abs(r.gap) >= 8 && r.spread <= 8;
+        return `<tr class="${strong ? "flag" : ""}">
+          <td class="who">${esc(r.team)}</td>
+          <td class="num">${r.our_rank}</td>
+          <td class="num">${r.consensus_rank}</td>
+          <td class="num ${r.gap > 0 ? "hit" : (r.gap < 0 ? "miss" : "")}">${
+            r.gap > 0 ? "+" : ""}${r.gap}</td>
+          <td class="num muted">${r.spread}</td>
+        </tr>`;
+      }).join("")}</tbody></table>
+      <p class="note">A positive gap means we rate a team higher than the
+        published lists do. Rows marked in colour are the ones worth arguing
+        about: a gap of eight or more places on a team the sources themselves
+        agree about (spread of eight or less).</p>`
+      : '<div class="empty">Import a published top-32 to compare against.</div>'}
+  </div>`;
+
+  const right = `<div class="panel">
+    <header><h2>Outside consensus</h2>
+      <span class="hint">${hasData
+        ? `weeks ${con.weeks.join(" & ")} · ${sources}`
+        : "paste a published ranking"}</span></header>
+    ${hasData ? `<div class="table-scroll tall"><table class="slate">
+      <thead><tr><th>#</th><th>Team</th><th class="num">Avg</th>
+        <th class="num">Range</th><th class="num">Ours</th></tr></thead>
+      <tbody>${con.comparison.slice().sort((a, b) => a.consensus_rank - b.consensus_rank)
+        .map((r) => `<tr>
+          <td class="num muted">${r.consensus_rank}</td>
+          <td class="who">${esc(r.team)} <span class="muted">${esc(r.name)}</span></td>
+          <td class="num">${r.mean_rank.toFixed(1)}</td>
+          <td class="num muted">${r.best}–${r.worst}</td>
+          <td class="num">${r.our_rank}</td>
+        </tr>`).join("")}</tbody></table></div>`
+      : ""}
+    <div class="import-box">
+      <h3>Add a list</h3>
+      <div class="controls">
+        <select id="rank-source">${(con?.available_sources || [])
+          .map((s) => `<option value="${esc(s.key)}">${esc(s.name)}</option>`).join("")}</select>
+        <select id="rank-week">${[1, 2, 3, 4, 5].map((w) =>
+          `<option value="${w}">Week ${w}</option>`).join("")}</select>
+        <button class="btn primary" id="rank-save">Import</button>
+        <span id="rank-msg" class="muted"></span>
+      </div>
+      <textarea id="rank-text" rows="4" placeholder="Paste a published top 32 — &#10;1. Seattle Seahawks&#10;2. Philadelphia Eagles&#10;…"></textarea>
+      <p class="note">Copy the list straight off the page; numbering, full team
+        names and trailing commentary are all fine. It is stored only if it
+        parses to a complete 1&ndash;32 — a half-read list would quietly drag
+        the average toward whichever teams happened to come through.</p>
+    </div>
+  </div>`;
+
+  return `<div class="grid-2 rank-split" data-nofold>${left}${right}</div>`;
+}
+
 async function renderTeams() {
   const root = $("#view");
   const data = await api("/api/teams");
+  const con = await api("/api/rankings?weeks=1,2").catch(() => null);
   // Season win totals only exist when the odds feed publishes futures. Two
   // columns of dashes read as a bug, so drop them when nothing has one.
   const hasWinTotals = data.teams.some(
@@ -822,7 +904,8 @@ async function renderTeams() {
       </tr>`;
     }).join("");
 
-  root.innerHTML = `<div class="panel">
+  root.innerHTML = `${comparisonBlock(con, data)}
+  <div class="panel">
     <header><h2>Power ranking</h2>
       <span class="hint">Ranked by projected finish, not by record · ▲▼ is how
         far a team sits from where its record would put it · rating is points
