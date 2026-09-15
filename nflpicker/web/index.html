@@ -19,7 +19,7 @@
     <nav class="side-nav" role="tablist">
       <button class="tab" role="tab" data-tab="home" aria-selected="true">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
-        <span>Home</span></button>
+        <span>Home</span><span class="nav-badge" id="alert-count" hidden></span></button>
       <button class="tab" role="tab" data-tab="games" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 3v3h5V8zm9 0v3h5V8zM5 13v3h5v-3zm9 0v3h5v-3z"/></svg>
         <span>Games</span></button>
@@ -35,6 +35,9 @@
       <button class="tab" role="tab" data-tab="edge" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.5 9.5 11l4 4L21 7.5 19.6 6l-6.1 6.1-4-4L1.6 16z"/><path d="M15 6h6v6h-2V8h-4z"/></svg>
         <span>Edge</span></button>
+      <button class="tab" role="tab" data-tab="scoreboard" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v2h2v4a4 4 0 0 1-4 4h-.4A5 5 0 0 1 13 15.9V18h3v3H8v-3h3v-2.1A5 5 0 0 1 7.4 13H7a4 4 0 0 1-4-4V5h2zm0 4v2a2 2 0 0 0 2 2V7zm12 0v4a2 2 0 0 0 2-2V7z"/></svg>
+        <span>Scoreboard</span></button>
       <button class="tab" role="tab" data-tab="performance" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h3v-7H4zm6.5 0h3V4h-3zM17 20h3v-11h-3z"/></svg>
         <span>Performance</span></button>
@@ -71,6 +74,7 @@
       </div>
     </header>
 
+    <div id="alerts"></div>
     <div id="view"><div class="panel"><div class="empty">Loading…</div></div></div>
   </main>
 

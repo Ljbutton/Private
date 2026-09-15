@@ -653,6 +653,49 @@ easy to get silently wrong:
 
 ---
 
+## Your picks, and who is actually right
+
+Click the chip in the **You** column on the board to record your own pick —
+clicking again cycles away, home, none. The point is to be able to disagree: with
+the model, with the book, or with both.
+
+The **Scoreboard** then scores everyone on straight-up winners, which is the one
+question all four can be asked without a spread or a price to argue about. Two
+columns, and the second is the honest one:
+
+- **All their picks** — each picker's record over the games it had a view on.
+- **Same games** — only games where *every* picker had a view. Without it a
+  source can look good by having an opinion about the easy games and staying
+  quiet on the rest.
+
+A source with no opinion is not scored as wrong, a tie is a push for everyone,
+and an exact 50% is not a pick.
+
+## Alerts
+
+In-app only, deliberately — nothing is pushed anywhere. The app already sits
+open; what it lacked was a way to say "something changed" without re-reading
+sixteen rows.
+
+It raises a starter being ruled out, a line crossing 3 or 7, a steam move, and a
+disagreement of two points or more against the **opening** line. Two rules keep
+it from becoming noise: every alert is about a *change* rather than a state, and
+each distinct event fires once — recompute runs every few minutes, so anything
+keyed on current state would re-raise the same alert until kickoff.
+
+## The opener
+
+The model does not beat the closing line, and the app says so. The opener is a
+different question: it is the same market before it has been corrected, and it is
+the only place a disagreement is worth a second look.
+
+So the opener is **not** a training target and not what the app recommends on.
+It is reported separately — `opener_edge` on each game, and an alert past two
+points — which keeps that distinction visible instead of quietly blending two
+different claims into one number.
+
+---
+
 ## Turning on real data
 
 Demo mode is off unless you ask for it, so a normal launch is already live. Most

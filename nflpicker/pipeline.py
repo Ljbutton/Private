@@ -1287,9 +1287,23 @@ class Pipeline:
         graded = grade_completed_games(season)
 
         db.set_meta("last_recompute", stamp)
+        # Alerts are derived from the same cards the dashboard renders, rather
+        # than from a second set of queries, so an alert can never describe
+        # something the board disagrees with.
+        raised = 0
+        try:
+            from . import alerts as alerts_module
+            from .api import game_cards
+
+            raised = alerts_module.record(alerts_module.from_games(
+                game_cards(season, week)))
+        except Exception as exc:  # noqa: BLE001 - alerts must never break a refresh
+            log.warning("could not raise alerts: %s", exc)
+
         detail = (
             f"{len(predictions)} predictions, {len(sim.teams)} team projections, "
             f"{graded} newly graded"
+            + (f", {raised} new alert(s)" if raised else "")
         )
         if result:
             result.record("recompute", True, detail,

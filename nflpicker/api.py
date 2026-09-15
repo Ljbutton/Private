@@ -120,6 +120,61 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         }
 
     # ------------------------------------------------------------ teams
+    @app.get("/api/alerts")
+    def alerts_feed(limit: int = 40, unseen: bool = False) -> dict:
+        from . import alerts as alerts_module
+
+        rows = alerts_module.recent(limit=limit, unseen_only=unseen)
+        unseen_count = db.query_one("SELECT COUNT(*) AS n FROM alerts WHERE seen = 0")
+        return {"alerts": rows, "unseen": int((unseen_count or {}).get("n") or 0)}
+
+    @app.post("/api/alerts/seen")
+    def alerts_seen(payload: dict | None = None) -> dict:
+        from . import alerts as alerts_module
+
+        alerts_module.mark_seen((payload or {}).get("ids"))
+        return {"ok": True}
+
+    @app.get("/api/my-picks")
+    def my_picks(season: int | None = None, week: int | None = None) -> dict:
+        season = season or pipeline.season()
+        where = "season = ?" + (" AND week = ?" if week else "")
+        params = (season, week) if week else (season,)
+        rows = db.query(f"SELECT * FROM user_picks WHERE {where}", params)  # noqa: S608
+        return {"season": season, "week": week, "picks": rows}
+
+    @app.post("/api/my-picks")
+    def set_my_pick(payload: dict) -> dict:
+        """Record or clear one pick. An empty selection removes it, so the UI
+        can toggle a choice off without a second endpoint."""
+        game = db.query_one("SELECT * FROM games WHERE game_id = ?",
+                            (payload.get("game_id"),))
+        if not game:
+            raise HTTPException(status_code=404, detail="unknown game")
+        contest = payload.get("contest") or "straight"
+        selection = (payload.get("selection") or "").strip().upper()
+        if not selection:
+            db.execute(
+                "DELETE FROM user_picks WHERE season = ? AND week = ? "
+                "AND game_id = ? AND contest = ?",
+                (game["season"], game["week"], game["game_id"], contest))
+            return {"ok": True, "selection": None}
+        if selection not in {game["home"], game["away"]}:
+            raise HTTPException(status_code=400, detail="not a team in this game")
+        db.execute(
+            "INSERT OR REPLACE INTO user_picks"
+            "(season, week, game_id, contest, selection, note, updated_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (game["season"], game["week"], game["game_id"], contest, selection,
+             payload.get("note"), now_iso()))
+        return {"ok": True, "selection": selection}
+
+    @app.get("/api/scoreboard")
+    def scoreboard_view(season: int | None = None) -> dict:
+        from . import scoreboard
+
+        return scoreboard.report(season or pipeline.season())
+
     @app.get("/api/teams")
     def teams() -> dict:
         season = pipeline.season()
@@ -350,6 +405,26 @@ def latest_book_table(game_id: str) -> list[dict]:
     return sorted(by_book.values(), key=lambda b: b["book"])
 
 
+def _opener_edge(prediction: dict | None, move: dict) -> float | None:
+    """How far our number sits from the line *as it opened*.
+
+    Deliberately not a training target and not the number the app recommends
+    on. The closing line is the sharp one and the model does not beat it; the
+    opener is the same market before it has been corrected, which is the only
+    place a disagreement is worth a second look. Reporting it separately keeps
+    that distinction visible instead of quietly blending two different claims.
+
+    Positive means we like the home side more than the opening line did.
+    """
+    if not prediction:
+        return None
+    opening = move.get("open")
+    fair = prediction.get("fair_margin")
+    if opening is None or fair is None:
+        return None
+    return round(float(fair) - (-float(opening)), 2) or 0.0
+
+
 def _moved_toward_us(prediction: dict | None, move: dict) -> float | None:
     """Points the line has moved toward the side we favour, since it opened.
 
@@ -461,6 +536,7 @@ def game_cards(season: int, week: int) -> list[dict]:
                     "total_open": total_move["open"], "total_now": total_move["current"],
                     "total_move": total_move["move"],
                     "toward_us": _moved_toward_us(prediction, move),
+                    "opener_edge": _opener_edge(prediction, move),
                     "points": move["points"][-40:],
                 },
                 "graded": graded.get(gid),

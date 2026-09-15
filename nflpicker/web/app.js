@@ -170,6 +170,102 @@ function kickoffShort(iso) {
     d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+// ------------------------------------------------------------------ alerts
+/* In-app only, by choice. The app already sits open on a desk; what it lacked
+   was a way to say "something changed" without re-reading sixteen rows. */
+async function renderAlerts() {
+  const host = $("#alerts");
+  if (!host) return;
+  const data = await api("/api/alerts?limit=6").catch(() => ({ alerts: [], unseen: 0 }));
+  const rows = data.alerts || [];
+  const unseen = data.unseen || 0;
+
+  const badge = $("#alert-count");
+  if (badge) {
+    badge.textContent = unseen ? String(unseen) : "";
+    badge.hidden = !unseen;
+  }
+  if (!rows.length) { host.innerHTML = ""; return; }
+
+  host.innerHTML = `<div class="alerts">
+    <div class="alerts-head">
+      <span class="eyebrow"><span class="pulse"></span>${unseen || rows.length} recent</span>
+      <button class="btn" id="dismiss-alerts">Mark all read</button>
+    </div>
+    ${rows.map((a) => `<div class="alert ${esc(a.severity)}${a.seen ? " seen" : ""}">
+      <span class="dot"></span>
+      <div><b>${esc(a.title)}</b>${a.detail ? `<div class="sub">${esc(a.detail)}</div>` : ""}</div>
+      <span class="when">${ago(a.created_at)}</span>
+    </div>`).join("")}
+  </div>`;
+
+  $("#dismiss-alerts")?.addEventListener("click", async () => {
+    await api("/api/alerts/seen", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await renderAlerts();
+  });
+}
+
+// -------------------------------------------------------------- scoreboard
+/* Who is actually picking these best. Straight-up winners only: every source
+   here names a favourite, so it is the one question all of them can be asked. */
+async function renderScoreboard() {
+  const root = $("#view");
+  const d = await api(`/api/scoreboard?season=${state.season}`);
+  const pickers = d.pickers || [];
+  if (!d.weeks.length) {
+    root.innerHTML = `<div class="panel"><div class="empty">
+      Nothing graded yet — this fills in as games finish and you record picks on the board.
+    </div></div>`;
+    return;
+  }
+
+  const cell = (t) => (t.n
+    ? `<td class="num"><b>${pct(t.rate)}</b><span class="rec">${t.correct}-${t.wrong}</span></td>`
+    : '<td class="num muted">–</td>');
+
+  const totalRow = (key, label) => {
+    const all = d.totals.all[key];
+    const common = d.totals.common[key];
+    const lead = common.rate !== null && common.rate === Math.max(
+      ...pickers.map((p) => d.totals.common[p].rate ?? -1));
+    return `<tr class="${lead ? "lead" : ""}">
+      <td class="who">${esc(label)}</td>
+      ${cell(all)}${cell(common)}
+    </tr>`;
+  };
+
+  root.innerHTML = `<div class="panel">
+    <header><h2>Season ${d.season}</h2>
+      <span class="hint">Straight-up winners · "same games" scores only games every
+        picker had a view on</span></header>
+    <table class="slate totals">
+      <thead><tr><th>Picker</th><th class="num">All their picks</th>
+        <th class="num">Same games</th></tr></thead>
+      <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
+    </table>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <header><h2>Week by week</h2><span class="hint">correct out of picked</span></header>
+    <table class="slate">
+      <thead><tr><th>Week</th>${pickers.map((p) =>
+        `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
+      <tbody>${d.weeks.map((w) => `<tr>
+        <td class="who">Week ${w.week}</td>
+        ${pickers.map((p) => {
+          const t = w.tallies[p];
+          return t.n
+            ? `<td class="num">${t.correct}<span class="rec">/${t.n}</span></td>`
+            : '<td class="num muted">–</td>';
+        }).join("")}
+      </tr>`).join("")}</tbody>
+    </table>
+  </div>`;
+}
+
 // -------------------------------------------------------------------- home
 /* The whole slate on one screen. The card board is better for reading one
    game closely; this is for answering "what does the model think, and is the
@@ -195,6 +291,11 @@ async function renderHome() {
     .catch(() => ({}));
   const pmByGame = {};
   for (const row of picks.prediction_markets?.games || []) pmByGame[row.game_id] = row;
+
+  const mine = await api(`/api/my-picks?season=${state.season}&week=${state.week}`)
+    .catch(() => ({ picks: [] }));
+  const myPick = {};
+  for (const row of mine.picks || []) myPick[row.game_id] = row.selection;
 
   const games = [...data.games].sort((a, b) => {
     const rank = (g) => (g.status === "in_progress" ? 0 : g.status === "final" ? 2 : 1);
@@ -242,6 +343,10 @@ async function renderHome() {
       <td class="match">
         <b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>
       </td>
+      <td class="mine" title="Click to pick this game yourself">${
+        myPick[g.game_id]
+          ? `<button class="pick-chip on" data-pick="${esc(g.game_id)}">${esc(myPick[g.game_id])}</button>`
+          : `<button class="pick-chip" data-pick="${esc(g.game_id)}">+</button>`}</td>
       <td class="ours edge-col">${ourProb === null ? "–" : pct(ourProb)}</td>
       <td class="ours">${esc(line(fair))}</td>
       <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
@@ -261,14 +366,14 @@ async function renderHome() {
     <table class="slate">
       <thead>
         <tr class="groups">
-          <th colspan="2"></th>
+          <th colspan="3"></th>
           <th colspan="3" class="g-ours">Our model</th>
           <th colspan="3" class="g-book">Sportsbook</th>
           <th class="g-pmkt">Pred. mkt</th>
           <th></th>
         </tr>
         <tr>
-          <th></th><th>Pick</th>
+          <th></th><th>Pick</th><th class="mine">You</th>
           <th class="ours edge-col">Win</th><th class="ours">Spread</th><th class="ours">Total</th>
           <th class="book edge-col">Win</th><th class="book">Spread</th><th class="book">Total</th>
           <th class="pmkt edge-col">Win</th>
@@ -283,6 +388,24 @@ async function renderHome() {
     const open = () => openGame(node.dataset.game);
     node.addEventListener("click", open);
     node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
+
+  // The chip sits inside a row that opens a dialog, so its click must not
+  // reach the row -- otherwise recording a pick also opens the detail view.
+  $$(".pick-chip", root).forEach((chip) => {
+    chip.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const gameId = chip.dataset.pick;
+      const game = games.find((g) => g.game_id === gameId);
+      if (!game) return;
+      const order = [game.away, game.home, ""];
+      const next = order[(order.indexOf(myPick[gameId] || "") + 1) % order.length];
+      await api("/api/my-picks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ game_id: gameId, selection: next }),
+      });
+      await renderHome();
+    });
   });
 }
 
@@ -1067,10 +1190,14 @@ async function renderEdge() {
 
 // -------------------------------------------------------------------- shell
 const VIEWS = { home: renderHome, games: renderGames, teams: renderTeams,
-  picks: renderPicks, news: renderNews, edge: renderEdge, performance: renderPerformance };
+  picks: renderPicks, news: renderNews, edge: renderEdge,
+  scoreboard: renderScoreboard, performance: renderPerformance };
 
 async function render() {
   const view = VIEWS[state.tab] || renderHome;
+  // The alert strip lives above the view and is the same on every tab, so it
+  // refreshes with the page rather than being owned by one of them.
+  renderAlerts().catch(() => {});
   try {
     await view();
   } catch (err) {

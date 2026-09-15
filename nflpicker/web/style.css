@@ -415,6 +415,60 @@ td.team { font-weight: 600; }
   border-left: 2px solid var(--border-strong); padding-left: 8px; line-height: 1.45;
 }
 
+/* ------------------------------------------------------------------ alerts */
+.alerts {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 13px; padding: 12px 14px; margin-bottom: 16px;
+}
+.alerts-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.alerts-head .btn { margin-left: auto; font-size: 11.5px; padding: 4px 9px; }
+.alert {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 7px 0; font-size: 13px;
+  border-top: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
+}
+.alert:first-of-type { border-top: 0; }
+.alert .dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex: none;
+  background: var(--text-muted); }
+.alert.urgent  .dot { background: var(--critical); }
+.alert.notable .dot { background: var(--warning); }
+.alert.info    .dot { background: var(--series-1); }
+/* Read alerts stay listed but recede -- they are history, not a to-do. */
+.alert.seen { opacity: .55; }
+.alert .sub { color: var(--text-secondary); font-size: 12px; margin-top: 2px; }
+.alert .when { margin-left: auto; color: var(--text-muted); font-size: 11px;
+  white-space: nowrap; flex: none; }
+
+.nav-badge {
+  margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: var(--critical); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center;
+}
+
+/* ------------------------------------------------------------- your picks */
+.pick-chip {
+  appearance: none; cursor: pointer; font: inherit;
+  font-size: 11.5px; font-weight: 640; letter-spacing: -0.01em;
+  min-width: 46px; padding: 3px 8px; border-radius: var(--radius-pill);
+  border: 1px dashed var(--border-strong); background: transparent;
+  color: var(--text-muted);
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+              background var(--fast) var(--ease);
+}
+.pick-chip:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.pick-chip.on {
+  border-style: solid; border-color: transparent; color: var(--series-3);
+  background: color-mix(in srgb, var(--series-3) 16%, transparent);
+}
+.slate td.mine, .slate th.mine { text-align: center; }
+
+/* Season totals read as a leaderboard, so the best row is marked. */
+.slate.totals .who { text-align: left; font-weight: 600; }
+.slate .num { text-align: right; font-variant-numeric: tabular-nums; }
+.slate .num .rec { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+.slate.totals tr.lead td { background: color-mix(in srgb, var(--series-1) 9%, transparent); }
+.slate.totals tr.lead .who { color: var(--series-1); }
+
 /* ------------------------------------------------------------- the board */
 /* Sixteen games on one screen. Every size here is chosen so the whole slate
    clears a laptop viewport without scrolling; the card view is where a single

@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -241,6 +241,37 @@ CREATE TABLE IF NOT EXISTS depth_chart (
     PRIMARY KEY (season, week, team, position, depth)
 );
 CREATE INDEX IF NOT EXISTS idx_depth_team ON depth_chart(season, team, position);
+
+-- Your own picks, so the app can compare itself against you rather than only
+-- against the market. One row per game per contest; re-picking replaces it.
+CREATE TABLE IF NOT EXISTS user_picks (
+    season     INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    game_id    TEXT NOT NULL,
+    contest    TEXT NOT NULL DEFAULT 'straight',   -- straight|spread
+    selection  TEXT NOT NULL,                      -- team abbreviation
+    note       TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (season, week, game_id, contest)
+);
+
+-- Things worth noticing while the app is running: a starter ruled out, a line
+-- crossing a key number, a steam move. Written by the recompute pass and read
+-- by the dashboard; deliberately in-app only, never pushed anywhere.
+CREATE TABLE IF NOT EXISTS alerts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind       TEXT NOT NULL,        -- starter|key_number|steam|edge
+    severity   TEXT NOT NULL,        -- info|notable|urgent
+    game_id    TEXT,
+    title      TEXT NOT NULL,
+    detail     TEXT,
+    -- One row per distinct event. Recompute runs every few minutes and would
+    -- otherwise write the same "QB ruled out" alert until kickoff.
+    fingerprint TEXT NOT NULL UNIQUE,
+    seen       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
 
 -- Forecast at kickoff, per game. The model trains on temperature and wind from
 -- historical records, so without this they arrive as NaN at inference for every

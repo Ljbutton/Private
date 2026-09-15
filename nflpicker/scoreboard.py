@@ -1,0 +1,230 @@
+"""Who is actually picking these games best: you, the model, or the market.
+
+Straight-up winners only, deliberately. Every source here names a favourite, so
+that is the one question all of them can be asked, and the comparison stays
+honest without a spread or a price to argue about.
+
+The one rule that makes the table mean anything: **every picker is scored on
+the same games**. A source with no opinion on a game is not counted as wrong
+there, and it does not get to sit out the hard ones either — the "common"
+figures below score only games where every picker had a view, which is the only
+comparison where a higher number actually means better.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from . import db
+
+# Picker keys, fixed so the UI and the totals cannot drift apart.
+YOU = "you"
+MODEL = "model"
+BOOK = "book"
+MARKET = "market"
+PICKERS = (YOU, MODEL, BOOK, MARKET)
+
+LABELS = {
+    YOU: "You",
+    MODEL: "Our model",
+    BOOK: "Sportsbook",
+    MARKET: "Prediction markets",
+}
+
+
+@dataclass
+class Tally:
+    """One picker's record."""
+
+    correct: int = 0
+    wrong: int = 0
+    push: int = 0            # a tie: nobody was right, nobody was wrong
+
+    @property
+    def n(self) -> int:
+        return self.correct + self.wrong
+
+    @property
+    def rate(self) -> float | None:
+        return self.correct / self.n if self.n else None
+
+    def to_dict(self) -> dict:
+        return {
+            "correct": self.correct, "wrong": self.wrong, "push": self.push,
+            "n": self.n,
+            "rate": round(self.rate, 4) if self.rate is not None else None,
+        }
+
+
+@dataclass
+class WeekRow:
+    season: int
+    week: int
+    games: int = 0
+    tallies: dict[str, Tally] = field(default_factory=lambda: {k: Tally() for k in PICKERS})
+    common: dict[str, Tally] = field(default_factory=lambda: {k: Tally() for k in PICKERS})
+
+    def to_dict(self) -> dict:
+        return {
+            "season": self.season, "week": self.week, "games": self.games,
+            "tallies": {k: v.to_dict() for k, v in self.tallies.items()},
+            "common": {k: v.to_dict() for k, v in self.common.items()},
+        }
+
+
+def _winner(game: dict) -> str | None:
+    """Who won, or None for a tie or a game that has not finished."""
+    if str(game.get("status") or "").lower() != "final":
+        return None
+    home, away = game.get("home_score"), game.get("away_score")
+    if home is None or away is None or home == away:
+        return None
+    return game["home"] if home > away else game["away"]
+
+
+def _favourite(prob: float | None, home: str, away: str) -> str | None:
+    """The side a home-win probability points at. Exactly 50% is no opinion."""
+    if prob is None:
+        return None
+    if abs(float(prob) - 0.5) < 1e-9:
+        return None
+    return home if float(prob) > 0.5 else away
+
+
+def picks_for(season: int, week: int | None = None) -> dict[str, dict[str, str]]:
+    """game_id -> picker -> selection, for every picker that has one."""
+    where = "season = ?" + (" AND week = ?" if week else "")
+    params = (season, week) if week else (season,)
+
+    out: dict[str, dict[str, str]] = {}
+
+    for row in db.query(
+        f"SELECT game_id, selection FROM user_picks WHERE {where} AND contest = 'straight'",
+        params,
+    ):
+        out.setdefault(row["game_id"], {})[YOU] = row["selection"]
+
+    games = {g["game_id"]: g for g in db.query(
+        f"SELECT * FROM games WHERE {where}", params)}
+    if not games:
+        return out
+
+    placeholders = ",".join("?" for _ in games)
+    ids = tuple(games)
+
+    # Latest prediction and latest consensus per game.
+    for row in db.query(
+        f"SELECT p.game_id, p.home_win_prob FROM predictions p JOIN "
+        f"(SELECT game_id, MAX(captured_at) m FROM predictions "
+        f" WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
+        f"ON x.game_id = p.game_id AND x.m = p.captured_at", ids,
+    ):
+        game = games[row["game_id"]]
+        pick = _favourite(row["home_win_prob"], game["home"], game["away"])
+        if pick:
+            out.setdefault(row["game_id"], {})[MODEL] = pick
+
+    for row in db.query(
+        f"SELECT c.game_id, c.home_win_prob FROM consensus c JOIN "
+        f"(SELECT game_id, MAX(captured_at) m FROM consensus "
+        f" WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
+        f"ON x.game_id = c.game_id AND x.m = c.captured_at", ids,
+    ):
+        game = games[row["game_id"]]
+        pick = _favourite(row["home_win_prob"], game["home"], game["away"])
+        if pick:
+            out.setdefault(row["game_id"], {})[BOOK] = pick
+
+    from .venues import is_prediction_market
+
+    venue_probs: dict[str, list[float]] = {}
+    for row in db.query(
+        f"SELECT game_id, book, home_price, away_price FROM odds_snapshots o JOIN "
+        f"(SELECT game_id AS g, book AS b, MAX(captured_at) m FROM odds_snapshots "
+        f" WHERE game_id IN ({placeholders}) GROUP BY game_id, book) x "
+        f"ON x.g = o.game_id AND x.b = o.book AND x.m = o.captured_at "
+        f"WHERE o.market = 'moneyline'", ids,
+    ):
+        if not is_prediction_market(row["book"]):
+            continue
+        from .market.prediction_markets import venue_probability
+
+        prob = venue_probability(row["home_price"], row["away_price"])
+        if prob is not None:
+            venue_probs.setdefault(row["game_id"], []).append(prob)
+
+    for game_id, probs in venue_probs.items():
+        game = games[game_id]
+        pick = _favourite(sum(probs) / len(probs), game["home"], game["away"])
+        if pick:
+            out.setdefault(game_id, {})[MARKET] = pick
+
+    return out
+
+
+def weekly(season: int) -> list[WeekRow]:
+    """One row per week, scored against finished games."""
+    games = db.query(
+        "SELECT * FROM games WHERE season = ? AND status = 'final' ORDER BY week", (season,))
+    if not games:
+        return []
+
+    by_pick = picks_for(season)
+    rows: dict[int, WeekRow] = {}
+
+    for game in games:
+        winner = _winner(game)
+        week = int(game["week"])
+        row = rows.setdefault(week, WeekRow(season=season, week=week))
+        picks = by_pick.get(game["game_id"], {})
+        if not picks:
+            continue
+        row.games += 1
+
+        everyone = all(p in picks for p in PICKERS)
+        for picker in PICKERS:
+            pick = picks.get(picker)
+            if not pick:
+                continue
+            if winner is None:
+                row.tallies[picker].push += 1
+                if everyone:
+                    row.common[picker].push += 1
+                continue
+            hit = pick == winner
+            tally = row.tallies[picker]
+            tally.correct += int(hit)
+            tally.wrong += int(not hit)
+            if everyone:
+                shared = row.common[picker]
+                shared.correct += int(hit)
+                shared.wrong += int(not hit)
+
+    return [rows[w] for w in sorted(rows)]
+
+
+def season_totals(rows: list[WeekRow]) -> dict:
+    """Add the weeks up, keeping the all-games and common-games splits apart."""
+    totals = {k: Tally() for k in PICKERS}
+    common = {k: Tally() for k in PICKERS}
+    for row in rows:
+        for picker in PICKERS:
+            for source, target in ((row.tallies, totals), (row.common, common)):
+                target[picker].correct += source[picker].correct
+                target[picker].wrong += source[picker].wrong
+                target[picker].push += source[picker].push
+    return {
+        "all": {k: v.to_dict() for k, v in totals.items()},
+        "common": {k: v.to_dict() for k, v in common.items()},
+    }
+
+
+def report(season: int) -> dict:
+    rows = weekly(season)
+    return {
+        "season": season,
+        "labels": LABELS,
+        "pickers": list(PICKERS),
+        "weeks": [r.to_dict() for r in rows],
+        "totals": season_totals(rows),
+    }
