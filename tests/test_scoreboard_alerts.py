@@ -228,3 +228,65 @@ def test_alerts_can_be_fetched_for_one_game(store):
     ])
     rows = db.query("SELECT * FROM alerts WHERE game_id = ?", ("g1",))
     assert [r["title"] for r in rows] == ["a"]
+
+
+# ------------------------------------------- the model inheriting book picks
+
+def test_the_model_falls_back_to_the_book_when_it_has_no_pick(store):
+    """Weeks from before the app existed have no prediction. Leaving the row
+    blank loses the week; taking the book's pick keeps it."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _book("g1", 0.7)                           # book: KC. No model row at all.
+
+    picks = scoreboard.picks_for(2026)
+    assert picks["g1"][scoreboard.MODEL] == "KC"
+    assert scoreboard.MODEL in picks["g1"][scoreboard.INHERITED]
+
+
+def test_an_inherited_pick_is_counted_and_reported_as_borrowed(store):
+    """Marked, not silent: on these games the model and the book agree by
+    construction, so a season of them would show the two tied and mean nothing
+    by it."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _book("g1", 0.7)
+    _final("g2", 2, "SF", "SEA", 30, 20)
+    _book("g2", 0.7)
+    _model("g2", 0.7)                          # week 2 the model speaks for itself
+
+    report = scoreboard.report(2026)
+    assert report["totals"]["all"]["model"]["correct"] == 2
+    assert report["totals"]["inherited"]["model"] == 1
+    assert report["totals"]["inherited"]["book"] == 0
+    assert report["weeks"][0]["inherited"]["model"] == 1
+    assert report["weeks"][1]["inherited"]["model"] == 0
+
+
+def test_the_model_keeps_its_own_pick_when_it_disagrees(store):
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _book("g1", 0.7)                           # book: KC
+    _model("g1", 0.2)                          # model: BUF, and it is wrong
+
+    picks = scoreboard.picks_for(2026)
+    assert picks["g1"][scoreboard.MODEL] == "BUF"
+    assert scoreboard.INHERITED not in picks["g1"]
+
+
+def test_nothing_is_inherited_when_the_book_is_silent_too(store):
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _you("g1", 1, "KC")
+
+    picks = scoreboard.picks_for(2026)
+    assert scoreboard.MODEL not in picks["g1"]
+
+
+def test_an_upcoming_game_never_borrows_the_book_s_pick(store):
+    """The fallback is a failsafe for history, not a policy. Lending the model
+    the book's pick for a game it has not weighed in on yet would be inventing
+    an opinion rather than filling in a missing one."""
+    db.execute(
+        "INSERT OR REPLACE INTO games(game_id, season, week, home, away, status,"
+        " updated_at) VALUES('g9',2026,5,'KC','BUF','scheduled','t')")
+    _book("g9", 0.7)
+
+    picks = scoreboard.picks_for(2026)
+    assert scoreboard.MODEL not in picks.get("g9", {})

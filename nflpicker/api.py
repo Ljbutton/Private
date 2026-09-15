@@ -47,9 +47,12 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
 
     # ------------------------------------------------------------- meta
     @app.get("/api/state")
-    def state() -> dict:
-        season = pipeline.season()
-        week = pipeline.current_week(season)
+    def state(season: int | None = None) -> dict:
+        """Current state, or another season's — the week list is per season, so
+        switching seasons has to reload it rather than carry the old one over."""
+        asked = season
+        season = season or pipeline.season()
+        week = pipeline.current_week(season) if asked is None else 0
         cfg = get_config()
         last_refresh = db.get_meta("last_refresh", {}) or {}
         odds_usage: dict | None = None
@@ -64,6 +67,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "weeks": [r["week"] for r in db.query(
                 "SELECT DISTINCT week FROM games WHERE season = ? AND season_type='REG' "
                 "ORDER BY week", (season,))],
+            "seasons": pipeline.stored_seasons(),
             "demo": pipeline.demo,
             "has_odds_key": cfg.has_odds_key,
             "odds_usage": odds_usage,
@@ -174,6 +178,20 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             (game["season"], game["week"], game["game_id"], contest, selection,
              payload.get("note"), now_iso()))
         return {"ok": True, "selection": selection}
+
+    @app.post("/api/backfill")
+    def backfill(payload: dict) -> dict:
+        """Pull a season the app was not running for. Results only — a line is
+        a snapshot of what was on offer at a moment, and nobody sells the past."""
+        try:
+            season = int(payload.get("season"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="season is required") from None
+        try:
+            stored = pipeline.backfill_season(season)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"ok": True, "season": season, "games": stored}
 
     @app.get("/api/scoreboard")
     def scoreboard_view(season: int | None = None) -> dict:

@@ -24,6 +24,10 @@ BOOK = "book"
 MARKET = "market"
 PICKERS = (YOU, MODEL, BOOK, MARKET)
 
+# Not a picker: a marker stored alongside them recording which picks were not
+# that picker's own. See picks_for().
+INHERITED = "_inherited"
+
 LABELS = {
     YOU: "You",
     MODEL: "Our model",
@@ -63,12 +67,16 @@ class WeekRow:
     games: int = 0
     tallies: dict[str, Tally] = field(default_factory=lambda: {k: Tally() for k in PICKERS})
     common: dict[str, Tally] = field(default_factory=lambda: {k: Tally() for k in PICKERS})
+    # Picks that were not the picker's own, by picker. Today only the model can
+    # inherit, but counting it generally keeps the shape honest if that changes.
+    inherited: dict[str, int] = field(default_factory=lambda: dict.fromkeys(PICKERS, 0))
 
     def to_dict(self) -> dict:
         return {
             "season": self.season, "week": self.week, "games": self.games,
             "tallies": {k: v.to_dict() for k, v in self.tallies.items()},
             "common": {k: v.to_dict() for k, v in self.common.items()},
+            "inherited": dict(self.inherited),
         }
 
 
@@ -159,6 +167,27 @@ def picks_for(season: int, week: int | None = None) -> dict[str, dict[str, str]]
         if pick:
             out.setdefault(game_id, {})[MARKET] = pick
 
+    # A game already played that the model never saw -- anything from before
+    # the app was running -- shows the sportsbook's pick rather than sitting
+    # blank, so an old week still reads as a full row.
+    #
+    # Only for finished games, deliberately. This is a failsafe for history,
+    # not a policy: from here on the model has its own view of every upcoming
+    # game, and lending it the book's pick for one it simply has not made yet
+    # would be inventing an opinion rather than filling in a missing one.
+    #
+    # It is also marked rather than silent. On an inherited game the model and
+    # the book agree by construction, so a season of them would show the two
+    # tied and mean nothing by it; INHERITED records which, so the table can say
+    # how much of the model's record is really its own.
+    for game_id, picks in out.items():
+        game = games.get(game_id)
+        if not game or str(game.get("status") or "").lower() != "final":
+            continue
+        if MODEL not in picks and BOOK in picks:
+            picks[MODEL] = picks[BOOK]
+            picks.setdefault(INHERITED, set()).add(MODEL)
+
     return out
 
 
@@ -182,10 +211,13 @@ def weekly(season: int) -> list[WeekRow]:
         row.games += 1
 
         everyone = all(p in picks for p in PICKERS)
+        borrowed = picks.get(INHERITED) or set()
         for picker in PICKERS:
             pick = picks.get(picker)
             if not pick:
                 continue
+            if picker in borrowed:
+                row.inherited[picker] += 1
             if winner is None:
                 row.tallies[picker].push += 1
                 if everyone:
@@ -207,15 +239,18 @@ def season_totals(rows: list[WeekRow]) -> dict:
     """Add the weeks up, keeping the all-games and common-games splits apart."""
     totals = {k: Tally() for k in PICKERS}
     common = {k: Tally() for k in PICKERS}
+    inherited = dict.fromkeys(PICKERS, 0)
     for row in rows:
         for picker in PICKERS:
             for source, target in ((row.tallies, totals), (row.common, common)):
                 target[picker].correct += source[picker].correct
                 target[picker].wrong += source[picker].wrong
                 target[picker].push += source[picker].push
+            inherited[picker] += row.inherited.get(picker, 0)
     return {
         "all": {k: v.to_dict() for k, v in totals.items()},
         "common": {k: v.to_dict() for k, v in common.items()},
+        "inherited": inherited,
     }
 
 

@@ -1547,6 +1547,35 @@ class Pipeline:
             log.info("removed %d synthetic row(s) left by a previous demo run", removed)
         return removed
 
+    def stored_seasons(self) -> list[int]:
+        """Every season with games on file, oldest first."""
+        return [int(r["season"]) for r in db.query(
+            "SELECT DISTINCT season FROM games ORDER BY season")]
+
+    def backfill_season(self, season: int) -> int:
+        """Fetch and store one season's schedule and results.
+
+        The refresh loop only ever asks for the current season, so a season the
+        app was not running for is simply absent — which is why the board could
+        not look backwards at all. This fills one in on demand.
+
+        Results only. Odds are not backfilled and cannot be: a line is a
+        snapshot of what was on offer at a moment, and nobody sells the past.
+        """
+        if self.demo:
+            from .sources.demo import _demo_season
+
+            return self.upsert_games(_demo_season(season, 18)["games"])
+
+        from .sources.espn import EspnSource
+
+        games = EspnSource().season_schedule(season)
+        if not games:
+            raise SourceError(f"ESPN returned no games for {season}")
+        stored = self.upsert_games(games)
+        db.log_fetch("backfill", True, f"{season}: {stored} games")
+        return stored
+
     def bootstrap(self) -> RefreshResult:
         """First run: make sure the app has something to show."""
         if not self.demo:

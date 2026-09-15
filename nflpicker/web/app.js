@@ -157,7 +157,13 @@ function renderHero(meta) {
     : "Live";
 
   const day = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
-  $("#herosub").textContent = `${day} — week ${meta.week} of the ${meta.season} season`;
+  // Reads the viewed season rather than the current one, so browsing 2024 does
+  // not leave a line at the top insisting it is 2026.
+  const season = state.season || meta.season;
+  const week = state.week || meta.week;
+  $("#herosub").textContent = season === meta.season && week === meta.week
+    ? `${day} — week ${week} of the ${season} season`
+    : `${day} — viewing week ${week} of ${season}`;
 }
 
 /* "Sun 1:00" — the board has sixteen rows and no width to spare for a date
@@ -212,8 +218,14 @@ async function renderScoreboard() {
     const common = d.totals.common[key];
     const lead = common.rate !== null && common.rate === Math.max(
       ...pickers.map((p) => d.totals.common[p].rate ?? -1));
+    // Games from before the app existed show the book's pick for the model.
+    // Saying how many keeps a record that is mostly borrowed from reading as
+    // one the model earned.
+    const borrowed = (d.totals.inherited || {})[key] || 0;
     return `<tr class="${lead ? "lead" : ""}">
-      <td class="who">${esc(label)}</td>
+      <td class="who">${esc(label)}${borrowed
+        ? `<span class="rec" title="games from before the model existed, shown with the sportsbook's pick">${borrowed} inherited</span>`
+        : ""}</td>
       ${cell(all)}${cell(common)}
     </tr>`;
   };
@@ -386,7 +398,7 @@ async function renderHome() {
   }).join("");
 
   root.innerHTML = `<div class="panel board">
-    <header><h2>Week ${data.week} — the whole slate</h2>
+    <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
       <span class="hint">Every probability is for the side we picked ·
         click a row for detail</span></header>
     <table class="slate">
@@ -1228,6 +1240,9 @@ const VIEWS = { home: renderHome, games: renderGames, teams: renderTeams,
 
 async function render() {
   const view = VIEWS[state.tab] || renderHome;
+  // The hero reports which season and week are on screen, so it has to follow
+  // the selectors rather than only the last state load.
+  if (state.meta) renderHero(state.meta);
   try {
     await view();
   } catch (err) {
@@ -1250,6 +1265,16 @@ async function loadState() {
     sel.innerHTML = state.weeks.map((w) => `<option value="${w}">Week ${w}</option>`).join("");
   }
   sel.value = String(state.week);
+
+  // Seasons the app has games for. A season it was never running for is simply
+  // absent until it is backfilled, so the list is what exists rather than a
+  // range of years that mostly lead to empty boards.
+  const seasons = meta.seasons && meta.seasons.length ? meta.seasons : [state.season];
+  const seasonSel = $("#season");
+  seasonSel.innerHTML = seasons
+    .slice().reverse()
+    .map((y) => `<option value="${y}">${y}</option>`).join("");
+  seasonSel.value = String(state.season);
   $("#refreshed").textContent = `Updated ${ago(meta.last_recompute)}`;
   renderHero(meta);
 }
@@ -1279,6 +1304,17 @@ async function main() {
   initTheme();
   $$(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   $("#week").addEventListener("change", (e) => { state.week = Number(e.target.value); render(); });
+  $("#season").addEventListener("change", async (e) => {
+    state.season = Number(e.target.value);
+    // Week numbers are per season, and the one being viewed may not exist in
+    // the season being switched to, so the week list is reloaded rather than
+    // carried across.
+    const meta = await api(`/api/state?season=${state.season}`).catch(() => null);
+    if (meta && meta.weeks?.length) {
+      state.week = meta.weeks.includes(state.week) ? state.week : meta.weeks[0];
+    }
+    await render();
+  });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
 
   const refreshBtn = $("#refresh");

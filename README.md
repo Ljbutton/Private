@@ -653,6 +653,34 @@ easy to get silently wrong:
 
 ---
 
+## Seasons
+
+The season selector sits beside the week. It lists the seasons the app has games
+for, not a range of years that mostly lead to empty boards — a season it was
+never running for is simply absent until you pull it in:
+
+```bash
+curl -X POST localhost:8000/api/backfill -H 'Content-Type: application/json' \
+     -d '{"season": 2024}'
+```
+
+Results only, and that limit is real: a line is a snapshot of what was on offer
+at a moment, and nobody sells the past. A backfilled season gets schedules and
+scores, never the odds history — so its Edge tab stays empty by nature rather
+than by oversight.
+
+Switching season reloads the week list rather than carrying the current one
+across, since week numbers only mean something within a season, and the header
+names the season being viewed so a past board cannot be mistaken for this one.
+
+**Where the model has no pick on a finished game** — anything from before the
+app was running — the board shows the sportsbook's pick instead of a blank, and
+the scoreboard says how many were inherited. On those games the model and the
+book agree by construction, so a record that is mostly borrowed should not read
+as one the model earned. This applies only to games already played: for an
+upcoming game the model has its own view, and lending it the book's would be
+inventing an opinion rather than filling in a missing one.
+
 ## Your picks, and who is actually right
 
 Click the chip in the **You** column on the board to record your own pick —
