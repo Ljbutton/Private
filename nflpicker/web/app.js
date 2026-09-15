@@ -77,9 +77,16 @@ function edgePill(edge) {
   if (edge === null || edge === undefined) return '<span class="muted">no line</span>';
   const v = Number(edge);
   const strong = Math.abs(v) >= 1.5;
-  const bg = !strong ? "var(--div-mid)" : v > 0 ? "var(--div-pos)" : "var(--div-neg)";
-  const fg = strong ? "#fff" : "var(--text-secondary)";
-  return `<span class="edge-pill" style="background:${bg};color:${fg}">${signed(v)} pts</span>`;
+  if (!strong) {
+    return `<span class="edge-pill quiet">${signed(v)} pts</span>`;
+  }
+  // Tinted, not filled. A solid red block on a dark card reads as an error
+  // rather than as a number worth reading, and there are sixteen of them.
+  const hue = v > 0 ? "var(--div-pos)" : "var(--div-neg)";
+  return `<span class="edge-pill" style="color:${hue};` +
+    `background:color-mix(in srgb, ${hue} 14%, transparent);` +
+    `box-shadow:inset 0 0 0 1px color-mix(in srgb, ${hue} 30%, transparent)">` +
+    `${signed(v)} pts</span>`;
 }
 
 // ------------------------------------------------------------------ status
@@ -137,31 +144,6 @@ function renderHero(meta) {
   $("#herosub").textContent = `${day} — week ${meta.week} of the ${meta.season} season`;
 }
 
-/* Four numbers answering "is there anything to do right now", above the board. */
-function statRow(games) {
-  const withEdge = games.filter((g) => g.prediction && g.prediction.spread_edge !== null);
-  const live = games.filter((g) => g.status === "in_progress").length;
-  const strong = withEdge.filter((g) => Math.abs(g.prediction.spread_edge) >= 1.5).length;
-  const biggest = withEdge.reduce(
-    (best, g) => (Math.abs(g.prediction.spread_edge) > Math.abs(best) ? g.prediction.spread_edge : best),
-    0);
-
-  const cell = (label, value, caption, accent) =>
-    `<div class="stat" style="--accent:${accent}"><div class="k">${label}</div>` +
-    `<div class="v">${value}</div><div class="c">${caption}</div></div>`;
-
-  return `<div class="stat-row">
-    ${cell("Games this week", games.length, `${games.filter((g) => g.status === "final").length} final`,
-      "var(--text-primary)")}
-    ${cell("Live now", live, live ? "in progress" : "nothing in progress",
-      live ? "var(--critical)" : "var(--text-muted)")}
-    ${cell("Edges worth a look", strong, "past 1.5 points",
-      strong ? "var(--series-1)" : "var(--text-muted)")}
-    ${cell("Biggest edge", biggest ? signed(biggest) : "—", "against the closing line",
-      Math.abs(biggest) >= 1.5 ? "var(--series-3)" : "var(--text-muted)")}
-  </div>`;
-}
-
 // ------------------------------------------------------------------- games
 async function renderGames() {
   const root = $("#view");
@@ -181,7 +163,8 @@ async function renderGames() {
     const final = card.status === "final";
     const live = card.status === "in_progress" ? card.live : null;
     const movePoints = (card.movement.points || []).map((pt) => pt.value);
-    const spark = movePoints.length > 1 ? sparkline(movePoints) : "";
+    const spark = movePoints.length > 1
+      ? sparkline(movePoints, { color: "var(--axis)" }) : "";
     const homeProb = p ? p.home_win_prob : null;
 
     const teamRow = (side) => {
@@ -201,7 +184,15 @@ async function renderGames() {
         : `<span class="prob">${pct(prob)}</span>`;
       const hasBall = live && live.possession === abbr
         ? '<span class="ball" title="has possession"></span>' : "";
-      return `<div class="row-team"><span class="swatch" style="background:${color}"></span>` +
+      // The bar behind the row *is* the win probability. Thirty-two team
+      // colours across a sixteen-game board read as confetti, and most NFL
+      // palettes are dark navies that disappear on a near-black card anyway --
+      // so the one thing worth colouring is the one thing that carries meaning.
+      const shown = liveProb !== null ? liveProb : prob;
+      const lead = shown !== null && shown >= 0.5;
+      const fill = shown === null ? "" :
+        `<span class="pbar${lead ? " lead" : ""}" style="width:${(shown * 100).toFixed(1)}%"></span>`;
+      return `<div class="row-team" style="--team:${esc(color || "transparent")}">${fill}` +
         `<span class="nm">${esc(abbr)}</span>${hasBall}` +
         `<span class="rec">${esc(name.replace(abbr, "").trim())}</span>${right}</div>`;
     };
@@ -260,7 +251,7 @@ async function renderGames() {
     </article>`;
   }).join("");
 
-  root.innerHTML = `${statRow(data.games)}<div class="panel">
+  root.innerHTML = `<div class="panel">
     <header><h2>Week ${data.week} — ${data.games.length} games</h2>
       <span class="hint">Click a game for line movement, every book, and prediction history</span>
     </header>

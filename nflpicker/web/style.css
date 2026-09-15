@@ -208,31 +208,6 @@ a { color: var(--series-1); }
 }
 .hero-controls { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 11px; }
 
-/* --------------------------------------------------------- headline stats */
-/* Four numbers that answer "is there anything to do right now" before any
-   scrolling happens. Each carries its own accent so the row reads at a glance
-   rather than as four identical boxes. */
-.stat-row {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 13px; margin-bottom: 20px;
-}
-.stat {
-  position: relative; overflow: hidden;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 13px; padding: 15px 17px;
-}
-.stat::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent, var(--series-1)); }
-.stat .k {
-  font-size: 10px; font-weight: 650; text-transform: uppercase;
-  letter-spacing: .13em; color: var(--text-muted);
-}
-.stat .v {
-  font-size: 34px; font-weight: 680; letter-spacing: -0.035em;
-  font-variant-numeric: tabular-nums; line-height: 1.15;
-  margin-top: 7px; color: var(--accent, var(--text-primary));
-}
-.stat .c { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
-
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 select, button.btn, input[type="text"] {
   font: inherit; font-size: 13px; color: var(--text-primary); background: var(--surface);
@@ -246,11 +221,11 @@ button.btn:hover, select:hover { border-color: var(--text-muted); background: va
 button.btn:active { transform: translateY(1px); }
 button.btn[disabled] { opacity: .5; cursor: progress; }
 button.btn.primary {
-  background: var(--series-1); border-color: transparent; color: #fff;
-  font-weight: 550; box-shadow: var(--shadow-sm);
+  background: var(--series-1); border-color: transparent; color: #08090a;
+  font-weight: 600; box-shadow: var(--shadow-sm);
 }
 button.btn.primary:hover {
-  background: color-mix(in srgb, var(--series-1) 88%, #000); border-color: transparent;
+  background: color-mix(in srgb, var(--series-1) 85%, #fff); border-color: transparent;
 }
 
 /* ----------------------------------------------------------- connections */
@@ -272,27 +247,6 @@ button.btn.primary:hover {
 .conn .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn .st { margin-left: auto; font-size: 11px; color: var(--text-muted);
   font-variant-numeric: tabular-nums; flex: none; }
-
-/* ------------------------------------------------------------ status bar */
-.statusbar {
-  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
-  padding: 4px 0 18px; color: var(--text-secondary); font-size: 12px;
-}
-.chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: var(--radius-pill);
-  background: var(--surface); border: 1px solid var(--border);
-  white-space: nowrap; box-shadow: var(--shadow-sm);
-  transition: transform var(--fast) var(--ease);
-}
-.chip:hover { transform: translateY(-1px); }
-.chip .dot {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
-}
-.chip.ok    .dot { background: var(--good);     box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 18%, transparent); }
-.chip.bad   .dot { background: var(--critical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--critical) 18%, transparent); }
-.chip.warn  .dot { background: var(--warning);  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent); }
 
 /* --------------------------------------------------------------- panels */
 .panel {
@@ -366,14 +320,37 @@ td.team { font-weight: 600; }
 .card:active { transform: translateY(0); }
 .card .kick { color: var(--text-muted); font-size: 11px; display: flex; gap: 6px;
   align-items: center; justify-content: space-between; }
-.card .teams { margin: 7px 0 9px; }
-.row-team { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-.row-team .swatch { width: 3px; height: 18px; border-radius: 2px; flex: none; }
-.row-team .nm { font-weight: 600; }
-.row-team .rec { color: var(--text-muted); font-size: 11px; }
-.row-team .score { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
-.row-team .prob { margin-left: auto; color: var(--text-secondary);
-  font-variant-numeric: tabular-nums; font-size: 12px; }
+.card .teams { margin: 9px 0 11px; display: flex; flex-direction: column; gap: 3px; }
+/* The row is a track and the fill is the win probability. It replaces a pair of
+   team-colour chips: those were decoration the abbreviation already carried,
+   and this is the number you actually want off the card at a glance. */
+.row-team {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  padding: 5px 9px; border-radius: 7px; isolation: isolate;
+}
+/* Fades out to the right so it reads as a bar rather than a highlighted row.
+   A flat block at full length is just a coloured slab, and sixteen of them
+   stacked is the thing that made the board hard to look at. */
+.pbar {
+  position: absolute; inset: 0 auto 0 0; z-index: -1;
+  border-radius: 7px; min-width: 7px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--text-primary) 9%, transparent),
+    color-mix(in srgb, var(--text-primary) 3%, transparent));
+  transition: width var(--slow) var(--ease);
+}
+.pbar.lead {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--series-1) 20%, transparent),
+    color-mix(in srgb, var(--series-1) 5%, transparent));
+}
+.row-team .nm { font-weight: 640; letter-spacing: -0.01em; }
+.row-team .rec { color: var(--text-secondary); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-team .score { margin-left: auto; font-variant-numeric: tabular-nums;
+  font-weight: 660; font-size: 15px; }
+.row-team .prob { margin-left: auto; color: var(--text-primary);
+  font-variant-numeric: tabular-nums; font-size: 12.5px; font-weight: 600; flex: none; }
 /* Two comparisons, not six numbers. The card used to repeat six uppercase
    labels — market, model, edge, total, model total, line move — which is 96
    labels on a sixteen-game board, all saying the same thing. Pairing each
@@ -401,10 +378,13 @@ td.team { font-weight: 600; }
 .line .move { margin-left: auto; font-size: 12px; color: var(--text-secondary);
   font-variant-numeric: tabular-nums; cursor: help; }
 .edge-pill {
-  display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px;
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
   border-radius: var(--radius-pill); font-size: 11.5px; font-weight: 620;
   font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
 }
+.edge-pill.quiet { color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent); }
+
 .newsline { margin-top: 9px; font-size: 11px; color: var(--text-secondary);
   display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 
@@ -442,9 +422,20 @@ td.team { font-weight: 600; }
   border: 1px solid var(--border-strong); color: var(--text-secondary);
   white-space: nowrap; letter-spacing: .01em;
 }
-.badge.qb, .badge.suspension { border-color: var(--critical); color: var(--critical); }
-.badge.injury { border-color: var(--serious); color: var(--serious); }
-.badge.weather { border-color: var(--axis); }
+/* Tags are labels, not findings. They were outlined in red and orange, which
+   put five loud objects on a card whose one real signal is the edge. They now
+   share a quiet treatment and carry their category in a small dot. */
+.badge {
+  gap: 5px; border-color: transparent;
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+.badge::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor; opacity: .75; flex: none;
+}
+.badge.weather::before { background: var(--text-muted); }
+.badge.injury::before  { background: var(--serious); }
+.badge.qb::before, .badge.suspension::before { background: var(--critical); }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px;
   color: var(--text-secondary); align-items: center; }
 .legend .key { display: inline-flex; align-items: center; gap: 5px; }
@@ -525,7 +516,6 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 @media (max-width: 760px) {
   .grid-2 { grid-template-columns: 1fr; }
   .cards { grid-template-columns: 1fr; }
-  .stat-row { grid-template-columns: repeat(2, 1fr); }
   .side-nav .tab span { display: none; }
   .side-nav .tab svg { width: 19px; height: 19px; }
   .panel { padding: 16px; }
