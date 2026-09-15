@@ -1,6 +1,6 @@
 import { barChart, calibrationChart, lineChart, sparkline } from "./charts.js";
 
-const state = { season: null, week: null, weeks: [], tab: "games", meta: null, busy: false };
+const state = { season: null, week: null, weeks: [], tab: "home", meta: null, busy: false };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -142,6 +142,117 @@ function renderHero(meta) {
 
   const day = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
   $("#herosub").textContent = `${day} — week ${meta.week} of the ${meta.season} season`;
+}
+
+/* "Sun 1:00" — the board has sixteen rows and no width to spare for a date
+   that is the same on most of them. */
+function kickoffShort(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
+    d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+// -------------------------------------------------------------------- home
+/* The whole slate on one screen. The card board is better for reading one
+   game closely; this is for answering "what does the model think, and is the
+   market coming to it" across sixteen games without scrolling.
+
+   Three numbers per game, and they are deliberately the *same* three the rest
+   of the app uses:
+     ours   -- fair_margin, the blend. This is what the win probability is
+               built from, so the pick and the spread can never disagree.
+     book   -- the sportsbook consensus.
+     market -- prediction markets, shown but never mixed into either. */
+async function renderHome() {
+  const root = $("#view");
+  const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
+  if (!data.games.length) {
+    root.innerHTML = '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>';
+    return;
+  }
+
+  // Prediction-market prices ride along with the picks payload. A failure here
+  // must not cost the board: the column simply reads "–".
+  const picks = await api(`/api/picks?week=${state.week}&season=${state.season}`)
+    .catch(() => ({}));
+  const pmByGame = {};
+  for (const row of picks.prediction_markets?.games || []) pmByGame[row.game_id] = row;
+
+  const games = [...data.games].sort((a, b) => {
+    const rank = (g) => (g.status === "in_progress" ? 0 : g.status === "final" ? 2 : 1);
+    return rank(a) - rank(b) || String(a.kickoff).localeCompare(String(b.kickoff));
+  });
+
+  const rows = games.map((g) => {
+    const p = g.prediction;
+    const fair = p ? p.fair_margin : null;
+    const prob = p ? p.home_win_prob : null;
+    const homePick = prob !== null && prob >= 0.5;
+    const winner = homePick ? g.home : g.away;
+    const loser = homePick ? g.away : g.home;
+    const conf = prob === null ? null : (homePick ? prob : 1 - prob);
+
+    // Both sides of every comparison are quoted from the same team's view, so
+    // "ours vs theirs" is a subtraction the reader does not have to do.
+    const line = (margin) => {
+      if (margin === null || margin === undefined) return "–";
+      if (Math.abs(margin) < 0.05) return "PK";
+      return margin > 0 ? `${g.home} ${num(-margin, 1)}` : `${g.away} ${num(margin, 1)}`;
+    };
+    const bookSpread = g.market?.spread_home;
+
+    const moved = g.movement?.toward_us;
+    const movedCls = moved === null || moved === undefined || Math.abs(moved) < 0.05
+      ? "flat" : (moved > 0 ? "good" : "bad");
+    const movedText = moved === null || moved === undefined ? "–" : signed(moved);
+
+    const mkt = pmByGame[g.game_id];
+    const mktProb = mkt && mkt.venue_prob !== null && mkt.venue_prob !== undefined
+      ? (homePick ? mkt.venue_prob : 1 - mkt.venue_prob) : null;
+
+    const state_ = g.status === "in_progress"
+      ? `<span class="live-dot"></span>LIVE`
+      : (g.status === "final" ? "Final" : kickoffShort(g.kickoff));
+
+    return `<tr data-game="${esc(g.game_id)}" tabindex="0">
+      <td class="when">${state_}</td>
+      <td class="match">
+        <b>${esc(winner)}</b><span class="beat">over</span><span class="lose">${esc(loser)}</span>
+      </td>
+      <td class="conf">${conf === null ? "–" : pct(conf)}</td>
+      <td class="ours">${esc(line(fair))}</td>
+      <td class="book">${esc(line(bookSpread === null || bookSpread === undefined
+        ? null : -bookSpread))}</td>
+      <td class="ours">${p && p.fair_total ? num(p.fair_total, 1) : "–"}</td>
+      <td class="book">${num(g.market?.total_points, 1)}</td>
+      <td class="pmkt">${mktProb === null ? "–" : pct(mktProb)}</td>
+      <td class="moved ${movedCls}">${movedText}</td>
+    </tr>`;
+  }).join("");
+
+  root.innerHTML = `<div class="panel board">
+    <header><h2>Week ${data.week} — the whole slate</h2>
+      <span class="hint">Ours is the blend the win probability is built from ·
+        click a row for detail</span></header>
+    <table class="slate">
+      <thead><tr>
+        <th></th><th>Pick</th><th class="conf">Win</th>
+        <th class="ours">Our spread</th><th class="book">Book</th>
+        <th class="ours">Our total</th><th class="book">Book</th>
+        <th class="pmkt">Pred. mkt</th>
+        <th class="moved" title="Points the line has moved toward our side since it opened">Moved to us</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+
+  $$("tr[data-game]", root).forEach((node) => {
+    const open = () => openGame(node.dataset.game);
+    node.addEventListener("click", open);
+    node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
 }
 
 // ------------------------------------------------------------------- games
@@ -924,11 +1035,11 @@ async function renderEdge() {
 }
 
 // -------------------------------------------------------------------- shell
-const VIEWS = { games: renderGames, teams: renderTeams, picks: renderPicks,
-  news: renderNews, edge: renderEdge, performance: renderPerformance };
+const VIEWS = { home: renderHome, games: renderGames, teams: renderTeams,
+  picks: renderPicks, news: renderNews, edge: renderEdge, performance: renderPerformance };
 
 async function render() {
-  const view = VIEWS[state.tab] || renderGames;
+  const view = VIEWS[state.tab] || renderHome;
   try {
     await view();
   } catch (err) {
@@ -958,7 +1069,7 @@ async function loadState() {
 function setTab(tab) {
   state.tab = tab;
   $$(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
-  $("#week-wrap").classList.toggle("hidden", !["games", "picks"].includes(tab));
+  $("#week-wrap").classList.toggle("hidden", !["home", "games", "picks"].includes(tab));
   render();
 }
 

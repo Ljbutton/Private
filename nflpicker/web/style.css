@@ -415,6 +415,68 @@ td.team { font-weight: 600; }
   border-left: 2px solid var(--border-strong); padding-left: 8px; line-height: 1.45;
 }
 
+/* ------------------------------------------------------------- the board */
+/* Sixteen games on one screen. Every size here is chosen so the whole slate
+   clears a laptop viewport without scrolling; the card view is where a single
+   game gets room to explain itself. */
+.panel.board { padding: 16px 18px 10px; }
+.slate { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.slate th {
+  font-size: 9.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--text-muted); text-align: right; padding: 0 9px 8px;
+  border-bottom: 1px solid var(--grid); white-space: nowrap;
+}
+.slate th:nth-child(1), .slate th:nth-child(2) { text-align: left; }
+.slate td {
+  padding: 0 9px; height: 34px; text-align: right; white-space: nowrap;
+  border-bottom: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
+}
+.slate tbody tr { cursor: pointer; transition: background var(--fast) var(--ease); }
+.slate tbody tr:hover { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
+.slate tbody tr:last-child td { border-bottom: 0; }
+
+.slate .when { text-align: left; color: var(--text-muted); font-size: 11px; width: 74px; }
+.slate .match { text-align: left; font-size: 13.5px; }
+.slate .match b { font-weight: 660; }
+.slate .match .beat { color: var(--text-muted); font-size: 10.5px; margin: 0 6px; }
+.slate .match .lose { color: var(--text-secondary); }
+.slate .conf { font-weight: 640; width: 58px; }
+
+/* Ours and theirs are adjacent and weighted differently on purpose: the eye
+   should land on our number first and read the book's as the reference. */
+.slate td.ours { font-weight: 640; color: var(--text-primary); }
+.slate td.book { color: var(--text-secondary); font-weight: 500; }
+.slate th.ours { color: var(--text-secondary); }
+.slate td.pmkt, .slate th.pmkt { color: var(--text-muted); }
+/* A vertical rule marks where our numbers stop and other people's begin, so
+   the three sources never read as one row of interchangeable figures. */
+.slate th.ours:first-of-type, .slate td.ours:first-of-type {
+  border-left: 1px solid var(--grid);
+}
+.slate th.pmkt, .slate td.pmkt { border-left: 1px solid var(--grid); }
+
+.slate .moved { font-weight: 650; width: 84px; }
+.slate td.moved.good { color: var(--good); }
+.slate td.moved.bad  { color: var(--critical); }
+.slate td.moved.flat { color: var(--text-muted); }
+.slate .live-dot { width: 6px; height: 6px; margin-right: 5px; }
+
+@media (max-width: 960px) {
+  .slate th:nth-child(8), .slate td:nth-child(8) { display: none; }  /* pred. mkt */
+}
+@media (max-width: 760px) {
+  .slate th:nth-child(6), .slate td:nth-child(6),
+  .slate th:nth-child(7), .slate td:nth-child(7) { display: none; }  /* totals */
+  .slate .when { display: none; }
+  .slate th, .slate td { padding: 0 6px; }
+  .panel.board { padding: 14px 10px 8px; }
+}
+/* Dropping columns buys most of the width back, but not all of it on the
+   narrowest phones. The table gets its own scroller so it can be read there
+   without the whole page scrolling sideways. */
+.panel.board { overflow-x: auto; }
+.slate { min-width: 340px; }
+
 /* --------------------------------------------------------------- misc */
 .badge {
   display: inline-flex; align-items: center; font-size: 10.5px; padding: 2px 8px;

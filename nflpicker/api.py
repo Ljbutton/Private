@@ -350,6 +350,33 @@ def latest_book_table(game_id: str) -> list[dict]:
     return sorted(by_book.values(), key=lambda b: b["book"])
 
 
+def _moved_toward_us(prediction: dict | None, move: dict) -> float | None:
+    """Points the line has moved toward the side we favour, since it opened.
+
+    Positive means the market has come our way, which is the only evidence
+    available before a game finishes that a disagreement was worth having.
+    Negative means it moved against us; near zero means it has not moved.
+
+    The sign convention is the one in :mod:`nflpicker.market.opening`, kept
+    identical on purpose: a market's implied home margin is the negation of the
+    posted home line, and our lean is how much more we like the home side than
+    that. Deriving it in the client too would be a second place to get a
+    negation wrong.
+    """
+    if not prediction:
+        return None
+    opening, current = move.get("open"), move.get("current")
+    fair = prediction.get("fair_margin")
+    if opening is None or current is None or fair is None:
+        return None
+    lean = float(fair) - (-float(opening))
+    movement = (-float(current)) - (-float(opening))
+    if abs(lean) < 1e-9:
+        return 0.0
+    # `or 0.0` collapses -0.0, which would otherwise render as "-0.0".
+    return round(movement if lean > 0 else -movement, 2) or 0.0
+
+
 def game_cards(season: int, week: int) -> list[dict]:
     """Everything the UI needs to render one week's games."""
     games = db.query(
@@ -433,6 +460,7 @@ def game_cards(season: int, week: int) -> list[dict]:
                     "spread_move": move["move"], "steam": move["steam"],
                     "total_open": total_move["open"], "total_now": total_move["current"],
                     "total_move": total_move["move"],
+                    "toward_us": _moved_toward_us(prediction, move),
                     "points": move["points"][-40:],
                 },
                 "graded": graded.get(gid),

@@ -21,14 +21,21 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
 # the table, so every such change is recorded here too and applied by migrate().
 # Entries stay forever: they are how a database from any older version catches
 # up, and each one is a no-op once applied.
-COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = ()
+COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = (
+    # v6: the blended estimate is what home_win_prob is built from and what the
+    # board reports as "ours", but only the market-blind margin was ever stored
+    # -- so the spread on screen and the win probability beside it came from two
+    # different numbers.
+    ("predictions", "fair_margin", "REAL"),
+    ("predictions", "fair_total", "REAL"),
+)
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -99,9 +106,11 @@ CREATE TABLE IF NOT EXISTS predictions (
     game_id        TEXT NOT NULL,
     captured_at    TEXT NOT NULL,
     model_version  TEXT NOT NULL,
-    margin_home    REAL NOT NULL,       -- projected home points - away points
-    total_points   REAL NOT NULL,
-    home_win_prob  REAL NOT NULL,
+    margin_home    REAL NOT NULL,       -- market-blind model: home points - away points
+    total_points   REAL NOT NULL,       -- market-blind model total
+    fair_margin    REAL,                -- model blended with the market: our actual estimate
+    fair_total     REAL,
+    home_win_prob  REAL NOT NULL,       -- derived from fair_margin, not margin_home
     market_spread  REAL,                -- market at time of prediction
     market_total   REAL,
     spread_edge    REAL,                -- our margin vs market spread, home perspective

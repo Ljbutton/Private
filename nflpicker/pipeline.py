@@ -1139,12 +1139,14 @@ class Pipeline:
         upcoming = {g["game_id"] for g in games if g["status"] != "final"}
         db.executemany(
             "INSERT OR REPLACE INTO predictions"
-            "(game_id, captured_at, model_version, margin_home, total_points, home_win_prob,"
+            "(game_id, captured_at, model_version, margin_home, total_points,"
+            " fair_margin, fair_total, home_win_prob,"
             " market_spread, market_total, spread_edge, total_edge, components) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 [
                     p.game_id, stamp, self.predictor.version, p.model_margin, p.model_total,
+                    p.fair_margin, p.fair_total,
                     p.home_win_prob, p.market_spread, p.market_total, p.spread_edge,
                     p.total_edge, json.dumps(p.components),
                 ]
@@ -1310,11 +1312,13 @@ class Pipeline:
         stamp = now_iso()
         db.executemany(
             "INSERT OR REPLACE INTO predictions"
-            "(game_id, captured_at, model_version, margin_home, total_points, home_win_prob,"
+            "(game_id, captured_at, model_version, margin_home, total_points,"
+            " fair_margin, fair_total, home_win_prob,"
             " market_spread, market_total, spread_edge, total_edge, components) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                [p.game_id, stamp, version, p.model_margin, p.model_total, p.home_win_prob,
+                [p.game_id, stamp, version, p.model_margin, p.model_total,
+                 p.fair_margin, p.fair_total, p.home_win_prob,
                  p.market_spread, p.market_total, p.spread_edge, p.total_edge,
                  json.dumps(p.components)]
                 for p in predictions
