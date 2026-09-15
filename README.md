@@ -370,6 +370,12 @@ Windows and macOS runners and attaches the result to the run. Actions tab →
   pyarrow to a temporary directory on every single launch, which reads as a
   hung app rather than a slow one.
 
+GitHub's free macOS runners are Apple silicon by default; the Intel build uses
+the `macos-15-intel` image, which is what replaced the retired `macos-13`. A
+job asking for a retired runner label does not fail — it queues forever with
+nothing assigned to it, which reads as a slow build rather than an impossible
+one, so it is worth knowing which label is current.
+
 The build runs the test suite first and then boots the frozen binary with
 `--selftest`, because PyInstaller exiting 0 only means the bundle was written.
 The usual packaging failure is a hidden import that was never collected, and

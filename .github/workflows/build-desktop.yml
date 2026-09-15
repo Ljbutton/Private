@@ -63,11 +63,15 @@ jobs:
             || inputs.targets == 'both' && '["windows","macos-arm","macos-intel"]'
             || '["windows"]') }}
 
-    # macos-14 is Apple Silicon; macos-13 is the last Intel image.
+    # macos-14 is Apple Silicon. For Intel it has to be macos-15-intel:
+    # macos-13 was the last of the old Intel images and has been retired, and a
+    # job asking for a retired label does not fail -- it queues forever with no
+    # runner assigned, which looks like a slow build rather than an impossible
+    # one.
     runs-on: >-
       ${{ matrix.target == 'windows' && 'windows-latest'
           || matrix.target == 'macos-arm' && 'macos-14'
-          || 'macos-13' }}
+          || 'macos-15-intel' }}
 
     steps:
       - uses: actions/checkout@v7
