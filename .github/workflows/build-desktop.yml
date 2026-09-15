@@ -40,21 +40,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            target: windows
-            artifact: NFLPicker-windows
-          - os: macos-latest
-            target: macos
-            artifact: NFLPicker-macos
-    runs-on: ${{ matrix.os }}
-    # A manual run builds what was asked for; an automatic one builds Windows
-    # only, which is the target anyone is actually waiting on. macOS is one
-    # dropdown away rather than two runners on every packaging commit.
-    if: >-
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.targets == 'both' || inputs.targets == matrix.target)) ||
-      (github.event_name != 'workflow_dispatch' && matrix.target == 'windows')
+        # Selected here rather than filtered with a job-level `if`, because the
+        # matrix context is not available to one -- that combination is not a
+        # failing build, it is a workflow that never starts and reports no jobs
+        # at all. An automatic run builds Windows only, which is the target
+        # anyone is actually waiting on; inputs are null outside a manual run.
+        target: >-
+          ${{ fromJSON(
+            inputs.targets == 'both' && '["windows","macos"]'
+            || inputs.targets == 'macos' && '["macos"]'
+            || '["windows"]') }}
+    runs-on: ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-latest' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +91,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}-${{ inputs.profile || 'full' }}
+          name: NFLPicker-${{ matrix.target }}-${{ inputs.profile || 'full' }}
           path: |
             dist/NFLPicker.exe
             dist/NFLPicker
