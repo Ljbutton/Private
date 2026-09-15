@@ -109,11 +109,17 @@ def cmd_train(args) -> int:
         # merely absent. It is roughly 20MB a season and downloads in seconds.
         epa: dict = {}
         team_stats: dict = {}
+        availability: dict = {}
         if not args.no_epa:
+            import pandas as pd
+
+            from .availability import SnapShares, historical_index
+
             seasons = sorted(int(x) for x in games["season"].dropna().unique())
             seasons = [s for s in seasons if s >= max(args.since, PBP_FIRST_SEASON)]
             print(f"  loading play-by-play for {len(seasons)} seasons…", flush=True)
             ok = 0
+            injuries, snaps = [], []
             for season in seasons:
                 try:
                     detail = nfl.game_team_stats(season)
@@ -124,9 +130,22 @@ def cmd_train(args) -> int:
                     ok += 1
                 except Exception as exc:  # noqa: BLE001
                     print(f"    skipped {season}: {exc}")
+                # Weekly reports are small and independent of play-by-play.
+                report = nfl.injury_reports(season)
+                if len(report):
+                    injuries.append(report)
+                snap = nfl.snap_counts(season)
+                if len(snap):
+                    snaps.append(snap)
             print(f"  play-by-play loaded for {ok}/{len(seasons)} seasons "
                   f"({len(team_stats)} games)")
-        frame = build_features(rows, epa_by_game=epa, team_game_stats=team_stats)
+
+            if injuries:
+                shares = SnapShares(pd.concat(snaps) if snaps else None)
+                availability = historical_index(pd.concat(injuries), shares)
+                print(f"  injury reports for {len(availability)} team-weeks")
+        frame = build_features(rows, epa_by_game=epa, team_game_stats=team_stats,
+                               availability=availability)
     else:
         rows = db.query("SELECT * FROM games ORDER BY season, week, kickoff")
         consensus = db.query(

@@ -127,12 +127,19 @@ final scores *and* historical closing spread and total, rest days, roof, surface
 and starting quarterbacks, so the market history needed for supervision comes
 with it. Play-by-play parquet (optional) adds EPA.
 
-### Features (~35)
+Three more nflverse releases feed the availability features: **weekly injury
+reports** (2009+), **depth charts** (who the actual backup is) and **snap
+counts** (2012+, how much of the offence or defence a missing player was
+playing). Together they give 9,122 team-weeks of historical injury cost, which
+is what lets availability be a *trained* feature rather than a post-hoc nudge.
+
+### Features (79)
 
 | Group | Features |
 |---|---|
 | Power | Elo (MOV-adjusted, season-regressed), rolling EPA per play for offence and defence, pass/rush splits, success rate |
 | Quarterback | starter's shrunk EPA per dropback, career dropbacks, starter-changed flag |
+| Availability | injury cost in points for each side and the difference, weighted by each missing player's prior snap share |
 | Efficiency | opponent-adjusted offensive and defensive EPA (exponentially weighted) |
 | Hidden components | special-teams EPA, turnover luck (margin minus its fumble-recovery-neutral expectation) |
 | Situational | third-down conversion and allowed, red-zone touchdown rate, explosive-play rate and allowed, sack rate taken and forced, penalty yards |
@@ -159,6 +166,18 @@ margin error by **0.002 points** — essentially nothing — while nudging
 straight-up accuracy from 64.2% to 64.6% and improving Brier slightly. They are
 kept because they cost nothing extra to compute, help calibration a little, and
 are genuinely worth reading on the Teams tab. They are not why the model works.
+
+**Availability.** Every player, not just the quarterback. Each name on the
+weekly injury report is costed by position value scaled by that player's snap
+share *before* the week in question — a starting corner missing 85% of snaps
+costs more than a rotational one, and a quarterback's backup is read from the
+depth chart rather than guessed from who has started before. The snap share has
+to come from prior weeks specifically: an injured player has no snap row for the
+week he is out, so keying on his own week silently returns nothing for exactly
+the players the feature exists to price. An A/B test over 2012+ (98% coverage)
+moved margin error **-0.013 points**, straight-up accuracy **+0.12%** and Brier
+**-0.0012** — six times the effect of the situational rates, and the best recent
+addition to the model.
 
 **Quarterback.** The largest week-to-week swing a power rating misses. Starter
 identity comes from one source only: the schedule feed records the *starter*
@@ -467,7 +486,7 @@ odds                yes      15m        yes          Sportsbook lines across eve
 prediction_markets  yes      10m        -            Polymarket and Kalshi prices, shown for comparison
 weather             yes      180m       yes          Forecast at kickoff for outdoor games
 news                yes      15m        yes          Headlines and injury reports
-stats               yes      360m       yes          Play-by-play efficiency and per-game team detail
+stats               yes      360m       yes          Play-by-play efficiency, team detail and depth charts
 recompute           yes      on refresh -            Ratings, projections, picks and grading
 ```
 

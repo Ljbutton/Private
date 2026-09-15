@@ -207,6 +207,127 @@ def team_adjustment(
     return out
 
 
+# ---------------------------------------------------------------- historical
+
+# Snap share to assume for a listed player we have no participation data for.
+# Injury reports skew toward players who actually play, so zero would be the
+# wrong default; a middling share is closer.
+DEFAULT_SNAP_SHARE = 0.45
+
+
+class SnapShares:
+    """Each player's participation, queryable as of any week.
+
+    Built as a per-player history rather than a flat week-keyed table because
+    of the case the whole feature exists for: a player who is *out* has no snap
+    row that week. Keying on the week he is missing means the lookup misses for
+    exactly the players who matter, silently falling back to a default — which
+    is what it did before this class existed, for every injured quarterback.
+    """
+
+    def __init__(self, snap_counts=None) -> None:
+        self._history: dict[tuple[int, str, str], list[tuple[int, float]]] = {}
+        if snap_counts is None or len(snap_counts) == 0:
+            return
+        for row in snap_counts.to_dict("records"):
+            season = int(row.get("season") or 0)
+            week = int(row.get("week") or 0)
+            team = row.get("team")
+            player = normalize_name(row.get("player"))
+            if not team or not player:
+                continue
+            share = max(
+                float(row.get("offense_pct") or 0.0),
+                float(row.get("defense_pct") or 0.0),
+            )
+            self._history.setdefault((season, team, player), []).append((week, share))
+
+    def before(self, season: int, week: int, team: str, player: str) -> float | None:
+        """Mean snap share over the weeks preceding ``week``.
+
+        Strictly preceding: this week's participation would leak the answer,
+        since a player hurt in warmups shows a share of zero.
+        """
+        history = self._history.get((season, team, player))
+        if not history:
+            return None
+        prior = [share for w, share in history if w < week]
+        return sum(prior) / len(prior) if prior else None
+
+    def __len__(self) -> int:
+        return len(self._history)
+
+
+def historical_index(
+    injuries,
+    snap_counts=None,
+    *,
+    max_players: int = 10,
+) -> dict[tuple[int, int, str], float]:
+    """Availability cost per (season, week, team), in points.
+
+    This is what makes availability a *learned* feature rather than a
+    correction applied afterwards: the weekly reports exist back to 2009, so a
+    model can see who was listed alongside what happened.
+
+    A player's weight is his snap share times the position's value, rather than
+    the position alone. A constant says every starting receiver matters
+    equally; snap share is the measurement that constant was standing in for.
+    """
+    out: dict[tuple[int, int, str], float] = {}
+    if injuries is None or len(injuries) == 0:
+        return out
+
+    shares = snap_counts if isinstance(snap_counts, SnapShares) else SnapShares(snap_counts)
+    grouped: dict[tuple[int, int, str], list[float]] = {}
+
+    for row in injuries.to_dict("records"):
+        season = int(row.get("season") or 0)
+        week = int(row.get("week") or 0)
+        team = row.get("team")
+        if not team:
+            continue
+        status = status_cost(row.get("report_status"))
+        if status <= 0:
+            continue
+
+        player = normalize_name(row.get("full_name"))
+        share = shares.before(season, week, team, player)
+        if share is None:
+            share = DEFAULT_SNAP_SHARE
+        weight = _position_value(row.get("position"))
+        grouped.setdefault((season, week, team), []).append(weight * share * status)
+
+    for key, costs in grouped.items():
+        costs.sort(reverse=True)
+        total = sum(cost * (DECAY**i) for i, cost in enumerate(costs[:max_players]))
+        out[key] = -clamp(total, 0.0, MAX_TEAM_ADJUSTMENT)
+    return out
+
+
+def depth_chart_backups(depth_charts, position: str = "QB") -> dict[tuple[int, int, str], list[str]]:
+    """(season, week, team) -> players at a position, ordered by depth."""
+    out: dict[tuple[int, int, str], list[str]] = {}
+    if depth_charts is None or len(depth_charts) == 0:
+        return out
+    subset = depth_charts[depth_charts["position"] == position]
+    # normalise_depth_charts() emits "depth"; a raw legacy frame still calls it
+    # "depth_team". Sorting on a missing column would raise, so pick whichever
+    # is present and fall back to file order if neither is.
+    rank = next((c for c in ("depth", "depth_team") if c in subset.columns), None)
+    if rank is not None:
+        subset = subset.sort_values(rank)
+    for row in subset.to_dict("records"):
+        team = row.get("team")
+        if not team:
+            continue
+        key = (int(row.get("season") or 0), int(row.get("week") or 0), team)
+        name = normalize_name(row.get("full_name"))
+        if name and name not in out.setdefault(key, []):
+            out[key].append(name)
+    return out
+
+
 def build_adjustments(
     injuries_by_team: dict[str, list[dict]],
     *,

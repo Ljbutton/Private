@@ -80,6 +80,9 @@ NUMERIC_FEATURES = [
     "sack_rate_home", "sack_rate_away",
     "sack_forced_home", "sack_forced_away",
     "penalty_yards_home", "penalty_yards_away",
+    # Who was actually available, from that week's injury report weighted by
+    # each player's snap share. Learned rather than applied afterwards.
+    "availability_home", "availability_away", "availability_diff",
 ]
 
 # Situational stats tracked per team: feature stem -> key in the per-game stats.
@@ -223,6 +226,7 @@ def build_features(
     elo_config: EloConfig | None = None,
     epa_by_game: dict[str, dict] | None = None,
     team_game_stats: dict[str, dict] | None = None,
+    availability: dict[tuple[int, int, str], float] | None = None,
 ) -> pd.DataFrame:
     """Return one feature row per game, in chronological order.
 
@@ -233,6 +237,11 @@ def build_features(
 
     ``epa_by_game`` optionally maps game_id -> {team: {off_epa, def_epa}} so
     rolling EPA can be maintained without re-reading play-by-play here.
+
+    ``availability`` maps (season, week, team) -> points of injury cost, from
+    :func:`nflpicker.availability.historical_index`. The weekly reports are
+    published before kickoff, so using week W's report as a feature for week W
+    is legitimate rather than lookahead.
 
     ``team_game_stats`` maps game_id -> {team: per-game stats} from
     :func:`nflverse.extract_game_team_stats`, and is what powers the
@@ -370,6 +379,8 @@ def build_features(
             "pythagorean_away": away_form.pythagorean(),
             "form_home": home_form.form.get(),
             "form_away": away_form.form.get(),
+            "availability_home": (availability or {}).get((season, week, home), np.nan),
+            "availability_away": (availability or {}).get((season, week, away), np.nan),
             **{
                 f"{stem}_{side}": form.situational_value(stem)
                 for stem in SITUATIONAL
@@ -400,6 +411,8 @@ def build_features(
         row["form_diff"] = _diff(row["form_home"], row["form_away"])
         for stem in ("third_down", "red_zone", "explosive"):
             row[f"{stem}_diff"] = _diff(row[f"{stem}_home"], row[f"{stem}_away"])
+        row["availability_diff"] = _diff(
+            row["availability_home"], row["availability_away"])
 
         # ---- targets (only for completed games)
         home_score, away_score = game.get("home_score"), game.get("away_score")

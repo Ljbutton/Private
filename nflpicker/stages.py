@@ -78,7 +78,7 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         name="stats",
-        description="Play-by-play efficiency and per-game team detail",
+        description="Play-by-play efficiency, team detail and depth charts",
         interval=lambda cfg: cfg.refresh_stats,
         feeds_model=True,
     ),

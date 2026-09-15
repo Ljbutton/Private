@@ -743,7 +743,16 @@ class Pipeline:
             # The per-game detail the market-blind features roll up. The current
             # and prior season are enough: rolling state only looks back that far.
             stored = self.store_team_game_stats(nfl, [season - 1, season])
+
+            # Depth charts name the actual backup. Falls back a season because
+            # the release for a season that has not started yet is empty.
+            depth = self.store_depth_charts(nfl, season)
+            if not depth:
+                depth = self.store_depth_charts(nfl, season - 1)
+
             detail = f"EPA for {len(payload)} teams, {stored} game-team rows"
+            if depth:
+                detail += f", {depth:,} depth-chart rows"
             result.record("stats", True, detail, count=len(payload))
             db.log_fetch("stats", True, detail, int((time.monotonic() - start) * 1000))
         except Exception as exc:  # noqa: BLE001
@@ -814,6 +823,60 @@ class Pipeline:
             } | {"games": max((len(v) for v in stats.values()), default=0)}
             for team, stats in buckets.items()
         }
+
+    def store_depth_charts(self, source, season: int) -> int:
+        """Cache the latest weekly depth chart for the season."""
+        from .availability import normalize_name
+
+        try:
+            frame = source.depth_charts(season)
+        except Exception as exc:  # noqa: BLE001
+            # Upstream has changed this layout before. Swallowing the error
+            # returned zero rows and looked like "no data", which hid a schema
+            # change for as long as nobody checked.
+            db.log_fetch("depth_charts", False, f"{type(exc).__name__}: {exc}")
+            return 0
+        if frame is None or len(frame) == 0:
+            return 0
+
+        stamp = now_iso()
+        rows = []
+        for record in frame.to_dict("records"):
+            player = normalize_name(record.get("full_name"))
+            depth = record.get("depth")
+            if not player or depth != depth or not record.get("position"):
+                continue
+            rows.append([
+                int(record.get("season") or season), int(record.get("week") or 0),
+                record["team"], str(record["position"]), int(depth), player, stamp,
+            ])
+        db.executemany(
+            "INSERT OR REPLACE INTO depth_chart"
+            "(season, week, team, position, depth, player, updated_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            rows,
+        )
+        return len(rows)
+
+    def depth_by_position(self, season: int, position: str = "QB") -> dict[str, list[str]]:
+        """Each team's most recent depth order at a position."""
+        rows = db.query(
+            "SELECT team, depth, player, week FROM depth_chart "
+            "WHERE season = ? AND position = ? ORDER BY week, depth",
+            (season, position),
+        )
+        latest_week: dict[str, int] = {}
+        for row in rows:
+            latest_week[row["team"]] = max(latest_week.get(row["team"], 0), row["week"])
+        out: dict[str, list[str]] = {}
+        for row in rows:
+            if row["week"] != latest_week.get(row["team"]):
+                continue
+            # A player can appear at more than one depth slot; keep his best.
+            players = out.setdefault(row["team"], [])
+            if row["player"] not in players:
+                players.append(row["player"])
+        return out
 
     def load_team_game_stats(self, season: int) -> dict[str, dict]:
         """game_id -> {team: stats}, for the feature builder."""
@@ -886,7 +949,10 @@ class Pipeline:
                 "position": row["position"],
                 "status": row["status"],
             })
-        values, depth = self.quarterback_registry(season)
+        values, inferred_depth = self.quarterback_registry(season)
+        # Prefer the published depth chart; fall back to who has been starting.
+        published = self.depth_by_position(season, "QB")
+        depth = {**inferred_depth, **{t: d for t, d in published.items() if d}}
         built = build_adjustments(by_team, qb_values=values, depth=depth)
         return {team: a.to_dict() for team, a in built.items()}
 

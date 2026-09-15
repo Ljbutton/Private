@@ -18,7 +18,7 @@ from typing import Any
 
 from .config import get_config
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -206,6 +206,22 @@ CREATE TABLE IF NOT EXISTS graded (
     log_loss       REAL
 );
 CREATE INDEX IF NOT EXISTS idx_graded_week ON graded(season, week);
+
+-- Weekly depth charts, so the replacement for an injured starter is the team's
+-- actual backup rather than whoever happens to have started before. Inferring
+-- it from past starts fails exactly when it matters: for a backup who has
+-- never started.
+CREATE TABLE IF NOT EXISTS depth_chart (
+    season     INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    team       TEXT NOT NULL,
+    position   TEXT NOT NULL,
+    depth      INTEGER NOT NULL,
+    player     TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (season, week, team, position, depth)
+);
+CREATE INDEX IF NOT EXISTS idx_depth_team ON depth_chart(season, team, position);
 
 -- Forecast at kickoff, per game. The model trains on temperature and wind from
 -- historical records, so without this they arrive as NaN at inference for every

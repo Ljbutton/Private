@@ -23,6 +23,19 @@ PBP_URL = (
     "play_by_play_{season}.parquet"
 )
 
+# Weekly releases, each a few hundred kilobytes a season.
+RELEASE_URL = (
+    "https://github.com/nflverse/nflverse-data/releases/download/{name}/"
+    "{name}_{season}.parquet"
+)
+
+# Earliest season each release covers; asking for less is a 404.
+RELEASE_FIRST_SEASON = {
+    "injuries": 2009,
+    "depth_charts": 2009,
+    "snap_counts": 2012,
+}
+
 # Enough for efficiency ratings. The richer per-game extraction asks for more.
 PBP_BASE_COLUMNS = [
     "game_id", "season", "week", "posteam", "defteam", "home_team", "away_team",
@@ -96,6 +109,77 @@ class NflverseSource:
         except Exception:  # noqa: BLE001 - column set drifts between seasons
             df = pd.read_parquet(dest)
         return df
+
+    def weekly_release(self, name: str, season: int, *,
+                       cache_ttl: float = 43200.0) -> pd.DataFrame:
+        """One of nflverse's weekly parquet releases.
+
+        Returns an empty frame rather than raising for a season the release
+        does not cover — snap counts start in 2012, injuries in 2009, and a
+        caller building a long training frame should not have to know that.
+        """
+        first = RELEASE_FIRST_SEASON.get(name, 1999)
+        if season < first:
+            return pd.DataFrame()
+        dest = self.cache_dir / f"{name}_{season}.parquet"
+        try:
+            self.http.download(
+                RELEASE_URL.format(name=name, season=season), dest, cache_ttl=cache_ttl
+            )
+            return pd.read_parquet(dest)
+        except Exception:  # noqa: BLE001 - a missing release must not fail a build
+            return pd.DataFrame()
+
+    def injury_reports(self, season: int) -> pd.DataFrame:
+        """Weekly injury reports: who was listed, and as what.
+
+        This is the piece that lets availability be *learned* rather than
+        applied as a post-hoc correction — the reports exist per week going
+        back to 2009, so a model can see them alongside the result.
+        """
+        df = self.weekly_release("injuries", season)
+        if df.empty:
+            return df
+        keep = [c for c in ("season", "week", "team", "gsis_id", "position",
+                            "full_name", "report_status", "practice_status",
+                            "report_primary_injury") if c in df.columns]
+        df = df[keep].copy()
+        df["team"] = df["team"].map(try_resolve)
+        return df.dropna(subset=["team", "week"])
+
+    def depth_charts(self, season: int) -> pd.DataFrame:
+        """Depth charts: who is actually the backup.
+
+        Inferring a backup from who has started before fails exactly when it
+        matters — for a team whose second quarterback has never started.
+
+        Normalises two upstream layouts. Seasons through 2024 publish one row
+        per week with ``depth_team`` as the rank; 2025 onward publishes dated
+        snapshots with ``pos_rank`` and different column names throughout.
+        Returns a common shape either way: season, week, team, position, depth,
+        full_name.
+        """
+        df = self.weekly_release("depth_charts", season)
+        if df.empty:
+            return df
+        return normalise_depth_charts(df, season)
+
+    def snap_counts(self, season: int) -> pd.DataFrame:
+        """Per-game snap share, which is how important a player actually is.
+
+        A position constant says every starting receiver matters equally. Snap
+        share says how much of the game a specific player was on the field for,
+        which is the measurement that constant was standing in for.
+        """
+        df = self.weekly_release("snap_counts", season)
+        if df.empty:
+            return df
+        keep = [c for c in ("game_id", "season", "week", "player", "position",
+                            "team", "offense_pct", "defense_pct", "st_pct")
+                if c in df.columns]
+        df = df[keep].copy()
+        df["team"] = df["team"].map(try_resolve)
+        return df.dropna(subset=["team", "week"])
 
     def game_team_stats(self, season: int) -> pd.DataFrame:
         """One row per (game, team) with the raw ingredients for market-blind
@@ -395,3 +479,38 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
                 "opp_third_down_rate", "opp_red_zone_td_rate",
                 "opp_explosive_rate", "opp_sack_rate"}]
     return stats.drop(columns=drop)
+
+
+def normalise_depth_charts(df: pd.DataFrame, season: int) -> pd.DataFrame:
+    """Map either upstream depth-chart layout onto one shape.
+
+    Kept as a free function so both layouts can be exercised from a recorded
+    frame in tests: an upstream schema change is exactly the failure that is
+    invisible until something downstream quietly returns nothing.
+    """
+    from ..util import estimate_week, to_utc
+
+    if "depth_team" in df.columns:          # 2024 and earlier
+        out = df.rename(columns={"club_code": "team"}).copy()
+        out["depth"] = pd.to_numeric(out["depth_team"], errors="coerce")
+        keep = ["season", "week", "team", "position", "depth", "full_name"]
+        out = out[[c for c in keep if c in out.columns]]
+    elif "pos_rank" in df.columns:          # 2025 onward
+        out = df.copy()
+        out["depth"] = pd.to_numeric(out["pos_rank"], errors="coerce")
+        out["position"] = out["pos_abb"]
+        out["full_name"] = out["player_name"]
+        out["season"] = season
+        # Snapshots are dated rather than numbered; derive a week so the most
+        # recent chart can be picked out the same way for both layouts.
+        stamps = out["dt"].map(to_utc)
+        out["week"] = [
+            estimate_week(s.date(), season) if s is not None else 0 for s in stamps
+        ]
+        out = out[["season", "week", "team", "position", "depth", "full_name"]]
+    else:
+        return pd.DataFrame()
+
+    out["team"] = out["team"].map(try_resolve)
+    out["week"] = pd.to_numeric(out.get("week"), errors="coerce")
+    return out.dropna(subset=["team", "depth"])
