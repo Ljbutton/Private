@@ -11,10 +11,12 @@ Runs locally. One command, one page, no cloud services.
 
 ```bash
 make demo      # runs immediately on a synthetic season — no keys, no network
-make run       # live sources
+make run       # live sources, in your browser
+make desktop   # live sources, in a native window
 ```
 
-Then open <http://127.0.0.1:8000>.
+`make run` serves <http://127.0.0.1:8000>. `make desktop` opens the same app in
+a real application window instead — see [Running it as an app](#running-it-as-an-app).
 
 ---
 
@@ -248,6 +250,41 @@ weight.
 
 ---
 
+## Running it as an app
+
+`make desktop` runs the dashboard in a native window rather than a browser tab.
+It uses the platform's own engine — WebView2 on Windows, WebKit on macOS,
+WebKitGTK on Linux — so nothing ships a second browser: no tab, no address bar,
+no localhost URL to remember. The server still runs underneath, bound to
+loopback only, which matters because the app has no authentication.
+
+If no webview runtime is present it falls back to opening your browser rather
+than failing.
+
+### Building a single executable
+
+```bash
+make exe                 # full build
+make exe PROFILE=lite    # smaller, no training
+```
+
+This produces one self-contained file — no Python install needed on the target
+machine. Measured on Linux: **≈138 MB** for the full profile.
+
+Two things to know:
+
+- **PyInstaller cannot cross-compile.** Run `make exe` on the platform you want
+  the build for; a Windows `.exe` has to be built on Windows.
+- **The `lite` profile drops pyarrow.** It runs the dashboard, fetches odds,
+  scores and news, and uses a model you trained earlier — but it cannot read
+  nflverse parquet, so no training and no EPA refresh on that build. Train with
+  the full install and copy `data/models/` across if you want both.
+
+Windows needs the Microsoft Edge WebView2 runtime, which ships with Windows 11
+and most Windows 10 installs.
+
+---
+
 ## Prediction markets
 
 Polymarket and Kalshi run the same games with a different crowd than the
@@ -386,6 +423,7 @@ noise.
 
 ```bash
 nflpicker serve                  # dashboard + background refresher
+nflpicker desktop                # the same app in a native window
 nflpicker refresh                # fetch everything once
 nflpicker refresh --stages odds  # just one source
 nflpicker picks                  # this week's recommendations, as a table
@@ -439,7 +477,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 181 tests, fully offline
+make test     # 186 tests, fully offline
 make lint
 ```
 

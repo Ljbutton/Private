@@ -330,3 +330,39 @@ def generate_injuries(season: int, per_team: int = 3) -> list[dict]:
                 "updated_at": stamp,
             })
     return rows
+
+
+def generate_team_efficiency(season: int) -> list[dict]:
+    """Synthetic EPA per team, consistent with the season's hidden truth.
+
+    Without this the demo has no efficiency data at all, so every team's
+    offensive and defensive ratings sit at the league average and every game's
+    projected total comes out identical — which reads as a broken column rather
+    than as missing data.
+
+    Strength drives margin and pace drives scoring, so they are split back out
+    the same way the season was generated: offence gets half of each, defence
+    gets pace minus strength.
+    """
+    from ..ratings.efficiency import PLAYS_PER_GAME
+
+    strengths = _true_strengths(season)
+    paces = _pace(season)
+    rows = []
+    for team in ABBRS:
+        strength, pace = strengths[team], paces[team]
+        off_points = (pace + strength) / 2.0
+        def_points = (pace - strength) / 2.0
+        rows.append({
+            "team": team,
+            "off_epa": round(off_points / PLAYS_PER_GAME, 5),
+            "def_epa": round(def_points / PLAYS_PER_GAME, 5),
+            "off_pass_epa": round((off_points * 1.3) / PLAYS_PER_GAME, 5),
+            "off_rush_epa": round((off_points * 0.6) / PLAYS_PER_GAME, 5),
+            "def_pass_epa": round((def_points * 1.3) / PLAYS_PER_GAME, 5),
+            "def_rush_epa": round((def_points * 0.6) / PLAYS_PER_GAME, 5),
+            "off_success": round(0.45 + off_points / 100.0, 4),
+            "def_success": round(0.45 + def_points / 100.0, 4),
+            "plays": 1000,
+        })
+    return rows

@@ -55,6 +55,13 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_desktop(args) -> int:
+    """Run the dashboard in a native window rather than a browser."""
+    from .desktop import run
+
+    return run(width=args.width, height=args.height, debug=args.debug)
+
+
 def cmd_refresh(args) -> int:
     from .pipeline import Pipeline
 
@@ -320,6 +327,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log-level", default="info")
     p.add_argument("--reload", action="store_true")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("desktop", help="run as a native desktop window")
+    p.add_argument("--width", type=int, default=1400)
+    p.add_argument("--height", type=int, default=950)
+    p.add_argument("--debug", action="store_true")
+    p.set_defaults(func=cmd_desktop)
 
     p = sub.add_parser("refresh", help="fetch everything once and recompute")
     p.add_argument("--stages", help="comma separated: schedule,odds,news,stats,recompute")

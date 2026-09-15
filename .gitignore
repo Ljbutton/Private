@@ -13,3 +13,6 @@ data/*.db-shm
 data/cache/
 data/models/
 .DS_Store
+build/
+dist/
+*.spec.bak

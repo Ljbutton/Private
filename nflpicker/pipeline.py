@@ -556,7 +556,14 @@ class Pipeline:
         start = time.monotonic()
         try:
             if self.demo:
-                result.record("stats", True, "demo mode: EPA not simulated", count=0)
+                from .sources.demo import generate_team_efficiency
+
+                season = self.season()
+                rows = generate_team_efficiency(season)
+                db.set_meta("team_epa", {"season": season, "captured_at": now_iso(),
+                                         "rows": rows})
+                result.record("stats", True, f"demo EPA for {len(rows)} teams",
+                              count=len(rows))
                 return
             from .sources.nflverse import NflverseSource
 
