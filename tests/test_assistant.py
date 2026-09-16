@@ -166,3 +166,88 @@ def test_the_context_header_is_a_real_newline():
     import nflpicker.assistant as a
 
     assert "Current state:\\\\n" not in inspect.getsource(a.ask)
+
+
+# ------------------------------------------------------ many conversations
+
+def test_chats_are_created_listed_renamed_and_deleted(temp_env):
+    from nflpicker import assistant, db
+
+    db.connect()
+    assert assistant.list_chats() == []
+
+    first = assistant.create_chat("Week 2")
+    second = assistant.create_chat("Survivor")
+    assert {c["id"] for c in assistant.list_chats()} == {first["id"], second["id"]}
+
+    assistant.rename_chat(first["id"], "Week 2 board")
+    titles = {c["id"]: c["title"] for c in assistant.list_chats()}
+    assert titles[first["id"]] == "Week 2 board"
+
+    assistant.delete_chat(second["id"])
+    assert [c["id"] for c in assistant.list_chats()] == [first["id"]]
+
+
+def test_deleting_a_chat_takes_its_messages_with_it(temp_env):
+    """The cascade is declared, but SQLite only honours it with foreign keys
+    switched on -- a per-connection pragma, not a schema property. Orphaned
+    rows would accumulate invisibly."""
+    from nflpicker import assistant, db
+
+    db.connect()
+    chat = assistant.create_chat("scratch")
+    assistant.append_message(chat["id"], "user", "hello")
+    assistant.append_message(chat["id"], "assistant", "hi")
+    assert len(assistant.chat_messages(chat["id"])) == 2
+
+    assistant.delete_chat(chat["id"])
+    left = db.query_one("SELECT COUNT(*) AS n FROM chat_messages WHERE chat_id = ?",
+                        (chat["id"],))
+    assert left["n"] == 0
+
+
+def test_a_conversation_keeps_its_order(temp_env):
+    from nflpicker import assistant, db
+
+    db.connect()
+    chat = assistant.create_chat("ordered")
+    for i in range(5):
+        assistant.append_message(chat["id"], "user", f"q{i}")
+        assistant.append_message(chat["id"], "assistant", f"a{i}")
+    messages = assistant.chat_messages(chat["id"])
+    assert [m["content"] for m in messages] == [
+        x for i in range(5) for x in (f"q{i}", f"a{i}")]
+
+
+def test_chats_do_not_share_a_transcript(temp_env):
+    """The reason for having more than one: a question about week 3 should not
+    arrive with twenty lines about week 2 attached."""
+    from nflpicker import assistant, db
+
+    db.connect()
+    a = assistant.create_chat("A")
+    b = assistant.create_chat("B")
+    assistant.append_message(a["id"], "user", "about week 2")
+    assistant.append_message(b["id"], "user", "about week 3")
+
+    assert [m["content"] for m in assistant.chat_messages(a["id"])] == ["about week 2"]
+    assert [m["content"] for m in assistant.chat_messages(b["id"])] == ["about week 3"]
+
+
+def test_a_chat_is_named_after_the_first_question(temp_env):
+    from nflpicker import assistant
+
+    assert assistant.title_from("  Is this model any good?  ") == "Is this model any good?"
+    assert assistant.title_from("") == "New chat"
+    long = assistant.title_from("x" * 200)
+    assert len(long) <= 49 and long.endswith("…")
+
+
+def test_an_empty_rename_is_refused(temp_env):
+    from nflpicker import assistant, db
+
+    db.connect()
+    chat = assistant.create_chat("keep me")
+    with pytest.raises(assistant.AssistantError):
+        assistant.rename_chat(chat["id"], "   ")
+    assert assistant.list_chats()[0]["title"] == "keep me"

@@ -244,3 +244,95 @@ def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0)
     if not reply:
         raise AssistantError(_why_empty(choices[0]))
     return {"reply": reply, "model": body.get("model", state["model"])}
+
+
+# ------------------------------------------------------------------ chats
+# Conversations, kept like any other app keeps them: many of them, named, and
+# still there tomorrow. A single running log meant every question shared one
+# context -- asking about week 3 after twenty lines about week 2 fed the model
+# all twenty -- and there was no way to put a thread aside and come back.
+
+def _new_id() -> str:
+    import uuid
+
+    return uuid.uuid4().hex[:12]
+
+
+def list_chats() -> list[dict]:
+    """Newest activity first, with a count and a preview."""
+    from . import db
+
+    return db.query(
+        "SELECT c.id, c.title, c.created_at, c.updated_at,"
+        "  (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) AS n,"
+        "  (SELECT m.content FROM chat_messages m WHERE m.chat_id = c.id"
+        "     ORDER BY m.id LIMIT 1) AS opener "
+        "FROM chats c ORDER BY c.updated_at DESC"
+    )
+
+
+def create_chat(title: str = "New chat") -> dict:
+    from . import db
+    from .util import now_iso
+
+    stamp = now_iso()
+    chat_id = _new_id()
+    db.execute(
+        "INSERT INTO chats(id, title, created_at, updated_at) VALUES(?,?,?,?)",
+        (chat_id, (title or "New chat").strip()[:80] or "New chat", stamp, stamp),
+    )
+    return {"id": chat_id, "title": title, "created_at": stamp,
+            "updated_at": stamp, "messages": []}
+
+
+def chat_messages(chat_id: str) -> list[dict]:
+    from . import db
+
+    return db.query(
+        "SELECT role, content, created_at FROM chat_messages "
+        "WHERE chat_id = ? ORDER BY id", (chat_id,)
+    )
+
+
+def rename_chat(chat_id: str, title: str) -> dict:
+    from . import db
+    from .util import now_iso
+
+    clean = (title or "").strip()[:80]
+    if not clean:
+        raise AssistantError("A chat needs a name.")
+    db.execute("UPDATE chats SET title = ?, updated_at = ? WHERE id = ?",
+               (clean, now_iso(), chat_id))
+    return {"id": chat_id, "title": clean}
+
+
+def delete_chat(chat_id: str) -> dict:
+    from . import db
+
+    # The cascade is declared, but SQLite only honours it with foreign keys
+    # switched on -- which is a per-connection pragma, not a schema property.
+    # Deleting the messages explicitly is one line and cannot silently leak.
+    db.execute("DELETE FROM chat_messages WHERE chat_id = ?", (chat_id,))
+    db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    return {"deleted": chat_id}
+
+
+def append_message(chat_id: str, role: str, content: str) -> None:
+    from . import db
+    from .util import now_iso
+
+    stamp = now_iso()
+    db.execute(
+        "INSERT INTO chat_messages(chat_id, role, content, created_at) VALUES(?,?,?,?)",
+        (chat_id, role, content, stamp),
+    )
+    db.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (stamp, chat_id))
+
+
+def title_from(question: str) -> str:
+    """A name from the first thing asked, so the list is readable without
+    anyone having to name anything."""
+    clean = " ".join((question or "").split())
+    if not clean:
+        return "New chat"
+    return clean[:48] + ("…" if len(clean) > 48 else "")

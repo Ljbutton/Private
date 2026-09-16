@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -275,6 +275,25 @@ CREATE TABLE IF NOT EXISTS user_picks (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (season, week, game_id, contest)
 );
+
+-- Assistant conversations. In the database rather than the browser so they
+-- survive an update, land in a backup, and are still there on a reinstall --
+-- localStorage is per-browser-profile and would quietly lose the lot.
+CREATE TABLE IF NOT EXISTS chats (
+    id         TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL,        -- user|assistant
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages ON chat_messages(chat_id, id);
 
 -- Things worth noticing while the app is running: a starter ruled out, a line
 -- crossing a key number, a steam move. Written by the recompute pass and read

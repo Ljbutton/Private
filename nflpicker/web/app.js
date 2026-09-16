@@ -1494,18 +1494,36 @@ async function renderSettings() {
    the model's measured record and the scoreboard as JSON, and answers about
    those. Nothing leaves the machine — the app refuses any endpoint that is not
    loopback, so "offline" is enforced rather than promised. */
-const chatLog = [];
+/* The assistant, as a chat app rather than a single running log.
+
+   One log meant every question shared one context -- asking about week 3
+   after twenty lines about week 2 fed the model all twenty -- and there was
+   no way to put a thread aside and come back to it. Conversations live in the
+   database, not the browser, so they survive an update and land in a backup.
+*/
+const chat = { id: null, chats: [], messages: [], busy: false, loaded: false };
+
+async function loadChats() {
+  const r = await api("/api/assistant/chats").catch(() => ({ chats: [] }));
+  chat.chats = r.chats || [];
+  if (chat.id && !chat.chats.some((c) => c.id === chat.id)) chat.id = null;
+  if (!chat.id && chat.chats.length) chat.id = chat.chats[0].id;
+  chat.messages = chat.id
+    ? (await api(`/api/assistant/chats/${chat.id}`).catch(() => ({ messages: [] }))).messages
+    : [];
+  chat.loaded = true;
+}
 
 async function renderAssistant() {
   const root = $("#view");
-  const state_ = await api("/api/assistant/status").catch((e) => ({
+  const status = await api("/api/assistant/status").catch((e) => ({
     ready: false, message: String(e) }));
 
-  if (!state_.ready) {
+  if (!status.ready) {
     root.innerHTML = `<div class="panel">
       <header><h2>Assistant</h2><span class="hint">not configured</span></header>
       <div class="empty" style="text-align:left;max-width:64ch;margin:0 auto">
-        <p>${esc(state_.message)}</p>
+        <p>${esc(status.message)}</p>
         <p class="note" style="margin-top:14px">The assistant runs a model on this
           machine and talks to it over loopback only — an endpoint anywhere else is
           refused, so nothing you ask it can leave the computer. It sees this week's
@@ -1522,47 +1540,123 @@ async function renderAssistant() {
     return;
   }
 
-  const bubbles = chatLog.map((m) => `<div class="msg ${esc(m.role)}">
+  if (!chat.loaded) await loadChats();
+
+  const list = chat.chats.map((c) => `<button class="chat-item${
+    c.id === chat.id ? " on" : ""}" data-chat="${esc(c.id)}">
+    <span class="ci-title">${esc(c.title)}</span>
+    <span class="ci-sub">${esc(ago(c.updated_at))} · ${c.n || 0} message${
+      c.n === 1 ? "" : "s"}</span>
+    <span class="ci-actions">
+      <span class="ci-act" data-rename="${esc(c.id)}" title="Rename" role="button">✎</span>
+      <span class="ci-act" data-delete="${esc(c.id)}" title="Delete" role="button">✕</span>
+    </span>
+  </button>`).join("");
+
+  const bubbles = chat.messages.map((m) => `<div class="msg ${esc(m.role)}">
     <div class="msg-body">${esc(m.content)}</div></div>`).join("");
 
-  root.innerHTML = `<div class="panel chat">
-    <header><h2>Assistant</h2>
-      <span class="hint">${esc(state_.model)} · on this machine · sees week
-        ${state.week} of ${state.season}</span></header>
-    <div class="chat-log" id="chat-log">${bubbles || `<div class="empty">
-      Ask about this week's board, where the model disagrees with the market, or
-      what its record actually says. It only knows what this app has.</div>`}</div>
-    <div class="controls chat-input">
-      <input type="text" id="chat-q" placeholder="e.g. where does the blind model disagree most with the book this week?" />
-      <button class="btn primary" id="chat-send">Ask</button>
-    </div>
-    <div class="chat-suggest">
-      ${["Which games does the blind model disagree with the market on?",
-         "Is this model actually any good? Be blunt.",
-         "Summarise this week in five lines."].map((q) =>
-        `<button class="btn tiny" data-q="${esc(q)}">${esc(q)}</button>`).join("")}
+  root.innerHTML = `<div class="chat-shell">
+    <aside class="chat-side">
+      <div class="chat-side-head">
+        <button class="btn primary tiny" id="chat-new">New chat</button>
+      </div>
+      <div class="chat-list">${list || '<div class="empty tiny">No chats yet.</div>'}</div>
+    </aside>
+
+    <div class="panel chat">
+      <header><h2>${esc(chat.chats.find((c) => c.id === chat.id)?.title || "Assistant")}</h2>
+        <span class="hint">${esc(status.model)} · on this machine · sees week
+          ${state.week} of ${state.season}</span></header>
+      <div class="chat-log" id="chat-log">${bubbles || `<div class="empty">
+        Ask about this week's board, where the model disagrees with the market, or
+        what its record actually says. It only knows what this app has.</div>`}${
+        chat.busy ? '<div class="msg assistant pending"><div class="msg-body">…</div></div>' : ""}</div>
+      <div class="controls chat-input">
+        <input type="text" id="chat-q" ${chat.busy ? "disabled" : ""}
+          placeholder="e.g. where does the blind model disagree most with the book this week?" />
+        <button class="btn primary" id="chat-send" ${chat.busy ? "disabled" : ""}>Ask</button>
+      </div>
+      <div class="chat-suggest">
+        ${["Which games does the blind model disagree with the market on?",
+           "Is this model actually any good? Be blunt.",
+           "Summarise this week in five lines."].map((q) =>
+          `<button class="btn tiny" data-q="${esc(q)}">${esc(q)}</button>`).join("")}
+      </div>
     </div>
   </div>`;
 
-  const send = async (question) => {
-    if (!question.trim()) return;
-    chatLog.push({ role: "user", content: question });
-    await renderAssistant();
+  const scroll = () => {
     const log = $("#chat-log");
     if (log) log.scrollTop = log.scrollHeight;
+  };
+
+  const send = async (question) => {
+    if (!question.trim() || chat.busy) return;
+    // Shown immediately, and kept on screen while the model thinks: a 4B model
+    // takes seconds, and a question that vanishes into a still page reads as a
+    // dropped click.
+    chat.messages = [...chat.messages, { role: "user", content: question }];
+    chat.busy = true;
+    await renderAssistant();
     try {
       const r = await api("/api/assistant/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: chatLog, season: state.season, week: state.week }),
+        body: JSON.stringify({ chat_id: chat.id, question,
+                               season: state.season, week: state.week }),
       });
-      chatLog.push({ role: "assistant", content: r.reply });
+      chat.id = r.chat_id;
+      chat.messages = r.messages;
     } catch (err) {
-      chatLog.push({ role: "assistant", content: `Could not answer: ${err}` });
+      chat.messages = [...chat.messages,
+        { role: "assistant", content: `Could not answer: ${err}` }];
+    } finally {
+      chat.busy = false;
     }
+    await loadChats().catch(() => {});
     await renderAssistant();
-    const after = $("#chat-log");
-    if (after) after.scrollTop = after.scrollHeight;
+    scroll();
   };
+
+  $("#chat-new").addEventListener("click", async () => {
+    const created = await api("/api/assistant/chats", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "New chat" }),
+    });
+    chat.id = created.id;
+    await loadChats();
+    await renderAssistant();
+  });
+
+  $$("[data-chat]", root).forEach((b) => b.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-rename],[data-delete]")) return;
+    chat.id = b.dataset.chat;
+    await loadChats();
+    await renderAssistant();
+  }));
+
+  $$("[data-rename]", root).forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const current = chat.chats.find((c) => c.id === b.dataset.rename);
+    const title = prompt("Rename this chat", current?.title || "");
+    if (title === null) return;
+    await api(`/api/assistant/chats/${b.dataset.rename}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }).catch(() => {});
+    await loadChats();
+    await renderAssistant();
+  }));
+
+  $$("[data-delete]", root).forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const current = chat.chats.find((c) => c.id === b.dataset.delete);
+    if (!confirm(`Delete "${current?.title || "this chat"}"? This cannot be undone.`)) return;
+    await api(`/api/assistant/chats/${b.dataset.delete}`, { method: "DELETE" }).catch(() => {});
+    if (chat.id === b.dataset.delete) chat.id = null;
+    await loadChats();
+    await renderAssistant();
+  }));
 
   $("#chat-send").addEventListener("click", () => send($("#chat-q").value));
   $("#chat-q").addEventListener("keydown", (e) => {
@@ -1570,8 +1664,8 @@ async function renderAssistant() {
   });
   $$("[data-q]", root).forEach((b) =>
     b.addEventListener("click", () => send(b.dataset.q)));
-  const log = $("#chat-log");
-  if (log) log.scrollTop = log.scrollHeight;
+  if (!chat.busy) $("#chat-q")?.focus();
+  scroll();
 }
 
 // -------------------------------------------------------------------- shell

@@ -376,19 +376,76 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
 
         return assistant.status()
 
-    @app.post("/api/assistant/ask")
-    def assistant_ask(payload: dict) -> dict:
+    @app.get("/api/assistant/chats")
+    def assistant_chats() -> dict:
         from . import assistant
 
-        messages = payload.get("messages")
-        if not isinstance(messages, list) or not messages:
-            raise HTTPException(status_code=400, detail="expected messages")
+        return {"chats": assistant.list_chats()}
+
+    @app.post("/api/assistant/chats")
+    def assistant_new_chat(payload: dict | None = None) -> dict:
+        from . import assistant
+
+        return assistant.create_chat((payload or {}).get("title") or "New chat")
+
+    @app.get("/api/assistant/chats/{chat_id}")
+    def assistant_chat(chat_id: str) -> dict:
+        from . import assistant
+
+        return {"id": chat_id, "messages": assistant.chat_messages(chat_id)}
+
+    @app.patch("/api/assistant/chats/{chat_id}")
+    def assistant_rename_chat(chat_id: str, payload: dict) -> dict:
+        from . import assistant
+
+        try:
+            return assistant.rename_chat(chat_id, payload.get("title") or "")
+        except assistant.AssistantError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/assistant/chats/{chat_id}")
+    def assistant_delete_chat(chat_id: str) -> dict:
+        from . import assistant
+
+        return assistant.delete_chat(chat_id)
+
+    @app.post("/api/assistant/ask")
+    def assistant_ask(payload: dict) -> dict:
+        """Ask within a conversation.
+
+        The chat is the unit, not the request: the transcript is read from and
+        written to the database, so a reload, a restart or a different window
+        all continue the same thread rather than starting a fresh one that only
+        looks continuous.
+        """
+        from . import assistant
+
+        question = str(payload.get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="expected a question")
         season = int(payload.get("season") or pipeline.season())
         week = int(payload.get("week") or pipeline.current_week(season))
+
+        chat_id = payload.get("chat_id")
+        if not chat_id:
+            chat_id = assistant.create_chat(assistant.title_from(question))["id"]
+        elif not assistant.chat_messages(chat_id):
+            # First question in an untitled chat names it.
+            with contextlib.suppress(Exception):
+                assistant.rename_chat(chat_id, assistant.title_from(question))
+
+        assistant.append_message(chat_id, "user", question)
+        history = assistant.chat_messages(chat_id)
         try:
-            return assistant.ask(messages, season, week)
+            result = assistant.ask(history, season, week)
         except assistant.AssistantError as exc:
+            # The question stays in the transcript. Losing what you asked
+            # because the model could not answer it is its own small insult,
+            # and you may want to retry it verbatim.
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        assistant.append_message(chat_id, "assistant", result["reply"])
+        return {**result, "chat_id": chat_id,
+                "messages": assistant.chat_messages(chat_id)}
 
     @app.get("/api/news")
     def news(limit: int = 60, min_impact: float = 0.0, team: str | None = None) -> dict:

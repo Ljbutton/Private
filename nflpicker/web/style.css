@@ -785,6 +785,56 @@ td.team { font-weight: 600; }
   .panel.board { padding: 14px 10px 10px; }
 }
 
+/* ----------------------------------------------------------------- chat */
+/* A list beside the conversation, the shape every chat app has settled on,
+   because the question "which thread was that in" is answered by looking
+   rather than by remembering. */
+.chat-shell {
+  display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 16px;
+  align-items: start;
+}
+.chat-side {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px; position: sticky; top: 16px;
+}
+.chat-side-head { margin-bottom: 10px; }
+.chat-side-head .btn { width: 100%; justify-content: center; }
+.chat-list { display: flex; flex-direction: column; gap: 2px;
+  max-height: 60vh; overflow-y: auto; }
+.chat-item {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  font: inherit; text-align: left; color: var(--text-secondary);
+  border-radius: 9px; padding: 8px 9px; position: relative;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.chat-item:hover { background: var(--surface-sunken); color: var(--text-primary); }
+.chat-item.on { background: color-mix(in srgb, var(--series-1) 14%, transparent);
+  color: var(--text-primary); }
+.ci-title { font-size: 12.5px; font-weight: 600; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.chat-item.on .ci-title { color: var(--series-1); }
+.ci-sub { font-size: 10.5px; color: var(--text-muted); }
+/* Rename and delete appear on the row they act on. Always-visible controls on
+   every row turn a list of conversations into a list of buttons. */
+.ci-actions { position: absolute; right: 6px; top: 6px; display: none; gap: 4px; }
+.chat-item:hover .ci-actions, .chat-item.on .ci-actions { display: flex; }
+.ci-act {
+  width: 18px; height: 18px; display: grid; place-items: center;
+  border-radius: 5px; font-size: 11px; color: var(--text-muted);
+  background: var(--surface);
+}
+.ci-act:hover { color: var(--text-primary); background: var(--border); }
+.empty.tiny { padding: 12px 4px; font-size: 12px; }
+/* The pending bubble is the answer to "did my click register" -- a 4B model
+   takes seconds, and a question landing in a still page reads as a dropped
+   click. */
+.msg.pending .msg-body { color: var(--text-muted); font-style: italic; }
+@media (max-width: 900px) {
+  .chat-shell { grid-template-columns: 1fr; }
+  .chat-side { position: static; }
+  .chat-list { max-height: 180px; }
+}
+
 /* -------------------------------------------------------------- backups */
 .backup-list { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
 .backup-row {
