@@ -189,3 +189,43 @@ def test_an_unknown_record_changes_nothing():
     args = dict(week=10, records={"KC": (250.0, 200.0)}, games_played={"KC": 10})
     assert (build_power_ratings({"KC": 4.0}, **args).get("KC").power
             == build_power_ratings({"KC": 4.0}, **args, win_loss={}).get("KC").power)
+
+
+# --------------------------------------------- the quarterback who played
+
+def test_the_quarterback_moves_the_rating():
+    """A rating built from results alone cannot know that the team which went
+    4-2 did it with a backup. That is the case it was getting wrong."""
+    from nflpicker.ratings.power import build_power_ratings
+
+    base = dict(week=10, records={"KC": (250.0, 200.0), "BUF": (250.0, 200.0)},
+                games_played={"KC": 10, "BUF": 10},
+                win_loss={"KC": (6, 4), "BUF": (6, 4)})
+    level = build_power_ratings({"KC": 4.0, "BUF": 4.0}, **base)
+    assert level.get("KC").power == level.get("BUF").power
+
+    split = build_power_ratings({"KC": 4.0, "BUF": 4.0}, **base,
+                                qb_value={"KC": 0.12, "BUF": -0.05})
+    assert split.get("KC").power > split.get("BUF").power
+
+
+def test_the_quarterback_term_is_faded_in_like_the_others():
+    from nflpicker.ratings.power import build_power_ratings
+
+    early = build_power_ratings(
+        {"KC": 0.0}, week=1, records={"KC": (30.0, 10.0)},
+        games_played={"KC": 1}, qb_value={"KC": 0.2})
+    late = build_power_ratings(
+        {"KC": 0.0}, week=10, records={"KC": (300.0, 100.0)},
+        games_played={"KC": 10}, qb_value={"KC": 0.2})
+    assert abs(early.get("KC").power) < abs(late.get("KC").power)
+
+
+def test_an_unknown_quarterback_changes_nothing():
+    """Most of the league on most days has no registry entry in a fresh
+    install, and the rating has to be unchanged rather than zeroed."""
+    from nflpicker.ratings.power import build_power_ratings
+
+    args = dict(week=10, records={"KC": (250.0, 200.0)}, games_played={"KC": 10})
+    assert (build_power_ratings({"KC": 4.0}, **args).get("KC").power
+            == build_power_ratings({"KC": 4.0}, **args, qb_value={}).get("KC").power)

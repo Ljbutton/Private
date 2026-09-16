@@ -8,6 +8,7 @@ surfaced in the UI as a source-health row rather than thrown away.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -1429,11 +1430,29 @@ class Pipeline:
                                  else (g["away"], g["home"]))
                 win_loss.setdefault(winner, [0, 0])[0] += 1
                 win_loss.setdefault(loser, [0, 0])[1] += 1
+        # The quarterback each team has actually been playing. The registry is
+        # keyed by normalised name and its depth list is most-recent-starter
+        # first, so the head of that list is who the team last went out with --
+        # which is what the rating's coefficient was fitted against.
+        #
+        # Not who is expected to start on Sunday: an announced change is priced
+        # by the availability layer a few lines further on, and charging for
+        # the same absence in both places would double-count the most
+        # expensive injury in the sport.
+        qb_value: dict[str, float] = {}
+        with contextlib.suppress(Exception):
+            values, qb_depth = self.quarterback_registry(season)
+            for team, passers in qb_depth.items():
+                value = values.get(passers[0]) if passers else None
+                if value is not None:
+                    qb_value[team] = float(value)
+
         return build_power_ratings(
             elo.as_points(), efficiencies, week=week, elo_raw=elo.snapshot(),
             records={t: (pf, pa) for t, (pf, pa) in records.items()},
             games_played=played,
             win_loss={t: (w, losses) for t, (w, losses) in win_loss.items()},
+            qb_value=qb_value,
         )
 
     def backfill_predictions(self, season: int | None = None, *, overwrite: bool = False) -> int:
