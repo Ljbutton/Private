@@ -485,7 +485,7 @@ td.team { font-weight: 600; }
    which team the next click would select. */
 .pickdot {
   appearance: none; cursor: pointer; font: inherit; flex: none; padding: 0;
-  width: 19px; height: 19px; border-radius: 50%;
+  width: 15px; height: 15px; border-radius: 50%;
   border: 1.5px dashed var(--border-strong); background: transparent;
   color: transparent; font-size: 10px; font-weight: 800; line-height: 1;
   display: grid; place-items: center;
@@ -578,12 +578,12 @@ td.team { font-weight: 600; }
 .panel.board { padding: 16px 18px 14px; }
 .gboard {
   display: grid; gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 375px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 262px), 1fr));
 }
 
 .gcard {
   border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface-sunken); padding: 7px 11px 5px; cursor: pointer;
+  background: var(--surface-sunken); padding: 5px 8px 5px; cursor: pointer;
   transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease),
               transform var(--fast) var(--ease);
 }
@@ -594,41 +594,47 @@ td.team { font-weight: 600; }
 .gcard:focus-visible { outline: none; box-shadow: var(--ring); }
 
 .gcard-top {
-  display: flex; align-items: center; gap: 8px; font-size: 10.5px;
-  color: var(--text-muted); padding-bottom: 5px;
+  display: flex; align-items: center; gap: 6px; font-size: 9.5px;
+  color: var(--text-muted); padding-bottom: 4px;
 }
 .gstate {
-  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--text-secondary); display: inline-flex; align-items: center;
+  font-size: 9px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+  color: var(--text-secondary); display: inline-block; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
 .gstate .live-dot { width: 6px; height: 6px; margin-right: 5px; }
 .gmoved {
-  font-size: 10px; font-weight: 650; padding: 1px 7px; border-radius: var(--radius-pill);
-  cursor: help;
+  font-size: 9.5px; font-weight: 700; padding: 0 5px; border-radius: var(--radius-pill);
+  cursor: help; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 .gmoved.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
 .gmoved.bad  { color: var(--critical); background: color-mix(in srgb, var(--critical) 14%, transparent); }
-.gopen {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 1px;
-  font-size: 10.5px; font-weight: 600; color: var(--series-1); opacity: .75;
+/* Totals live in the header strip now. They were a whole row of card height
+   -- sixteen rows of board -- to carry three numbers that fit here. */
+.gtotals {
+  margin-left: auto; font-size: 9.5px; font-variant-numeric: tabular-nums;
+  color: var(--text-secondary); cursor: help; white-space: nowrap;
+  overflow: hidden; text-overflow: clip; min-width: 0;
 }
-.gopen svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4;
-  stroke-linecap: round; stroke-linejoin: round; }
+.gcard-top { flex-wrap: nowrap; min-width: 0; }
+.gtotals i { color: var(--text-muted); font-style: normal; margin: 0 1px; }
+.gopen { font-size: 15px; line-height: 1; color: var(--series-1); opacity: .6; }
+.gcard:hover .gopen { opacity: 1; }
 .gcard:hover .gopen { opacity: 1; }
 
 /* The team takes one half; the three sources share the other. */
 /* The team keeps its half; the four sources share the other. */
 .gcard-grid, .gcard-foot {
   display: grid; align-items: center;
-  grid-template-columns: minmax(150px, 1fr) repeat(4, minmax(47px, 0.25fr));
+  grid-template-columns: minmax(92px, 1fr) repeat(4, minmax(38px, 0.25fr));
 }
 /* One word each, and never wrapped: four columns in half a card leaves no room
    for "Sportsbook" on two lines, and a heading that wraps into its neighbour
    is worse than an abbreviated one. The full names are in the panel's
    subheading and on each column's tooltip. */
 .ghead {
-  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--text-muted); text-align: center; padding: 0 3px 4px;
+  font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em;
+  color: var(--text-muted); text-align: center; padding: 0 2px 3px;
   border-bottom: 1px solid var(--grid); white-space: nowrap; cursor: help;
 }
 .ghead.you { cursor: default; }
@@ -646,8 +652,8 @@ td.team { font-weight: 600; }
 .ghead.you { text-align: left; padding-left: 1px; }
 
 
-.gteam { display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 5px 8px 5px 0; }
+.gteam { display: flex; align-items: center; gap: 5px; min-width: 0;
+  padding: 4px 4px 4px 0; }
 /* The team that lost recedes rather than disappears: the losing side's numbers
    are still the point of a graded card. */
 .gteam.beaten { opacity: .55; }
@@ -656,16 +662,13 @@ td.team { font-weight: 600; }
    of board. The full name is on hover. */
 .tname {
   display: flex; align-items: baseline; gap: 5px; min-width: 0;
-  font-size: 12.5px; font-weight: 660; letter-spacing: -0.01em;
+  font-size: 12px; font-weight: 700; letter-spacing: 0;
 }
 /* The nickname is what gives way when the row is tight, because it has a
    fallback on hover. A clipped "HOM" beside an intact name is just wrong. */
 .tname > .nick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thome {
-  font-size: 8.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: .08em; color: var(--text-muted); flex: none;
-}
-.tscore { margin-left: auto; font-size: 15px; font-weight: 700;
+
+.tscore { margin-left: auto; font-size: 13px; font-weight: 700;
   font-variant-numeric: tabular-nums; }
 
 /* The team's mark. The abbreviation in the team's own colour is drawn first
@@ -673,7 +676,7 @@ td.team { font-weight: 600; }
    machine with no network degrades to a readable badge rather than to a
    broken-image icon. */
 .tbadge {
-  position: relative; flex: none; width: 23px; height: 23px; border-radius: 50%;
+  position: relative; flex: none; width: 19px; height: 19px; border-radius: 50%;
   display: grid; place-items: center; background: var(--team);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
@@ -687,12 +690,14 @@ td.team { font-weight: 600; }
 
 .gcell {
   display: flex; flex-direction: column; align-items: center; gap: 0;
-  padding: 5px 3px; min-width: 0;
+  padding: 4px 2px; min-width: 0;
   border-left: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
 }
-.gline { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.gline { font-size: 9px; line-height: 1.25; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; }
 .gprob { display: inline-flex; align-items: center; gap: 2px;
-  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  font-size: 11px; line-height: 1.25; font-weight: 600;
+  font-variant-numeric: tabular-nums; }
 .gcell.ours .gprob { color: var(--series-1); }
 .gcell.book .gprob { color: var(--text-secondary); }
 .gcell.pmkt .gprob { color: var(--text-muted); }
@@ -700,7 +705,7 @@ td.team { font-weight: 600; }
 /* The tick says which side a source picked. It stays the source's own colour
    until the game is decided -- green here means "was right", the same as it
    does everywhere else in the app, and a pick is not a result. */
-.tick { width: 10px; height: 10px; fill: currentColor; flex: none; }
+.tick { width: 8px; height: 8px; fill: currentColor; flex: none; }
 /* A borrowed number is still the book's, and the blank spread beside it is
    deliberate rather than missing: copying the book's number into the model's
    column would read as the model agreeing on it. */
@@ -726,7 +731,7 @@ td.team { font-weight: 600; }
   .gcard-grid, .gcard-foot {
     grid-template-columns: minmax(118px, 1fr) repeat(4, minmax(40px, 0.25fr));
   }
-  .gcard { padding: 8px 10px 6px; }
+  .gcard { padding: 6px 7px 5px; }
   .tname { font-size: 12.5px; }
   .gprob { font-size: 12px; }
   .panel.board { padding: 14px 10px 10px; }

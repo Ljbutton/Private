@@ -558,17 +558,13 @@ async function renderHome() {
         ? (g[side] === actualWinner ? " hit" : " miss") : "";
       const prob = homeProb === null ? null
         : (side === "home" ? Number(homeProb) : 1 - Number(homeProb));
-      // A near-coin-flip rounds to "50%" on both sides, and a tick on one of
-      // them then reads as a contradiction rather than as a close call. One
-      // decimal, only where the rounding is what hides the difference.
-      const digits = prob !== null && Math.abs(prob - 0.5) < 0.005 ? 1 : 0;
       const borrowed = kind === "ours" && inherited;
       return `<div class="gcell ${kind}${picked ? " picked" : ""}${verdict}${
         borrowed ? " borrowed" : ""}"${borrowed
         ? ' title="This game finished before the app was running, so the model has no number of its own. Its pick is the sportsbook\'s; the spread and total are left blank rather than copied, which would read as the model agreeing on them."'
         : ""}>
         <span class="gline">${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
-        <span class="gprob">${prob === null ? "–" : pct(prob, digits)}${
+        <span class="gprob">${prob === null ? "–" : pct(prob)}${
           borrowed ? "*" : ""}${picked ? `
           <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>` : ""}</span>
       </div>`;
@@ -591,9 +587,8 @@ async function renderHome() {
           aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
             mineHere ? (yourVerdict === " miss" ? "✕" : "✓") : ""}</button>
         ${teamMark(abbr)}
-        <span class="tname" title="${esc(t.full_name || abbr)}"><span class="nick">${
-          esc(t.name || abbr)}</span>${
-          side === "home" ? '<span class="thome">home</span>' : ""}</span>
+        <span class="tname" title="${esc(t.full_name || abbr)}${
+          side === "home" ? " (home)" : " (away)"}"><span class="nick">${esc(abbr)}</span></span>
         <span class="tscore">${score === null || score === undefined ? "" : score}</span>
       </div>
       ${cell("blind", blindHome, blindLineHome, side)}
@@ -606,8 +601,9 @@ async function renderHome() {
     const movedBadge = moved === null || moved === undefined || Math.abs(moved) < 0.05
       ? ""
       : `<span class="gmoved ${moved > 0 ? "good" : "bad"}"
-           title="Points the line has moved toward our side since it opened"
-           >${signed(moved)} ${moved > 0 ? "to us" : "against us"}</span>`;
+           title="${signed(moved)} points: how far the line has moved ${
+             moved > 0 ? "toward" : "away from"} our side since it opened"
+           >${signed(moved)}</span>`;
 
     const ourTotal = p && p.fair_total ? num(p.fair_total, 1) : null;
     const blindTotal = p && p.total_points ? num(p.total_points, 1) : null;
@@ -617,32 +613,28 @@ async function renderHome() {
       <div class="gcard-top">
         <span class="gstate">${gameStamp(g)}</span>
         ${movedBadge}
-        <span class="gopen">View game info<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+        <span class="gtotals" title="Projected total points — blind, blend, book">${
+          blindTotal === null ? "–" : blindTotal}<i>/</i>${
+          ourTotal === null ? "–" : ourTotal}<i>/</i>${num(bookTotal, 1)}</span>
+        <span class="gopen" title="Open this game">&rsaquo;</span>
       </div>
       <div class="gcard-grid">
         <div class="ghead you">You</div>
         <div class="ghead blind" title="Blind model — the projection before it is ever shown the line. The only column here independent of the market.">Blind</div>
         <div class="ghead ours" title="Our blend — that same model blended with the line. This is what the app actually claims.">Blend</div>
         <div class="ghead book" title="Sportsbook consensus, with the vig removed">Book</div>
-        <div class="ghead pmkt" title="Prediction markets — Kalshi and Polymarket contract prices">Market</div>
+        <div class="ghead pmkt" title="Prediction markets — Kalshi and Polymarket contract prices">Mkt</div>
         ${teamRow("away")}
         ${teamRow("home")}
-      </div>
-      <div class="gcard-foot">
-        <span class="flabel">Total points</span>
-        <span class="fval blind">${blindTotal === null ? "–" : blindTotal}</span>
-        <span class="fval ours">${ourTotal === null ? "–" : ourTotal}</span>
-        <span class="fval book">${num(bookTotal, 1)}</span>
-        <span class="fval pmkt" title="Prediction markets quote who wins, not a total"></span>
       </div>
     </article>`;
   };
 
   root.innerHTML = `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
-      <span class="hint">Blind = before the line · Blend = what we claim ·
-        Book = sportsbook · Market = Kalshi/Polymarket · a tick marks each
-        source's pick</span></header>
+      <span class="hint">Home team listed second · Blind = before the line ·
+        Blend = what we claim · Book = sportsbook · Market = Kalshi/Polymarket ·
+        a tick marks each source's pick</span></header>
     <div class="gboard">${games.map(card).join("")}</div>
     ${anyInherited ? `<p class="note">* These games finished before the app was
       running, so the model has no pick of its own and the sportsbook's number is
