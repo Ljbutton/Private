@@ -42,15 +42,19 @@ function ago(iso) {
 }
 
 /* A compact "Q3 · 4:05 · 2nd & 7 · red zone" for a game in progress. */
-function liveLabel(live) {
+/* `short` drops the down and distance. On the board the stamp shares one
+   narrow strip with the three totals, and a four-segment label is the thing
+   that pushed the totals out of it -- quarter and clock are what a card is
+   scanned for, and the situation is one click away in the game itself. */
+function liveLabel(live, short = false) {
   const parts = [];
   if (live.period) parts.push(live.period > 4 ? `OT${live.period - 4}` : `Q${live.period}`);
   if (live.clock) parts.push(live.clock);
-  if (live.down) {
+  if (live.down && !short) {
     const ord = { 1: "1st", 2: "2nd", 3: "3rd", 4: "4th" }[live.down] || `${live.down}`;
     parts.push(`${ord} & ${live.distance ?? "?"}`);
   }
-  if (live.red_zone) parts.push("red zone");
+  if (live.red_zone) parts.push(short ? "RZ" : "red zone");
   return parts.join(" · ") || "Live";
 }
 
@@ -473,7 +477,8 @@ function wireLogos(root) {
    in its life the game is. */
 function gameStamp(g) {
   if (g.status === "in_progress") {
-    return `<span class="live-dot"></span>LIVE${g.live ? ` · ${esc(liveLabel(g.live))}` : ""}`;
+    return `<span class="live-dot"></span>LIVE${
+      g.live ? ` · ${esc(liveLabel(g.live, true))}` : ""}`;
   }
   const d = g.kickoff ? new Date(g.kickoff) : null;
   const date = d && !Number.isNaN(d.getTime())
@@ -565,7 +570,7 @@ async function renderHome() {
         : ""}>
         <span class="gline">${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
         <span class="gprob">${prob === null ? "–" : pct(prob)}${
-          borrowed ? "*" : ""}${picked ? `
+          borrowed ? '<i class="est">*</i>' : ""}${picked ? `
           <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>` : ""}</span>
       </div>`;
     };
