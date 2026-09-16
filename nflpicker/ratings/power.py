@@ -81,11 +81,14 @@ PYTHAGOREAN_FULL_AT = 6.0
 #
 # It is a wash: MAE improves by about a hundredth of a point, correlation and
 # straight-up give back the same order of nothing. That is the expected result
-# -- Elo is already a record, so asking again adds little. It is set to 1.5
-# because a team that won the games is *meant* to sit above one that lost them
-# at equal point differential, and at this weight it does that without costing
-# anything measurable. Raising it further starts to cost real accuracy.
-HEAD_TO_HEAD_POINTS = 1.5
+# -- Elo is already a record, so asking again adds little.
+#
+# 1.0 is a deliberate middle. Zero is what this was, and a table where the 3-7
+# team sits above the 7-3 one on equal point differential is a table nobody
+# believes. Above about 2 the correlation cost stops being noise. One point of
+# spread is enough to break that tie and not enough to reorder anything that
+# point differential has a real opinion about.
+HEAD_TO_HEAD_POINTS = 1.0
 
 
 @dataclass

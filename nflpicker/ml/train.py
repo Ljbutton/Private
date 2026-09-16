@@ -411,8 +411,12 @@ def _fit_calibrator(preds: pd.DataFrame):
 
 
 def load_report(model_dir: Path | None = None) -> dict | None:
-    path = (Path(model_dir) if model_dir else get_config().model_dir) / "training_report.json"
-    if not path.exists():
+    # Same search order as load_bundle, or the app would describe one model
+    # while predicting with another.
+    candidates = ([Path(model_dir)] if model_dir else get_config().model_dirs)
+    path = next((d / "training_report.json" for d in candidates
+                 if (d / "training_report.json").exists()), None)
+    if path is None:
         return None
     try:
         return json.loads(path.read_text())

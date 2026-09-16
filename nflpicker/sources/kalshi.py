@@ -154,7 +154,16 @@ class KalshiSource:
         raise SourceError(f"Kalshi unavailable: {last}")
 
     def fetch_events(self, *, limit: int = 200) -> list[dict]:
-        """Open NFL game events, with their markets nested."""
+        """Open NFL game events, with their markets nested.
+
+        Each series ticker is tried in turn because Kalshi has renamed them
+        before, and one series being gone must not cost us the others. But if
+        *every* attempt errored, that is a failure and has to say so: returning
+        an empty list made an unreachable host look exactly like an empty
+        board, which are opposite problems -- one is "your network", the other
+        is "it is Tuesday".
+        """
+        failures: list[str] = []
         for series in NFL_SERIES:
             try:
                 payload = self._get(
@@ -162,11 +171,14 @@ class KalshiSource:
                     {"series_ticker": series, "status": "open",
                      "with_nested_markets": "true", "limit": limit},
                 )
-            except SourceError:
+            except SourceError as exc:
+                failures.append(f"{series}: {exc}")
                 continue
             events = payload.get("events") if isinstance(payload, dict) else payload
             if events:
                 return events
+        if len(failures) == len(NFL_SERIES):
+            raise SourceError("; ".join(failures)[:300])
         return []
 
     def fetch(self) -> list[KalshiQuote]:

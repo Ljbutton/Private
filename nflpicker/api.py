@@ -363,6 +363,12 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             raise HTTPException(
                 status_code=500, detail=f"Could not write the backup: {exc}") from exc
 
+    @app.post("/api/settings/test-prediction-markets")
+    def test_prediction_markets() -> dict:
+        from . import settings as settings_module
+
+        return settings_module.test_prediction_markets()
+
     @app.post("/api/settings/test-odds-key")
     def test_odds_key(payload: dict) -> dict:
         from . import settings as settings_module

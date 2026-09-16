@@ -105,6 +105,14 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      # The formatting layer is the part a screenshot sweep cannot check: a
+      # sweep proves a page renders, not that a missing probability renders as
+      # a dash rather than "NaN%". node:test is built in, so this needs no
+      # package.json and no install step.
+      - name: Test the browser code
+        shell: bash
+        run: node --test tests/js/*.test.mjs
+
       - name: Build
         run: pyinstaller nflpicker.spec --noconfirm -- --profile ${{ inputs.profile || 'full' }}
 

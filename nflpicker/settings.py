@@ -96,6 +96,28 @@ SETTINGS: tuple[Setting, ...] = (
         default="true",
     ),
     Setting(
+        key="ODDS_WEEKLY_BUDGET",
+        label="Weekly credit ceiling",
+        group="Data sources",
+        placeholder="120",
+        help="A burst ceiling, not the bill. The monthly budget still governs "
+             "the total; this stops one busy week spending it.",
+        needed_for="Nothing on its own — it caps how fast the monthly budget "
+                   "can be spent.",
+        default="120",
+    ),
+    Setting(
+        key="ODDS_DAILY_BUDGET",
+        label="Daily credit ceiling",
+        group="Data sources",
+        placeholder="50",
+        help="At 480 a month the sustainable pace is about 16 credits a day, "
+             "so 50 leaves room for a busy Sunday while still stopping a stuck "
+             "refresh loop from spending the month in an afternoon.",
+        needed_for="Nothing on its own — it is the tightest of the three caps.",
+        default="50",
+    ),
+    Setting(
         key="NFLPICKER_LLM_URL",
         label="Local model endpoint",
         group="Assistant",
@@ -371,3 +393,54 @@ def _prune_backups() -> int:
         with contextlib.suppress(OSError):
             path.with_suffix(".env").unlink()
     return removed
+
+
+def test_prediction_markets() -> dict:
+    """Ask each venue directly and report what happened, per venue.
+
+    The status dot says a feed failed; it cannot say why without a hover, and
+    the reason is the whole diagnosis -- "no NFL markets right now" and "your
+    network blocks this host" look identical from the outside and need
+    opposite responses.
+    """
+    from .sources.kalshi import KalshiSource
+    from .sources.polymarket import PolymarketSource
+
+    results = []
+    for name, fetch in (
+        ("Polymarket", lambda: PolymarketSource().fetch(with_depth=False)),
+        ("Kalshi", lambda: KalshiSource().fetch()),
+    ):
+        try:
+            quotes = fetch()
+        except Exception as exc:                          # noqa: BLE001
+            results.append({
+                "venue": name, "ok": False, "n": 0,
+                "message": f"{type(exc).__name__}: {exc}"[:300],
+            })
+            continue
+        results.append({
+            "venue": name, "ok": True, "n": len(quotes),
+            "message": (f"{len(quotes)} NFL contracts" if quotes
+                        else "reachable, but it is quoting no NFL games right now"),
+        })
+
+    quoting = [r for r in results if r["ok"] and r["n"]]
+    answered = [r for r in results if r["ok"]]
+    failed = [r for r in results if not r["ok"]]
+
+    if quoting:
+        summary = "Working — " + ", ".join(f"{r['venue']}: {r['n']}" for r in quoting)
+        if failed:
+            summary += f" ({', '.join(r['venue'] for r in failed)} unreachable)"
+    elif answered and not failed:
+        summary = ("Both venues answered and neither is quoting NFL games. That is "
+                   "normal outside the season and in the hours after a slate.")
+    elif answered:
+        summary = (f"{answered[0]['venue']} answered with no NFL games; "
+                   f"{', '.join(r['venue'] for r in failed)} could not be reached.")
+    else:
+        summary = ("Neither venue could be reached. If both errors mention a "
+                   "connection, proxy or certificate, it is this machine's network "
+                   "rather than the app.")
+    return {"ok": bool(quoting), "summary": summary, "venues": results}

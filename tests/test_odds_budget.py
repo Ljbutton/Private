@@ -40,16 +40,60 @@ def test_a_poll_costs_one_credit_per_market_per_region(headers, params, expected
     assert OddsApiSource._cost_of(_Response(headers), params) == expected
 
 
-def test_the_recorded_usage_matches_what_was_spent(temp_env):
+def _source(monthly=100, weekly=1000, daily=1000):
     source = OddsApiSource.__new__(OddsApiSource)
-    source.budget = 100
+    source.budget, source.weekly_budget, source.daily_budget = monthly, weekly, daily
     source.remaining = None
-    db.set_meta("odds_api_usage", {})
+    return source
 
+
+def test_the_recorded_usage_matches_what_was_spent(temp_env):
+    source = _source()
     source._record_call(3)
     source._record_call(3)
     assert source.usage()["used"] == 6
     assert source.usage()["remaining_budget"] == 94
+
+
+def test_the_daily_ceiling_stops_a_runaway_loop(temp_env):
+    """The month-only guard could not see a bug coming.
+
+    A stuck refresh loop spends the whole month in an afternoon and the monthly
+    number only reports it afterwards, when the account is already empty.
+    """
+    source = _source(monthly=480, weekly=120, daily=50)
+    assert source.budget_block() is None
+    for _ in range(17):                       # 51 credits, three at a time
+        source._record_call(3)
+    blocked = source.budget_block()
+    assert blocked and "daily" in blocked and "50" in blocked
+    # The month is nowhere near spent -- the day is what stopped it.
+    assert source.usage()["remaining_budget"] > 400
+
+
+def test_the_weekly_ceiling_binds_before_the_month(temp_env):
+    source = _source(monthly=480, weekly=120, daily=10_000)
+    for _ in range(41):                       # 123 credits
+        source._record_call(3)
+    blocked = source.budget_block()
+    assert blocked and "weekly" in blocked
+
+
+def test_the_month_is_still_the_bill(temp_env):
+    """Daily and weekly are burst ceilings; the month is what you are billed."""
+    source = _source(monthly=30, weekly=10_000, daily=10_000)
+    for _ in range(11):
+        source._record_call(3)
+    blocked = source.budget_block()
+    assert blocked and "monthly" in blocked
+
+
+def test_the_three_windows_count_independently(temp_env):
+    source = _source(monthly=480, weekly=120, daily=50)
+    source._record_call(3)
+    u = source.usage()
+    assert u["used"] == u["week_used"] == u["day_used"] == 3
+    assert (u["day_budget"], u["week_budget"], u["budget"]) == (50, 120, 480)
 
 
 def test_a_distant_unpriced_game_is_not_an_opening_line(temp_env, monkeypatch):

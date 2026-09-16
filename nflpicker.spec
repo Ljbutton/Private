@@ -7,6 +7,7 @@
 #
 # Choose with:  pyinstaller nflpicker.spec -- --profile lite
 import contextlib
+import os
 import sys
 
 profile = "full"
@@ -56,6 +57,12 @@ elif sys.platform == "win32":
 # the machine does not help, because what is missing is the managed wrapper
 # that talks to it.
 datas = [("nflpicker/web", "nflpicker/web")]
+# The trained model. Without this every packaged install fell back to power
+# ratings -- the sidebar read "power-only" and the blind and blended columns
+# tracked each other, because there was no model in the bundle to separate
+# them. The artifact is ~1.3MB; the fallback cost was the whole feature.
+if os.path.isdir("data/models"):
+    datas += [("data/models", "data/models")]
 if sys.platform == "win32":
     from PyInstaller.utils.hooks import collect_data_files
 
@@ -94,8 +101,13 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# Generated from the same mark the sidebar draws, by scripts/make_icon.py.
+# A missing icon must not fail the build -- PyInstaller falls back to its own.
+ICON = "assets/icon.ico" if os.path.exists("assets/icon.ico") else None
+
 common = dict(
     name="TheEdge",
+    icon=ICON,
     debug=False,
     strip=False,
     # UPX is off deliberately. It saves some size, but packed executables are
@@ -121,7 +133,7 @@ if MACOS:
     app = BUNDLE(
         coll,
         name="TheEdge.app",
-        icon=None,
+        icon=ICON,
         bundle_identifier="com.theedge.desktop",
         info_plist={
             "CFBundleName": "The Edge",

@@ -327,8 +327,10 @@ def _opt(value) -> float | None:
 
 
 def load_bundle(model_dir: Path | None = None) -> dict | None:
-    path = (Path(model_dir) if model_dir else get_config().model_dir) / "models.joblib"
-    if not path.exists():
+    candidates = ([Path(model_dir)] if model_dir else get_config().model_dirs)
+    path = next((d / "models.joblib" for d in candidates
+                 if (d / "models.joblib").exists()), None)
+    if path is None:
         return None
     try:
         import joblib

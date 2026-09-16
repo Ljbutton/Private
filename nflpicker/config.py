@@ -89,6 +89,12 @@ class Config:
     odds_api_key: str = field(default_factory=lambda: os.environ.get("ODDS_API_KEY", "").strip())
     odds_books: list[str] = field(default_factory=lambda: _csv("ODDS_BOOKS"))
     odds_monthly_budget: int = field(default_factory=lambda: _int("ODDS_MONTHLY_BUDGET", 480))
+    # Burst ceilings, not the bill. 480 a month is about 16 credits a day
+    # sustained; these sit well above that so a busy Sunday can poll harder
+    # than a quiet Tuesday, while a stuck scheduler still cannot spend the
+    # month in an afternoon. The monthly figure governs the total.
+    odds_weekly_budget: int = field(default_factory=lambda: _int("ODDS_WEEKLY_BUDGET", 120))
+    odds_daily_budget: int = field(default_factory=lambda: _int("ODDS_DAILY_BUDGET", 50))
 
     refresh_odds: int = field(default_factory=lambda: _int("REFRESH_ODDS_SECONDS", 900))
     refresh_scores: int = field(default_factory=lambda: _int("REFRESH_SCORES_SECONDS", 300))
@@ -148,7 +154,34 @@ class Config:
 
     @property
     def model_dir(self) -> Path:
+        """Where a model *you* trained is written."""
         return self.data_dir / "models"
+
+    @property
+    def bundled_model_dir(self) -> Path | None:
+        """The model shipped inside a packaged build, if there is one.
+
+        PyInstaller unpacks the bundle to a temporary directory and the entry
+        point records it as NFLPICKER_BUNDLE. Nothing read it until now, which
+        is why a packaged install ran on power ratings alone however many
+        seasons the shipped model had been trained on -- it was in the repo and
+        never in the app.
+        """
+        base = os.environ.get("NFLPICKER_BUNDLE")
+        if not base:
+            return None
+        path = Path(base) / "data" / "models"
+        return path if path.exists() else None
+
+    @property
+    def model_dirs(self) -> list[Path]:
+        """Where to look for a model, best first.
+
+        A model you trained wins over the shipped one: it is newer, it is
+        fitted in this environment, and retraining is the documented fix when
+        the shipped artifact will not unpickle here.
+        """
+        return [d for d in (self.model_dir, self.bundled_model_dir) if d]
 
     @property
     def has_odds_key(self) -> bool:

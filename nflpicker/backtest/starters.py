@@ -16,6 +16,24 @@ the model improve" but the narrower one it actually turns on:
 So we replay history as if each game were upcoming -- taking only the injury
 report and depth chart as they stood, never the result -- and compare both
 answers against who started.
+
+Measured over 2013-2025, 6,226 team-games:
+
+    overall                     last week 90.0%   announced 91.4%
+    where the rules disagreed   last week 38.8%   announced 55.0%   (n=529)
+
+The disagreements are the only place the feature can change anything, and
+there the announced starter is right 16.3 points more often. The 95% Wilson
+intervals do not overlap -- [50.7%, 59.2%] against [34.7%, 43.0%] -- so this
+is not a coin landing well.
+
+That matters because the first measurement of this was thin: 195
+disagreements over a shorter span, +8.2 points, with an interval wide enough
+[43.3%, 57.2%] to include "no better at all". Widening the sample to thirteen
+seasons did not shrink the edge, which is the outcome a small sample most
+often fails to reproduce. Run it yourself with `nflpicker starters --since
+2013 --until 2025`; it needs the depth charts for every season, which is the
+slow part.
 """
 
 from __future__ import annotations

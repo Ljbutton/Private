@@ -1,4 +1,8 @@
 import { barChart, calibrationChart, lineChart, sparkline } from "./charts.js";
+import {
+  ago, american, esc, greetingFor, kickoffShort, liveLabel, num, pct,
+  signed, statusClass, when,
+} from "./format.js";
 
 const state = { season: null, week: null, weeks: [], tab: "home", meta: null, busy: false };
 
@@ -11,52 +15,12 @@ async function api(path, options) {
   return res.json();
 }
 
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-const pct = (v, d = 0) => (v === null || v === undefined || Number.isNaN(v))
-  ? "–" : `${(Number(v) * 100).toFixed(d)}%`;
-const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v))
-  ? "–" : Number(v).toFixed(d);
-const signed = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v))
-  ? "–" : `${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(d)}`;
-const american = (v) => (v === null || v === undefined) ? "–"
-  : `${Number(v) > 0 ? "+" : ""}${Math.round(Number(v))}`;
-
-function when(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-    + ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
-
-function ago(iso) {
-  if (!iso) return "never";
-  const secs = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (!isFinite(secs)) return "never";
-  if (secs < 90) return "just now";
-  if (secs < 5400) return `${Math.round(secs / 60)}m ago`;
-  if (secs < 172800) return `${Math.round(secs / 3600)}h ago`;
-  return `${Math.round(secs / 86400)}d ago`;
-}
 
 /* A compact "Q3 · 4:05 · 2nd & 7 · red zone" for a game in progress. */
 /* `short` drops the down and distance. On the board the stamp shares one
    narrow strip with the three totals, and a four-segment label is the thing
    that pushed the totals out of it -- quarter and clock are what a card is
    scanned for, and the situation is one click away in the game itself. */
-function liveLabel(live, short = false) {
-  const parts = [];
-  if (live.period) parts.push(live.period > 4 ? `OT${live.period - 4}` : `Q${live.period}`);
-  if (live.clock) parts.push(live.clock);
-  if (live.down && !short) {
-    const ord = { 1: "1st", 2: "2nd", 3: "3rd", 4: "4th" }[live.down] || `${live.down}`;
-    parts.push(`${ord} & ${live.distance ?? "?"}`);
-  }
-  if (live.red_zone) parts.push(short ? "RZ" : "red zone");
-  return parts.join(" · ") || "Live";
-}
 
 /* The diagnostic gap: what the edge would be if we quoted the market-blind
    model straight against the line, with no shrinking toward the market.
@@ -140,12 +104,6 @@ function renderStatus(meta) {
 
 /* ------------------------------------------------------------------ hero */
 
-function greetingFor(date) {
-  const h = date.getHours();
-  if (h < 12) return "Good morning";
-  if (h < 18) return "Good afternoon";
-  return "Good evening";
-}
 
 function renderHero(meta) {
   const now = new Date();
@@ -181,23 +139,9 @@ function renderHero(meta) {
 
 /* How serious an injury status is, for colour. Out and IR are settled; a
    questionable is a coin flip that still moves a line by a point. */
-function statusClass(status) {
-  const v = String(status || "").toLowerCase();
-  if (/(out|injured reserve|\bir\b|pup|physically unable|suspended|nfi)/.test(v)) return "out";
-  if (v.includes("doubtful")) return "doubtful";
-  if (v.includes("questionable") || v.includes("limited")) return "questionable";
-  return "";
-}
 
 /* "Sun 1:00" — the board has sixteen rows and no width to spare for a date
    that is the same on most of them. */
-function kickoffShort(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
-    d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
 
 /* Fold the panels on a page into collapsible sections.
    Home and the Scoreboard are boards: everything on them is meant to be read
@@ -897,12 +841,6 @@ async function openGame(gameId) {
 
 /* The shared delta. "=" rather than "0" because a zero in a column of signed
    numbers reads as a missing value, and agreeing exactly is worth seeing. */
-function gapChip(delta) {
-  if (delta === null || delta === undefined) return '<span class="gap none">–</span>';
-  if (delta === 0) return '<span class="gap same">=</span>';
-  const cls = delta > 0 ? "up" : "down";
-  return `<span class="gap ${cls}">${delta > 0 ? "+" : "−"}${Math.abs(delta)}</span>`;
-}
 
 async function renderTeams() {
   const root = $("#view");
@@ -1390,6 +1328,20 @@ async function renderSettings() {
   </div>
 
   <div class="panel">
+    <header><h2>Prediction markets</h2>
+      <span class="hint">an optional feed — the board reads "–" without it</span></header>
+    <div class="controls">
+      <button class="btn" id="test-pmkt">Test connection</button>
+      <span id="pmkt-result" class="muted"></span>
+    </div>
+    <div id="pmkt-venues" class="backup-list"></div>
+    <p class="note">Asks Kalshi and Polymarket directly and reports each one. The
+      status dot in the sidebar can only say a feed failed; "no NFL games right
+      now" and "this machine cannot reach the host" look identical from the
+      outside and need opposite responses.</p>
+  </div>
+
+  <div class="panel">
     <header><h2>Backup</h2>
       <span class="hint">your picks, results and settings exist in one file —
         this makes a copy of it</span></header>
@@ -1421,6 +1373,29 @@ async function renderSettings() {
       : '<div class="empty">No backups yet.</div>';
   };
   paintBackups(backups.backups);
+
+  $("#test-pmkt")?.addEventListener("click", async (ev) => {
+    const out = $("#pmkt-result");
+    const venues = $("#pmkt-venues");
+    out.textContent = "asking both venues…";
+    out.className = "muted";
+    venues.innerHTML = "";
+    ev.target.disabled = true;
+    try {
+      const r = await api("/api/settings/test-prediction-markets", { method: "POST" });
+      out.textContent = r.summary;
+      out.className = r.ok ? "pos" : "neg";
+      venues.innerHTML = (r.venues || []).map((v) => `<div class="backup-row">
+        <span class="nm">${v.ok ? "✓" : "✕"} ${esc(v.venue)}</span>
+        <span class="muted">${esc(v.message)}</span>
+      </div>`).join("");
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
 
   $("#make-backup")?.addEventListener("click", async (ev) => {
     const out = $("#backup-result");
