@@ -104,3 +104,65 @@ def test_rounding_survives_the_values_a_missing_field_produces():
     assert assistant._round(None) is None
     assert assistant._round("not a number") is None
     assert assistant._round(3.14159, 2) == 3.14
+
+
+# ------------------------------------------- reasoning models answer oddly
+
+@pytest.mark.parametrize("message, expected", [
+    ({"content": "Blind is 51.0% ATS."}, "Blind is 51.0% ATS."),
+    ({"content": "<think>weigh it up</think>\n\nMediocre."}, "Mediocre."),
+    ({"content": "<THINK>caps</THINK>Still answered."}, "Still answered."),
+    ({"content": "<think>ran out mid-thought"}, "ran out mid-thought"),
+    ({"content": "", "reasoning_content": "all I have"}, "all I have"),
+    ({"content": "", "reasoning": "all I have"}, "all I have"),
+    ({"content": None, "thinking": "all I have"}, "all I have"),
+    ({"content": ""}, ""),
+    ({}, ""),
+])
+def test_the_answer_is_found_whichever_field_carries_it(message, expected):
+    """A 4B model is a reasoning model, and none of them agree on where the
+    answer goes: inside <think> tags in `content`, or in a sibling field with
+    `content` left empty. Reading `content` alone returned an empty string --
+    and an empty string is not an error, so the UI drew an empty bubble and
+    said nothing about why."""
+    assert assistant._reply_from({"message": message}) == expected
+
+
+def test_running_out_of_room_says_so_rather_than_going_blank():
+    assert "ran out of room" in assistant._why_empty(
+        {"message": {"content": ""}, "finish_reason": "length"})
+    assert "content_filter" in assistant._why_empty(
+        {"message": {"content": ""}, "finish_reason": "content_filter"})
+    assert assistant._why_empty({"message": {}}) == "The model returned an empty answer."
+
+
+def test_an_empty_answer_is_raised_not_returned(monkeypatch):
+    """The blank bubble was the whole bug: the caller must get an error."""
+    a = assistant
+
+    monkeypatch.setattr(a, "status", lambda: {
+        "ready": True, "endpoint": "http://127.0.0.1:11434/v1", "model": "m"})
+    monkeypatch.setattr(a, "context", lambda season, week: {})
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": ""},
+                                 "finish_reason": "length"}]}
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: _Resp())
+    with pytest.raises(a.AssistantError, match="ran out of room"):
+        a.ask([{"role": "user", "content": "hi"}], 2026, 2)
+
+
+def test_the_context_header_is_a_real_newline():
+    """It was written `\\\\n` in the source, so the model received a literal
+    backslash-n glued to the JSON rather than a line break."""
+    import inspect
+
+    import nflpicker.assistant as a
+
+    assert "Current state:\\\\n" not in inspect.getsource(a.ask)

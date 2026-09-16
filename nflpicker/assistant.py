@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from urllib.parse import urlparse
 
 SYSTEM_PROMPT = """You are the analyst sitting beside an NFL model, talking to \
@@ -161,6 +162,52 @@ def _round(value, places: int = 1):
         return None
 
 
+
+
+# Reasoning models are the normal case at this size, and they do not put their
+# answer where a plain chat model does. Depending on the server, the thinking
+# arrives wrapped in <think> tags inside `content`, or in a sibling field with
+# `content` left empty. Reading `content` alone got an empty string, and an
+# empty string is not an error -- so the app rendered an empty bubble and said
+# nothing at all about why.
+_THINK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
+_STRAY_TAG = re.compile(r"</?(think|thinking|reasoning)>", re.I)
+
+# Ollama, llama.cpp and the OpenAI-compatible servers have each picked a
+# different name for the same field.
+_REASONING_KEYS = ("reasoning_content", "reasoning", "thinking")
+
+
+def _reply_from(choice: dict) -> str:
+    """The answer, with any thinking removed -- or the thinking if that is all
+    there is, because a visible ramble beats a blank bubble."""
+    message = choice.get("message") or {}
+    content = str(message.get("content") or "")
+    # Complete blocks go first, then any stray tag left by a model that ran out
+    # mid-thought -- keeping what it did say beats showing nothing, but showing
+    # it still wearing a `<think>` tag is just the bug with extra steps.
+    answer = _STRAY_TAG.sub("", _THINK.sub("", content)).strip()
+    if answer:
+        return answer
+    for key in _REASONING_KEYS:
+        value = str(message.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _why_empty(choice: dict) -> str:
+    """Say what the server actually reported, rather than 'no answer'."""
+    reason = choice.get("finish_reason") or choice.get("native_finish_reason")
+    if reason == "length":
+        return ("The model ran out of room before it finished answering. This "
+                "usually means a reasoning model spent its whole budget "
+                "thinking -- try a shorter question, or a non-reasoning model.")
+    if reason:
+        return f"The model stopped without answering (finish_reason: {reason})."
+    return "The model returned an empty answer."
+
+
 def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0) -> dict:
     """Send a conversation to the local model with the board attached."""
     state = status()
@@ -172,7 +219,7 @@ def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0)
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "system",
-             "content": "Current state:\\n" + json.dumps(context(season, week))},
+             "content": "Current state:\n" + json.dumps(context(season, week))},
             *[{"role": m.get("role", "user"), "content": str(m.get("content", ""))}
               for m in messages[-12:]],
         ],
@@ -193,7 +240,7 @@ def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0)
     choices = body.get("choices") or []
     if not choices:
         raise AssistantError("The model returned nothing.")
-    return {
-        "reply": (choices[0].get("message") or {}).get("content", ""),
-        "model": body.get("model", state["model"]),
-    }
+    reply = _reply_from(choices[0])
+    if not reply:
+        raise AssistantError(_why_empty(choices[0]))
+    return {"reply": reply, "model": body.get("model", state["model"])}
