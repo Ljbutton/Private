@@ -16,7 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "ruff>=0.4", "pywebview>=5.0"]
+# Pillow is a dev dependency only: it draws the app icon (scripts/make_icon.py)
+# and one test reads the .ico back. The app itself never imports it.
+dev = ["pytest>=7.4", "ruff>=0.4", "pywebview>=5.0", "pillow>=10.0"]
 
 [project.scripts]
 nflpicker = "nflpicker.cli:main"

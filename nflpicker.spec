@@ -102,8 +102,20 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 # Generated from the same mark the sidebar draws, by scripts/make_icon.py.
-# A missing icon must not fail the build -- PyInstaller falls back to its own.
-ICON = "assets/icon.ico" if os.path.exists("assets/icon.ico") else None
+#
+# Per platform, and not interchangeable: macOS refuses a .ico outright, and
+# PyInstaller's automatic conversion needs Pillow on the *build* machine,
+# which a CI runner does not have -- so handing it the .ico failed the Apple
+# Silicon build at the BUNDLE step with the .app never written.
+#
+# A missing icon must still not fail the build; PyInstaller falls back to its
+# own when this is None.
+def _icon() -> str | None:
+    name = "assets/icon.icns" if MACOS else "assets/icon.ico"
+    return name if os.path.exists(name) else None
+
+
+ICON = _icon()
 
 common = dict(
     name="TheEdge",

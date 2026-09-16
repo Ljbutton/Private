@@ -59,15 +59,42 @@ def draw(size: int = MASTER) -> Image.Image:
     return img
 
 
+# An .icns is a container of PNGs with a four-byte type per size. Written by
+# hand because the alternative is `iconutil`, which exists only on macOS --
+# and this has to run wherever the icon is regenerated, not only there.
+ICNS_TYPES = (
+    (b"icp4", 16), (b"icp5", 32), (b"icp6", 64),
+    (b"ic07", 128), (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024),
+    (b"ic11", 32), (b"ic12", 64), (b"ic13", 256), (b"ic14", 512),
+)
+
+
+def write_icns(master: Image.Image, path: Path) -> None:
+    import io
+    import struct
+
+    entries = []
+    for ostype, size in ICNS_TYPES:
+        buf = io.BytesIO()
+        master.resize((size, size), Image.LANCZOS).save(buf, format="PNG")
+        data = buf.getvalue()
+        entries.append(ostype + struct.pack(">I", len(data) + 8) + data)
+    body = b"".join(entries)
+    path.write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
+
+
 def main() -> int:
     master = draw()
     out = Path("assets")
     out.mkdir(exist_ok=True)
     master.resize((512, 512), Image.LANCZOS).save(out / "icon.png")
-    master.save(out / "icon.ico", format="ICO",
-                sizes=[(s, s) for s in SIZES])
-    # macOS wants its own container; PyInstaller accepts a .icns or a .png.
-    print(f"wrote {out / 'icon.ico'} and {out / 'icon.png'}")
+    master.save(out / "icon.ico", format="ICO", sizes=[(s, s) for s in SIZES])
+    # macOS refuses a .ico outright: PyInstaller will only take an .icns there,
+    # and its automatic conversion needs Pillow on the build machine, which a
+    # CI runner does not have. Shipping both formats is the fix that does not
+    # depend on what happens to be installed where.
+    write_icns(master, out / "icon.icns")
+    print(f"wrote icon.ico, icon.icns and icon.png in {out}")
     return 0
 
 
