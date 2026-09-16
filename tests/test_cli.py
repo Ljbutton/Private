@@ -75,3 +75,30 @@ def test_the_parser_builds_without_touching_the_database():
     with pytest.raises(SystemExit) as exc:
         parser.parse_args(["--help"])
     assert exc.value.code == 0
+
+
+def test_only_the_server_commands_exit_hard(monkeypatch, temp_env):
+    """A one-shot command has no thread pool holding it and every reason to
+    return normally; serve and desktop do not, so they leave deliberately.
+
+    Getting this backwards in either direction is a real failure: hard-exiting
+    every command would skip cleanup a long-running task may need, and letting
+    the server commands return normally is the hang this exists to prevent.
+    """
+    from nflpicker import cli
+
+    left: list[int] = []
+    monkeypatch.setattr("nflpicker.desktop.leave", lambda code: left.append(code))
+
+    # A one-shot command returns the ordinary way, with nothing hard about it.
+    assert cli.main(["sources"]) == 0
+    assert left == [], "a one-shot command must not go through os._exit"
+
+
+def test_the_server_commands_are_named_as_they_are_defined():
+    """SERVER_COMMANDS is matched against __name__, so a rename that misses it
+    would silently reintroduce the hang."""
+    from nflpicker import cli
+
+    defined = {cli.cmd_serve.__name__, cli.cmd_desktop.__name__}
+    assert defined == cli.SERVER_COMMANDS

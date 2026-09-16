@@ -380,10 +380,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# The two commands that start a server, and so leave a thread pool holding
+# an in-flight fetch when they stop. Everything else is one-shot and exits the
+# ordinary way. See nflpicker.desktop.leave.
+SERVER_COMMANDS = {"cmd_serve", "cmd_desktop"}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     get_config().ensure_dirs()
-    return args.func(args)
+    code = args.func(args)
+    if getattr(args.func, "__name__", "") in SERVER_COMMANDS:
+        from .desktop import leave
+
+        leave(code or 0)
+    return code
 
 
 if __name__ == "__main__":

@@ -321,3 +321,48 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
         )
         return 1
     return 0
+
+
+def leave(code: int) -> None:
+    """Exit now, instead of waiting on fetches nobody is going to read.
+
+    By the time this is called the window is shut and the server is stopped,
+    so the process has nothing left to do -- and yet it would sit in the task
+    list for as long as the slowest outstanding HTTP request takes to give up,
+    which with three retries and a backoff is minutes on a bad network.
+
+    It looks like a stray daemon thread and it is not. ``asyncio.to_thread``,
+    which is how the startup refresh is kicked off, runs on the default
+    ThreadPoolExecutor, and ``concurrent.futures`` registers an atexit hook
+    that joins *every* worker of that pool regardless of its daemon flag. So
+    the interpreter blocks inside ``threading._shutdown`` after main() has
+    already returned 0. Marking threads daemon cannot reach it, and neither
+    can ``ServerThread.stop``, which is what the comment there was trying to
+    guarantee.
+
+    What the user sees is an app they closed still running, and a second
+    launch fighting the first one for the port and the database.
+
+    Leaving abruptly costs nothing here: every write is its own committed
+    transaction, so there is no buffered state to lose, and a fetch that gets
+    cut off is simply one that did not happen this time. Connections are
+    closed first so WAL checkpoints on the way out, and the streams are
+    flushed because ``os._exit`` skips the flushing a normal exit does --
+    which would otherwise swallow the line saying why the app stopped.
+
+    Only for the two commands that start a server. A one-shot command has no
+    background pool to be held by and every reason to exit the ordinary way.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    try:
+        from . import db
+
+        db.close_all()
+    except Exception:  # noqa: BLE001, S110
+        pass
+    os._exit(code)
