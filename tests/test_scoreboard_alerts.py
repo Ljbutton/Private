@@ -362,3 +362,73 @@ def test_coverage_says_nothing_at_all_before_any_game_is_final(store):
         "INSERT OR REPLACE INTO games(game_id, season, week, home, away, status,"
         " updated_at) VALUES('g9',2026,5,'KC','BUF','scheduled','t')")
     assert all(v["note"] is None for v in scoreboard.report(2026)["coverage"].values())
+
+
+# ------------------------------------------- closing-line value on your picks
+
+def _line(gid, captured_at, spread_home, n_books=6):
+    db.execute(
+        "INSERT OR REPLACE INTO consensus(game_id, captured_at, spread_home, n_books)"
+        " VALUES(?,?,?,?)", (gid, captured_at, spread_home, n_books))
+
+
+def test_a_pick_that_beat_the_close_scores_positive(store):
+    """You backed the home team at -3 and it closed -5. You have two points of
+    value whether or not they covered."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _line("g1", "2026-01-01T10:00:00Z", -3.0)
+    _line("g1", "2026-01-01T18:00:00Z", -5.0)
+    db.execute(
+        "INSERT OR REPLACE INTO user_picks(season, week, game_id, contest, selection,"
+        " updated_at) VALUES(2026,1,'g1','straight','KC','2026-01-01T12:00:00Z')")
+
+    clv = scoreboard.closing_line_value(2026)
+    assert clv["n"] == 1
+    assert clv["average"] == 2.0
+    assert clv["beat_rate"] == 1.0
+
+
+def test_backing_the_away_side_flips_the_sign_correctly(store):
+    """The away team's number is the negation of the home line, so the same
+    movement is worth the opposite to an away backer."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _line("g1", "2026-01-01T10:00:00Z", -3.0)
+    _line("g1", "2026-01-01T18:00:00Z", -5.0)
+    db.execute(
+        "INSERT OR REPLACE INTO user_picks(season, week, game_id, contest, selection,"
+        " updated_at) VALUES(2026,1,'g1','straight','BUF','2026-01-01T12:00:00Z')")
+
+    assert scoreboard.closing_line_value(2026)["average"] == -2.0
+
+
+def test_the_line_you_are_scored_against_is_the_one_you_could_have_had(store):
+    """Not the opening number: a pick made late is judged from the price on the
+    board at that moment, otherwise it collects credit for a move it missed."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _line("g1", "2026-01-01T08:00:00Z", -1.0)     # long before the pick
+    _line("g1", "2026-01-01T12:00:00Z", -3.0)     # what was on the board
+    _line("g1", "2026-01-01T18:00:00Z", -5.0)     # close
+    db.execute(
+        "INSERT OR REPLACE INTO user_picks(season, week, game_id, contest, selection,"
+        " updated_at) VALUES(2026,1,'g1','straight','KC','2026-01-01T13:00:00Z')")
+
+    assert scoreboard.closing_line_value(2026)["average"] == 2.0
+
+
+def test_a_pick_made_after_the_last_line_is_not_scored(store):
+    """Nothing moved afterwards, so there is no value to claim either way."""
+    _final("g1", 1, "KC", "BUF", 30, 20)
+    _line("g1", "2026-01-01T10:00:00Z", -3.0)
+    _line("g1", "2026-01-01T18:00:00Z", -5.0)
+    db.execute(
+        "INSERT OR REPLACE INTO user_picks(season, week, game_id, contest, selection,"
+        " updated_at) VALUES(2026,1,'g1','straight','KC','2026-01-02T00:00:00Z')")
+
+    result = scoreboard.closing_line_value(2026)
+    assert result["n"] == 0
+    assert "move afterwards" in result["note"]
+
+
+def test_no_picks_explains_itself_rather_than_showing_zero(store):
+    result = scoreboard.closing_line_value(2026)
+    assert result["n"] == 0 and result["average"] is None and result["note"]

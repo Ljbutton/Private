@@ -377,6 +377,77 @@ def coverage(season: int) -> dict[str, dict]:
     }
 
 
+def closing_line_value(season: int) -> dict:
+    """Did the line move toward your picks after you made them?
+
+    This is the one honest early read on whether *you* are any good. A win rate
+    needs hundreds of games before it says anything — you will have a few dozen
+    a season — but the market's own revision is a far less noisy signal, and it
+    answers a question results cannot: whether you saw something before the
+    price did. Beating the closing number is how a sportsbook decides you are
+    sharp, and it does not care whether the game then went your way.
+
+    Sign convention: positive means you took a better number than the one that
+    closed. You backed a home team at -3 and it closed -5; you have +2 points of
+    value whether or not they covered.
+    """
+    from .market.movement import consensus_series
+
+    picks = db.query(
+        "SELECT p.*, g.home, g.away, g.kickoff, g.status FROM user_picks p "
+        "JOIN games g ON g.game_id = p.game_id "
+        "WHERE p.season = ? AND p.contest = 'straight' ORDER BY p.week",
+        (season,),
+    )
+
+    rows: list[dict] = []
+    for pick in picks:
+        series = consensus_series(pick["game_id"], "spread")
+        if len(series) < 2:
+            continue                      # no movement observed: nothing to say
+        taken_at = pick["updated_at"]
+        # The line as it stood when the pick was recorded, not the first line
+        # ever seen -- you are being scored against what you could have had.
+        before = [s for s in series if (s["captured_at"] or "") <= taken_at]
+        if not before:
+            continue                      # picked before this app saw a line
+        at_pick = float(before[-1]["value"])
+        at_close = float(series[-1]["value"])
+        if before[-1]["captured_at"] == series[-1]["captured_at"]:
+            continue                      # nothing moved after the pick
+
+        home = pick["selection"] == pick["home"]
+        mine_at_pick = at_pick if home else -at_pick
+        mine_at_close = at_close if home else -at_close
+        clv = round(mine_at_pick - mine_at_close, 2)
+        rows.append({
+            "week": pick["week"], "game_id": pick["game_id"],
+            "selection": pick["selection"],
+            "matchup": f"{pick['away']} @ {pick['home']}",
+            "line_at_pick": round(mine_at_pick, 1),
+            "line_at_close": round(mine_at_close, 1),
+            "clv": clv,
+        })
+
+    if not rows:
+        return {
+            "n": 0, "average": None, "beat_rate": None, "picks": [],
+            "note": "No pick has been recorded early enough for the line to "
+                    "move afterwards. This fills in once you pick games before "
+                    "kickoff and the app is running to watch the number.",
+        }
+    values = [r["clv"] for r in rows]
+    beat = sum(1 for v in values if v > 0)
+    return {
+        "n": len(rows),
+        "average": round(sum(values) / len(values), 2),
+        "beat_rate": round(beat / len(rows), 4),
+        "beat": beat,
+        "picks": sorted(rows, key=lambda r: -abs(r["clv"]))[:20],
+        "note": None,
+    }
+
+
 def report(season: int) -> dict:
     rows = weekly(season)
     return {
@@ -388,4 +459,5 @@ def report(season: int) -> dict:
         "totals": season_totals(rows),
         "teams": by_team(season),
         "coverage": coverage(season),
+        "clv": closing_line_value(season),
     }

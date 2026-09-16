@@ -273,6 +273,53 @@ function alertList(rows) {
   </div>`;
 }
 
+/* Did the line move toward your picks after you made them?
+
+   A win rate needs hundreds of games before it says anything, and you will get
+   a few dozen a season. The market's own revision is far less noisy and answers
+   a question results cannot: whether you saw something before the price did.
+   It is also how a sportsbook decides you are sharp, and it does not care
+   whether the game then went your way. */
+function clvBlock(clv) {
+  if (!clv) return "";
+  if (!clv.n) {
+    return `<div class="panel">
+      <header><h2>Your closing-line value</h2></header>
+      <div class="empty">${esc(clv.note || "Nothing to measure yet.")}</div>
+    </div>`;
+  }
+  const good = clv.average > 0;
+  return `<div class="panel">
+    <header><h2>Your closing-line value</h2>
+      <span class="hint">${clv.n} pick${clv.n === 1 ? "" : "s"} the line moved after</span></header>
+    <div class="tiles">
+      <div class="tile"><div class="label">Points vs the close</div>
+        <div class="value ${good ? "pos" : "neg"}">${signed(clv.average, 2)}</div>
+        <div class="sub">per pick, averaged</div></div>
+      <div class="tile"><div class="label">Beat the close</div>
+        <div class="value ${clv.beat_rate > 0.5 ? "pos" : ""}">${pct(clv.beat_rate, 0)}</div>
+        <div class="sub">${clv.beat} of ${clv.n} picks</div></div>
+    </div>
+    <div class="table-scroll"><table class="slate">
+      <thead><tr><th>Wk</th><th>Pick</th><th>Game</th>
+        <th class="num">You got</th><th class="num">Closed</th>
+        <th class="num">Value</th></tr></thead>
+      <tbody>${clv.picks.map((p) => `<tr>
+        <td class="num muted">${p.week}</td>
+        <td class="who">${esc(p.selection)}</td>
+        <td class="muted">${esc(p.matchup)}</td>
+        <td class="num">${signed(p.line_at_pick, 1)}</td>
+        <td class="num muted">${signed(p.line_at_close, 1)}</td>
+        <td class="num ${p.clv > 0 ? "hit" : (p.clv < 0 ? "miss" : "")}">${signed(p.clv, 1)}</td>
+      </tr>`).join("")}</tbody></table></div>
+    <p class="note">Positive means you took a better number than the one that closed —
+      you backed a team at &minus;3 and it closed &minus;5, so you have two points of value
+      whether or not they covered. This is the one honest early read on whether
+      <em>you</em> are any good: it needs a fraction of the sample a win rate does, because
+      it measures the market agreeing with you rather than the game going your way.</p>
+  </div>`;
+}
+
 // -------------------------------------------------------------- scoreboard
 /* Who is actually picking these best. Straight-up winners only: every source
    here names a favourite, so it is the one question all of them can be asked. */
@@ -349,6 +396,8 @@ async function renderScoreboard() {
       </tr>`).join("")}</tbody>
     </table></div>
   </div>
+
+  ${clvBlock(d.clv)}
 
   <div class="panel">
     <header><h2>Week by week</h2><span class="hint">correct out of picked</span></header>
@@ -918,35 +967,12 @@ async function renderTeams() {
     <td class="muted">${t.pythagorean === null || t.pythagorean === undefined
       ? "–" : pct(t.pythagorean)}</td>
     <td>${signed(t.power)}</td>
-    <td>${num(t.elo, 0)}</td>
     <td class="muted">${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}</td>
     ${hasWinTotals ? `<td>${num(t.win_total_line, 1)}</td><td>${pct(t.over_prob)}</td>` : ""}
     <td>${pct(t.playoff_prob)}</td>
     <td>${pct(t.division_prob)}</td>
     <td>${pct(t.sb_prob, 1)}</td>
   </tr>`).join("");
-
-  // Only render the situational block when play-by-play has actually been
-  // loaded; a table of dashes is worse than no table.
-  const hasSituational = data.teams.some((t) => (t.situational || {}).games);
-  const sitRows = !hasSituational ? "" : data.teams
-    .filter((t) => (t.situational || {}).games)
-    .sort((a, b) => (b.situational.third_down_rate || 0) - (a.situational.third_down_rate || 0))
-    .map((t) => {
-      const s2 = t.situational;
-      return `<tr>
-        <td class="team">${esc(t.team)} <span class="muted">${esc(t.name)}</span></td>
-        <td>${pct(s2.third_down_rate, 1)}</td>
-        <td>${pct(s2.def_third_down_rate, 1)}</td>
-        <td>${pct(s2.red_zone_td_rate, 1)}</td>
-        <td>${pct(s2.explosive_rate, 1)}</td>
-        <td>${pct(s2.def_explosive_rate, 1)}</td>
-        <td>${pct(s2.sack_rate, 1)}</td>
-        <td>${pct(s2.sack_rate_forced, 1)}</td>
-        <td>${signed(s2.turnover_margin, 1)}</td>
-        <td>${num(s2.penalty_yards, 0)}</td>
-      </tr>`;
-    }).join("");
 
   root.innerHTML = `${comparisonBlock(con, data)}
   <div class="panel">
@@ -958,7 +984,6 @@ async function renderTeams() {
         <th title="Expected wins from 20,000 simulations of the remaining schedule — what the ranking is sorted by">Proj. wins</th>
         <th title="Win expectation implied by points scored and allowed. Point differential predicts the rest of the season better than the record does.">Pythag</th>
         <th title="Points better than an average team on a neutral field">Rating</th>
-        <th>Elo</th>
         <th>80% range</th>${hasWinTotals ? "<th>Win total</th><th>Over</th>" : ""}
         <th>Playoff</th><th>Division</th><th>Title</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
@@ -967,22 +992,6 @@ async function renderTeams() {
       : "No season win-total lines are available from the odds feed right now, so those "
         + "columns are hidden. The simulated win distribution below is unaffected."}</p>
   </div>
-  ${hasSituational ? `<div class="panel">
-    <header><h2>How teams are actually playing</h2>
-      <span class="hint">season to date, from play-by-play</span></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Team</th><th>3rd down</th><th>3rd down allowed</th>
-        <th>Red zone TD</th><th>Explosive</th><th>Explosive allowed</th>
-        <th>Sacks taken</th><th>Sacks forced</th><th>Turnover margin</th>
-        <th>Penalty yds</th></tr></thead>
-      <tbody>${sitRows}</tbody></table></div>
-    <p class="note">Rates rather than counts throughout, because counts mostly measure how
-      many possessions a team happened to get. These carry only a small amount of extra
-      predictive power over the efficiency ratings above — measured at about 0.002 points of
-      margin error — so they are here to be read rather than to drive the model.
-      An "explosive" play gains 20 yards or more.</p>
-  </div>` : ""}
-
   <div class="panel" id="team-detail-panel">
     <header><h2>Simulated win distribution</h2>
       <span class="hint">Select a team above</span></header>
@@ -1015,7 +1024,6 @@ async function renderPicks() {
   const root = $("#view");
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
   const edges = data.ats?.edges || [];
-  const markets = data.prediction_markets?.games || [];
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
@@ -1028,7 +1036,6 @@ async function renderPicks() {
     <td>${american(e.fair_price)}</td>
     <td>${e.edge_points === null ? "–" : signed(e.edge_points)}</td>
     <td>${(e.expected_value * 100).toFixed(1)}%</td>
-    <td>${(e.kelly * 100).toFixed(1)}%</td>
     <td><span class="badge ${e.confidence === "suspect" ? "qb" : ""}">${esc(e.confidence)}</span></td>
   </tr>`).join("");
 
@@ -1049,66 +1056,24 @@ async function renderPicks() {
     <td>${pct(a.win_prob, 1)}</td><td>${pct(a.path_survival, 1)}</td>
     <td>${a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`}</td></tr>`).join("");
 
-  // Venue columns are built from whatever actually priced this week, so a
-  // venue being down removes its column rather than filling it with dashes.
-  const venueKeys = [];
-  for (const g of markets) {
-    for (const v of g.venues || []) {
-      if (!venueKeys.some((k) => k.venue === v.venue)) {
-        venueKeys.push({ venue: v.venue, label: v.label });
-      }
-    }
-  }
-  const marketRows = markets.map((g) => {
-    const byVenue = Object.fromEntries((g.venues || []).map((v) => [v.venue, v]));
-    const cells = venueKeys.map((k) => {
-      const v = byVenue[k.venue];
-      return `<td>${v ? pct(v.home_prob, 0) : '<span class="muted">–</span>'}</td>`;
-    }).join("");
-    const gapStyle = g.notable
-      ? `color:${(g.gap || 0) > 0 ? "var(--div-pos)" : "var(--div-neg)"};font-weight:600`
-      : "color:var(--text-muted)";
-    return `<tr>
-      <td class="team">${esc(g.away)} <span class="muted">@</span> ${esc(g.home)}</td>
-      <td>${pct(g.book_prob, 0)} <span class="muted">(${g.n_books})</span></td>
-      <td>${pct(g.model_prob, 0)}</td>
-      ${cells}
-      <td style="${gapStyle}">${signed((g.gap || 0) * 100, 1)}pp</td>
-      <td>${g.leans ? `<span class="badge">${esc(g.leans)}</span>`
-          : '<span class="muted">agrees</span>'}</td>
-    </tr>`;
-  }).join("");
-
   root.innerHTML = `
-  <div class="panel">
-    <header><h2>Prediction markets</h2>
-      <span class="hint">All probabilities are for the home team, vig removed</span></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Game</th><th>Sportsbooks</th><th>Our model</th>
-        ${venueKeys.map((k) => `<th>${esc(k.label)}</th>`).join("")}
-        <th>Gap vs books</th><th>Leans</th></tr></thead>
-      <tbody>${marketRows || `<tr><td colspan="${5 + venueKeys.length}" class="muted">
-        No prediction-market prices for this week yet.</td></tr>`}</tbody>
-    </table></div>
-    <p class="note">Shown for comparison only — nothing here changes the suggestions below,
-      and none of it feeds the model. Prediction markets draw on a different crowd than the
-      sportsbooks, so a gap is worth a second look rather than an instruction: it may mean the
-      thinner venue is lagging, or that it has priced news the books have not. "Gap" is the
-      venue average minus the sportsbook consensus, in percentage points, and a game is only
-      marked as leaning once that reaches five.</p>
-  </div>
-
-  <div class="panel">
-    <header><h2>Best bets — week ${data.week}</h2>
-      <span class="hint">Priced against the best available number, sized at quarter Kelly</span></header>
+    <div class="panel">
+    <header><h2>Where we disagree with the line — week ${data.week}</h2>
+      <span class="hint">a list of disagreements, not a bet slip · see the note below</span></header>
     <div class="table-scroll"><table>
       <thead><tr><th>Selection</th><th>Market</th><th>Book</th><th>Price</th><th>Our prob</th>
-        <th>Fair price</th><th>Edge</th><th>EV</th><th>Stake</th><th>Rating</th></tr></thead>
-      <tbody>${edgeRows || '<tr><td colspan="10" class="muted">No qualifying edges this week — that is a normal result, not a failure.</td></tr>'}</tbody>
+        <th>Fair price</th><th>Gap</th><th>EV</th><th>Rating</th></tr></thead>
+      <tbody>${edgeRows || '<tr><td colspan="9" class="muted">Nothing disagrees with the line by much this week — the usual result.</td></tr>'}</tbody>
     </table></div>
-    <p class="note">Edges are the blended estimate against the line, already shrunk toward the
-      market. A rating of <strong>suspect</strong> means the disagreement is so large it is more
-      likely our blind spot than the market's — treat it as a prompt to investigate, not a bet.</p>
+    <p class="note"><strong>These are not recommendations.</strong> This app has measured its
+      own record against the spread at <strong>51.0% walk-forward, against a 52.4%
+      break-even</strong>, and the fitted market weight is 0.98 — meaning the closing line
+      carries almost everything and our disagreement with it carries almost nothing. A row
+      appearing here is a disagreement that cleared a threshold, which is not the same as an
+      edge; on this evidence most of them are noise. It is here to show you where the model
+      parts company with the market, so you can go and look at those games. A rating of
+      <strong>suspect</strong> means the gap is so large it is more likely our blind spot than
+      the market's.</p>
   </div>
 
   <div class="panel">
@@ -1302,12 +1267,19 @@ async function renderPerformance() {
 
   root.innerHTML = `<div class="panel">
     <header><h2>How the model is actually doing</h2>
-      <span class="hint">${r.n_games} graded games</span></header>
+      <span class="hint">${wf && wf.ats_rate
+        ? "headline figures are walk-forward — trained only on earlier seasons"
+        : `${r.n_games} graded games`}</span></header>
     <div class="tiles">
-      <div class="tile"><div class="label">Against the spread ${flag}</div>
-        <div class="value ${tone((r.ats.rate ?? 0) > 0.524)}">${pct(r.ats.rate, 1)}</div>
-        <div class="sub">${r.ats.wins}-${r.ats.losses}-${r.ats.pushes} · break-even 52.4%${
-          wf && wf.ats_rate ? `<br><strong>walk-forward ${pct(wf.ats_rate, 1)}</strong>` : ""}</div></div>
+      <div class="tile"><div class="label">Against the spread</div>
+        ${wf && wf.ats_rate
+          ? `<div class="value ${wf.ats_rate > 0.524 ? "pos" : "neg"}">${pct(wf.ats_rate, 1)}</div>
+             <div class="sub"><b>walk-forward</b> · break-even 52.4%<br>
+               <span class="aside">in-sample ${pct(r.ats.rate, 1)} —
+               ${r.ats.wins}-${r.ats.losses}-${r.ats.pushes}</span></div>`
+          : `<div class="value ${tone((r.ats.rate ?? 0) > 0.524)}">${pct(r.ats.rate, 1)} ${flag}</div>
+             <div class="sub">${r.ats.wins}-${r.ats.losses}-${r.ats.pushes} · break-even 52.4%</div>`}
+      </div>
       <div class="tile"><div class="label">Return on risk ${flag}</div>
         <div class="value ${tone((r.ats.roi ?? 0) >= 0)}">${pct(r.ats.roi, 1)}</div>
         <div class="sub">${signed(r.ats.units, 1)} units at −110</div></div>
@@ -1321,12 +1293,19 @@ async function renderPerformance() {
       <div class="tile"><div class="label">Brier score</div>
         <div class="value">${num(r.calibration.brier, 3)}</div>
         <div class="sub">lower is better · 0.25 = coin flip</div></div>
-      <div class="tile"><div class="label">Margin error ${flag}</div>
-        <div class="value ${inSample ? "" : (beatsMarket ? "pos" : "")}">${num(acc.margin_mae, 2)}</div>
-        <div class="sub">market ${num(acc.market_margin_mae, 2)}${
-          beatsMarket ? " — we're closer" : " — market is closer"}${
-          wf && wf.margin_mae ? `<br><strong>walk-forward ${num(wf.margin_mae, 2)}</strong> vs ${
-            num(wf.market_margin_mae, 2)}` : ""}</div></div>
+      <div class="tile"><div class="label">Margin error</div>
+        ${wf && wf.margin_mae
+          ? `<div class="value ${wf.margin_mae < (wf.market_margin_mae ?? 99) ? "pos" : ""}">${
+               num(wf.margin_mae, 2)}</div>
+             <div class="sub"><b>walk-forward</b> · market ${num(wf.market_margin_mae, 2)}${
+               wf.margin_mae < (wf.market_margin_mae ?? 99) ? " — we're closer" : " — market is closer"}<br>
+               <span class="aside">in-sample ${num(acc.margin_mae, 2)} vs ${
+                 num(acc.market_margin_mae, 2)}</span></div>`
+          : `<div class="value ${inSample ? "" : (beatsMarket ? "pos" : "")}">${
+               num(acc.margin_mae, 2)} ${flag}</div>
+             <div class="sub">market ${num(acc.market_margin_mae, 2)}${
+               beatsMarket ? " — we're closer" : " — market is closer"}</div>`}
+      </div>
     </div>
     ${inSample ? `<p class="note" style="border-left-color:var(--warning)">
       <strong>These headline figures are in-sample.</strong> ${r.backfilled} of ${r.n_games}

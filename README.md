@@ -262,6 +262,33 @@ through the rolling features and produces flattering, meaningless scores.
 Reported metrics: margin MAE against the market's own MAE (the bar to beat),
 ATS rate against the closing number, Brier score and log loss, and CLV.
 
+### Do 6-point teasers beat their price?
+
+`nflpicker teasers --sweep` checks the Wong teaser against 7,292 games with a
+closing line and a result, 1999–2026. A two-leg 6-point teaser at −110 needs
+each leg to win **72.4%** of the time, because both must land:
+`p² = 1.1/2.1`.
+
+| window | record | win rate | 95% CI | verdict at −110 |
+|---|---|---|---|---|
+| Underdogs +1.5 to +2.5 | 682/904 | **75.4%** | 72.5–78.1% | clears it, ROI +8.7% |
+| Favourites −8.5 to −7.5 | 360/493 | 73.0% | 68.9–76.8% | inside the noise |
+| Both windows | 1042/1397 | 74.6% | 72.2–76.8% | inside the noise |
+
+The effect is real and sits where the theory says it should — a sweep of every
+window puts `+1 to +2` (74.3%) and `−8 to −7` (74.2%) at the top of 24 windows,
+and the reason is visible in the margin distribution: **15.1% of games land on
+exactly 3** and 9.0% on 7, so teasing across both numbers buys far more than six
+points of ordinary probability. It has not been priced away either: 2014+ scores
+75.5%, *better* than pre-2014's 73.4%.
+
+**The price is what kills it.** The same 74.6% is worth +6.2% ROI at −110, +2.0%
+at −120, and **−1.6% at −130** — and most books now price a two-team six-point
+teaser at −120 or worse. So the honest summary is that the bet is real, the
+edge is small, and whether it exists at all depends entirely on a number the
+book chooses. That is why the finding lives in a CLI command and the README
+rather than in the dashboard: it is a fact about history, not a suggestion.
+
 ### What the model actually achieves — and what it does not
 
 Measured over 5,980 walk-forward games from 2002 to 2026:
@@ -914,6 +941,16 @@ columns, and the second is the honest one:
 - **Same games** — only games where *every* picker had a view. Without it a
   source can look good by having an opinion about the easy games and staying
   quiet on the rest.
+
+**Your closing-line value** sits beneath the table and is the one honest early
+read on whether *you* are any good. A win rate needs hundreds of games to say
+anything and you will get a few dozen a season; the market's own revision is far
+less noisy, and it answers a question results cannot — whether you saw something
+before the price did. Positive means you took a better number than the one that
+closed: you backed a team at −3 and it closed −5, so you hold two points of value
+whether or not they covered. It is scored against the line that was on the board
+when you picked, not the opening number, so a late pick cannot collect credit for
+a move it missed.
 
 A source with no opinion is not scored as wrong, a tie is a push for everyone,
 an exact 50% is not a pick, and neither is a blind margin of exactly zero.
