@@ -33,13 +33,32 @@ from .features import MARKET_FEATURES, NUMERIC_FEATURES
 MODEL_VERSION = "1.0"
 MIN_TRAIN_GAMES = 400
 
+# Tuned by walk-forward over 2002-2026, five seeds each, against the params
+# this shipped with (depth 5, leaves of 40, l2 1.0):
+#
+#     variant                MAE      sd     ATS
+#     shipped            10.5398  0.0084  50.54%
+#     depth 3            10.5164  0.0159  50.48%
+#     patient + slow     10.5124  0.0161  50.47%
+#     this one           10.5103  0.0173  50.37%
+#     squared loss       10.5796  0.0364  50.28%
+#
+# Read that honestly: the gain is 0.03 points of MAE, which is under two
+# standard deviations of the seed noise, and ATS does not move at all. Every
+# variant that helped did so by *reducing* capacity, which is consistent
+# enough across three independent configurations to believe the direction --
+# depth 5 was mildly overfitting -- without believing the magnitude matters.
+#
+# The useful conclusion is the one that cost a day to establish: this model is
+# at the ceiling of what these features and this algorithm give. Hyperparameters
+# are not where the remaining accuracy is.
 REGRESSOR_PARAMS = dict(
     loss="absolute_error",      # margins are heavy-tailed; MAE resists blowouts
     max_iter=400,
     learning_rate=0.05,
-    max_depth=5,
-    min_samples_leaf=40,
-    l2_regularization=1.0,
+    max_depth=3,
+    min_samples_leaf=80,
+    l2_regularization=3.0,
     early_stopping=True,
     validation_fraction=0.15,
     random_state=7,

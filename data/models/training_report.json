@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-09-15T15:47:01+00:00",
+  "trained_at": "2026-09-16T17:49:15+00:00",
   "model_version": "1.0",
   "n_games": 6515,
   "seasons": [
@@ -31,38 +31,38 @@
   ],
   "blind": {
     "n": 5981,
-    "margin_mae": 10.583958912665574,
-    "margin_rmse": 13.637247150994966,
+    "margin_mae": 10.536380201975943,
+    "margin_rmse": 13.584545787208576,
     "market_margin_mae": 10.233740177227888,
-    "total_mae": 10.827560011940008,
+    "total_mae": 10.791382518696139,
     "market_total_mae": 10.531014880454773,
-    "ats_picks": 5110,
-    "ats_wins": 2606,
-    "ats_rate": 0.5099804305283757,
+    "ats_picks": 5034,
+    "ats_wins": 2551,
+    "ats_rate": 0.5067540723083035,
     "su_rate": 0.6435394670688789,
     "brier": 0.2216189368602516,
     "log_loss": 0.6333617606746186
   },
   "aware": {
     "n": 5981,
-    "margin_mae": 10.420455333554242,
-    "margin_rmse": 13.46498869109351,
+    "margin_mae": 10.350889153708405,
+    "margin_rmse": 13.378733162501453,
     "market_margin_mae": 10.233740177227888,
-    "total_mae": 10.682284116672319,
+    "total_mae": 10.658413915801084,
     "market_total_mae": 10.531014880454773,
-    "ats_picks": 4780,
-    "ats_wins": 2401,
-    "ats_rate": 0.5023012552301255,
+    "ats_picks": 4574,
+    "ats_wins": 2345,
+    "ats_rate": 0.5126803672933975,
     "su_rate": 0.6546003016591252,
     "brier": 0.2166651642906017,
     "log_loss": 0.6227544683461709
   },
-  "residual_sd": 13.638000479252382,
-  "market_weight": 0.98,
-  "market_weight_total": 0.98,
-  "blend_sd": 12.724729523765415,
+  "residual_sd": 13.585366489317193,
+  "market_weight": 0.972098162428087,
+  "market_weight_total": 0.9075123549210726,
+  "blend_sd": 12.724286810261946,
   "notes": [
-    "Fitted market weight is 0.98: on this data the closing line carries almost all the information and the model adds little. Edges will be small, which is the honest result."
+    "Fitted market weight is 0.97: on this data the closing line carries almost all the information and the model adds little. Edges will be small, which is the honest result."
   ],
   "sklearn_version": "1.9.1"
 }
