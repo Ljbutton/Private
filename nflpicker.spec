@@ -6,6 +6,7 @@
 #           model, but cannot read nflverse parquet, so no training or EPA
 #
 # Choose with:  pyinstaller nflpicker.spec -- --profile lite
+import contextlib
 import sys
 
 profile = "full"
@@ -35,7 +36,45 @@ if MACOS:
         "Security", "UniformTypeIdentifiers",
     ]
 elif sys.platform == "win32":
-    hidden += ["webview.platforms.edgechromium", "webview.platforms.winforms"]
+    hidden += [
+        "webview.platforms.edgechromium", "webview.platforms.winforms",
+        # The Windows backends are .NET, reached through pythonnet. `clr` is
+        # imported at the top of both and appears in no import statement
+        # PyInstaller can follow from this application.
+        "clr", "clr_loader",
+    ]
+
+# Data files. pywebview's Windows backend is the reason this is not just the
+# web assets.
+#
+# edgechromium.py runs `clr.AddReference(interop_dll_path(...))` at *import
+# time*, and interop_dll_path resolves those DLLs inside the package, at
+# webview/lib. They ship in the wheel and PyInstaller does not collect them on
+# its own, so the import raised FileNotFoundError, pywebview quietly fell back
+# to the legacy MSHTML backend, and that opens no window at all: the packaged
+# app exited 0 having shown nothing. A correctly installed WebView2 runtime on
+# the machine does not help, because what is missing is the managed wrapper
+# that talks to it.
+datas = [("nflpicker/web", "nflpicker/web")]
+if sys.platform == "win32":
+    from PyInstaller.utils.hooks import collect_data_files
+
+    # lib/ holds the WebView2 core and WinForms assemblies, the
+    # WebBrowserInterop DLLs, and lib/runtimes/<arch>/native/WebView2Loader.dll,
+    # which edgechromium puts on PATH by asking for the directory. The whole
+    # tree has to keep its shape.
+    webview_libs = collect_data_files("webview", includes=["lib/**"])
+    if not webview_libs:
+        raise SystemExit(
+            "pywebview's lib/ directory collected nothing. Without it the "
+            "packaged app cannot open a window on Windows."
+        )
+    datas += webview_libs
+    # pythonnet carries Python.Runtime.dll and the .NET runtime config beside
+    # it; clr_loader is what reads them.
+    for package in ("pythonnet", "clr_loader"):
+        with contextlib.suppress(Exception):
+            datas += collect_data_files(package, include_py_files=False)
 
 # Trimmed because nothing here imports them, and together they are large.
 excludes = [
@@ -48,7 +87,7 @@ if profile == "lite":
 a = Analysis(
     ["scripts/desktop_entry.py"],
     pathex=["."],
-    datas=[("nflpicker/web", "nflpicker/web")],
+    datas=datas,
     hiddenimports=hidden,
     excludes=excludes,
     noarchive=False,

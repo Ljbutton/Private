@@ -70,8 +70,36 @@ def selftest() -> int:
         print(f"selftest FAILED: webview backend not resolvable: {exc!r}", flush=True)
         return 1
 
+    # Resolvable is not the same as usable, and the gap between them shipped a
+    # Windows build that exited 0 without ever opening a window. `initialize()`
+    # was only checked for being *callable*; actually calling it is what picks
+    # and imports a backend, and that is where the failure was.
+    from nflpicker import desktop
+
+    if sys.platform == "win32":
+        # The precise failure: edgechromium imports its WebView2 assemblies at
+        # module scope, so a bundle missing pywebview's lib/ raises here. Left
+        # unchecked, pywebview falls back to the legacy MSHTML backend, which
+        # resolves fine and then opens nothing.
+        try:
+            import webview.platforms.edgechromium  # noqa: F401
+        except Exception as exc:                          # noqa: BLE001
+            print(f"selftest FAILED: the Edge WebView2 backend did not import: "
+                  f"{exc!r}", flush=True)
+            return 1
+
+    # Only Windows treats this as fatal. A CI runner is not a desk: a Mac build
+    # agent can lack a usable window server for reasons that say nothing about
+    # the machine the app will actually run on, and failing the build there
+    # would be noise. The Windows agent has Edge, so a False there is the bug.
+    usable = desktop.available()
+    if not usable and sys.platform == "win32":
+        print("selftest FAILED: no usable webview renderer; the packaged app "
+              "would open no window", flush=True)
+        return 1
+
     print(f"selftest ok: {url}/api/state -> {len(payload)} keys, "
-          "webview backend resolvable", flush=True)
+          f"webview renderer usable={usable}", flush=True)
     return 0
 
 

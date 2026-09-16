@@ -43,6 +43,9 @@ WINDOW_TITLE = "NFL Picker"
 # overrunning it meant the app exited without ever showing anything.
 STARTUP_TIMEOUT = 240.0 if getattr(sys, "frozen", False) else 60.0
 
+# Below this, the window loop cannot have shown anything a person could use.
+WINDOW_TOO_FAST = 2.0
+
 
 def log_path() -> Path:
     return Path(get_config().data_dir) / "logs" / "desktop.log"
@@ -92,6 +95,15 @@ def _alert(title: str, message: str) -> None:
             )
             return
     print(f"{title}: {message}", flush=True)
+
+
+def _backend_name() -> str:
+    """Which renderer pywebview settled on, for the log."""
+    with contextlib.suppress(Exception):
+        from importlib import import_module
+
+        return str(getattr(import_module("webview.guilib"), "renderer", "unknown"))
+    return "unknown"
 
 
 def free_port() -> int:
@@ -265,10 +277,12 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
 
     import webview
 
+    log.info("opening a native window via %s", _backend_name())
     window = webview.create_window(
         WINDOW_TITLE, url, width=width, height=height,
         min_size=(900, 640), confirm_close=False,
     )
+    started = time.monotonic()
     try:
         webview.start(debug=debug)
     except Exception as exc:  # noqa: BLE001
@@ -283,4 +297,20 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
         server.stop()
         with contextlib.suppress(Exception):
             window.destroy()
+
+    # A backend can also fail *without raising*: webview.start() runs the
+    # platform's event loop, so it returns when the window closes. Returning
+    # immediately means no window was ever on screen -- which is what a
+    # bundle missing its backend DLLs did, and it exited 0 looking like a
+    # clean run. Nobody closes a window they asked for in under two seconds.
+    elapsed = time.monotonic() - started
+    if elapsed < WINDOW_TOO_FAST:
+        log.error("the window loop returned after %.2fs; no window was shown", elapsed)
+        _alert(
+            WINDOW_TITLE,
+            "NFL Picker opened and closed immediately without showing a "
+            "window.\n\nThis usually means the webview backend could not "
+            f"load.\n\nDetails: {log_path()}",
+        )
+        return 1
     return 0

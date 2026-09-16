@@ -238,3 +238,72 @@ def test_a_server_that_will_not_start_says_so(monkeypatch):
 
 def _never_sleep(_seconds):
     raise AssertionError("slept instead of reporting the failure")
+
+
+def test_a_window_that_never_appeared_is_not_a_clean_exit(monkeypatch):
+    """webview.start() runs the platform event loop, so it returns when the
+    window closes. Returning at once means nothing was ever on screen -- which
+    is what a bundle missing its backend DLLs did, while exiting 0 and looking
+    like a normal run."""
+    import sys as _sys
+    import types
+
+    from nflpicker import desktop
+
+    fake = types.ModuleType("webview")
+    fake.create_window = lambda *a, **k: types.SimpleNamespace(destroy=lambda: None)
+    fake.start = lambda **k: None          # returns immediately, raises nothing
+    monkeypatch.setitem(_sys.modules, "webview", fake)
+
+    monkeypatch.setattr(desktop, "available", lambda: True)
+    monkeypatch.setattr(desktop, "_start_logging", lambda: None)
+
+    class _Server:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            return "http://127.0.0.1:9/"
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(desktop, "ServerThread", _Server)
+    seen = []
+    monkeypatch.setattr(desktop, "_alert", lambda title, msg: seen.append(msg))
+
+    assert desktop.run() == 1
+    assert seen and "without showing a window" in seen[0]
+
+
+def test_a_window_the_user_actually_closed_is_a_clean_exit(monkeypatch):
+    import sys as _sys
+    import types
+
+    from nflpicker import desktop
+
+    fake = types.ModuleType("webview")
+    fake.create_window = lambda *a, **k: types.SimpleNamespace(destroy=lambda: None)
+
+    clock = iter([100.0, 100.0 + desktop.WINDOW_TOO_FAST + 30.0])
+    fake.start = lambda **k: None
+    monkeypatch.setitem(_sys.modules, "webview", fake)
+    monkeypatch.setattr(desktop.time, "monotonic", lambda: next(clock))
+
+    monkeypatch.setattr(desktop, "available", lambda: True)
+    monkeypatch.setattr(desktop, "_start_logging", lambda: None)
+
+    class _Server:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            return "http://127.0.0.1:9/"
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(desktop, "ServerThread", _Server)
+    monkeypatch.setattr(desktop, "_alert", lambda title, msg: pytest.fail(msg))
+
+    assert desktop.run() == 0
