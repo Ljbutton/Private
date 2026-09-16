@@ -69,6 +69,24 @@ PYTHAGOREAN_POINTS = 4.8
 # Pythagorean term is faded in rather than trusted from one blowout.
 PYTHAGOREAN_FULL_AT = 6.0
 
+# Straight win-loss record, on top of Elo and point differential.
+#
+# Measured the same way as everything else here -- freeze after week W, predict
+# the rest of that season -- over 14,054 games from 2006-2026:
+#
+#     h2h weight     MAE     corr   straight-up
+#            0.0  10.9135   0.3487     62.91%
+#            1.5  10.9002   0.3473     62.89%
+#            3.0  10.8985   0.3458     62.64%
+#
+# It is a wash: MAE improves by about a hundredth of a point, correlation and
+# straight-up give back the same order of nothing. That is the expected result
+# -- Elo is already a record, so asking again adds little. It is set to 1.5
+# because a team that won the games is *meant* to sit above one that lost them
+# at equal point differential, and at this weight it does that without costing
+# anything measurable. Raising it further starts to cost real accuracy.
+HEAD_TO_HEAD_POINTS = 1.5
+
 
 @dataclass
 class TeamPower:
@@ -140,6 +158,7 @@ def build_power_ratings(
     elo_raw: dict[str, float] | None = None,
     records: dict[str, tuple[float, float]] | None = None,
     games_played: dict[str, int] | None = None,
+    win_loss: dict[str, tuple[int, int]] | None = None,
 ) -> PowerRatings:
     """One rating per team: shrunk Elo plus Pythagorean expectation.
 
@@ -158,6 +177,7 @@ def build_power_ratings(
     efficiencies = efficiencies or {}
     records = records or {}
     games_played = games_played or {}
+    win_loss = win_loss or {}
     eff_points = shrink(efficiencies)
     # Kept only so the value is still reported; it no longer moves `power`.
     weight = efficiency_weight_for_week(week) if eff_points else 0.0
@@ -184,6 +204,14 @@ def build_power_ratings(
         # every team was identical and every game projected exactly 45 points --
         # a constant wearing the shape of a projection, which is worse than a
         # rough number because nothing about it looks wrong.
+        # Who actually won, as opposed to who outscored. Faded in on the same
+        # schedule as the Pythagorean term so one upset in week 1 does not
+        # reorder the league.
+        wins, losses = win_loss.get(abbr, (0, 0))
+        if wins + losses:
+            trust = clamp(played / PYTHAGOREAN_FULL_AT, 0.0, 1.0)
+            power += HEAD_TO_HEAD_POINTS * (wins / (wins + losses) - 0.5) * trust
+
         eff = efficiencies.get(abbr)
         off_rating = LEAGUE_POINTS_PER_GAME
         def_rating = LEAGUE_POINTS_PER_GAME

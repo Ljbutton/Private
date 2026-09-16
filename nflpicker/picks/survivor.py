@@ -53,6 +53,7 @@ class SurvivorPlan:
     season: int
     week: int
     horizon: int
+    through_week: int | None = None
     path: list[SurvivorEntry] = field(default_factory=list)
     survival_prob: float = 0.0
     recommendation: SurvivorEntry | None = None
@@ -65,6 +66,7 @@ class SurvivorPlan:
             "season": self.season,
             "week": self.week,
             "horizon": self.horizon,
+            "through_week": self.through_week,
             "path": [e.to_dict() for e in self.path],
             "survival_prob": round(self.survival_prob, 4),
             "recommendation": self.recommendation.to_dict() if self.recommendation else None,
@@ -72,6 +74,11 @@ class SurvivorPlan:
             "used_teams": self.used_teams,
             "note": self.note,
         }
+
+
+# Most pools settle in week 17; week 18 rests starters and is the week a
+# projection is worth least.
+LAST_SURVIVOR_WEEK = 17
 
 
 def _solve(weeks: list[int], teams: list[str], prob: dict[tuple[int, str], float],
@@ -134,22 +141,33 @@ def plan_survivor(
     games_by_week: dict[int, list[dict]],
     *,
     used_teams: list[str] | None = None,
-    horizon: int = 6,
+    through_week: int = LAST_SURVIVOR_WEEK,
     max_alternatives: int = 4,
 ) -> SurvivorPlan:
-    """Plan the next ``horizon`` weeks.
+    """Plan from ``week`` to ``through_week`` inclusive.
 
     ``games_by_week`` maps week -> games, each with home/away/home_win_prob.
     ``used_teams`` are teams already spent in your pool.
 
-    The horizon is capped deliberately: projections five weeks out are far less
-    reliable than this week's, and planning twenty weeks ahead optimises against
-    noise.  Six weeks is enough to stop the "burned my best team early" failure
-    without pretending to know Week 17.
+    The horizon used to be "the next six weeks", on the reasoning that a
+    projection ten weeks out is mostly noise. That reasoning is sound about the
+    *projections* and wrong about the *problem*: survivor is a scheduling
+    constraint, not a forecast. Each team may be spent once, so the cost of
+    using a team this week is whichever future week wanted it -- and a planner
+    that cannot see past week six cannot see that cost. Burning the team you
+    needed in week 14 is exactly the failure survivor pools are built to
+    punish, and a six-week window walks straight into it.
+
+    Week 17 is the last week worth planning: most pools end there, and week 18
+    is where teams rest starters and a projection means least.
+
+    The far weeks are still noisy, and the plan is meant to be re-run -- what
+    it is for is spending *this* week's team knowing what it costs later.
     """
     used = [t.upper() for t in (used_teams or [])]
-    weeks = sorted(w for w in games_by_week if w >= week)[:horizon]
-    plan = SurvivorPlan(season=season, week=week, horizon=len(weeks), used_teams=used)
+    weeks = [w for w in sorted(games_by_week) if week <= w <= through_week]
+    plan = SurvivorPlan(season=season, week=week, horizon=len(weeks),
+                        through_week=weeks[-1] if weeks else None, used_teams=used)
     if not weeks:
         plan.note = "No remaining games to plan."
         return plan
@@ -185,6 +203,7 @@ def plan_survivor(
             if solution is not None:
                 weeks = weeks[:shorter]
                 plan.horizon = shorter
+                plan.through_week = weeks[-1]
                 plan.note = "Horizon shortened: not enough unused teams for a full path."
                 break
     if solution is None:

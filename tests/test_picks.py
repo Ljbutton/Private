@@ -20,7 +20,7 @@ def test_survivor_saves_a_team_it_needs_later():
         1: [_game(1, "KC", "CAR", 0.90), _game(1, "BUF", "NYJ", 0.88)],
         2: [_game(2, "KC", "NYG", 0.85), _game(2, "BUF", "PHI", 0.50)],
     }
-    plan = plan_survivor(2025, 1, games, horizon=2)
+    plan = plan_survivor(2025, 1, games, through_week=2)
     assert plan.recommendation.team == "BUF"
     assert [e.team for e in plan.path] == ["BUF", "KC"]
     # Path survival is the product of the two chosen win probabilities.
@@ -32,13 +32,13 @@ def test_survivor_takes_the_best_team_when_there_is_no_future_conflict():
         1: [_game(1, "KC", "CAR", 0.90), _game(1, "BUF", "NYJ", 0.70)],
         2: [_game(2, "SF", "ARI", 0.88), _game(2, "DAL", "WAS", 0.80)],
     }
-    plan = plan_survivor(2025, 1, games, horizon=2)
+    plan = plan_survivor(2025, 1, games, through_week=2)
     assert plan.recommendation.team == "KC"
 
 
 def test_used_teams_are_never_recommended():
     games = {1: [_game(1, "KC", "CAR", 0.95), _game(1, "BUF", "NYJ", 0.60)]}
-    plan = plan_survivor(2025, 1, games, used_teams=["KC"], horizon=1)
+    plan = plan_survivor(2025, 1, games, used_teams=["KC"], through_week=1)
     assert plan.recommendation.team == "BUF"
     assert all(e.team != "KC" for e in plan.path)
 
@@ -46,7 +46,7 @@ def test_used_teams_are_never_recommended():
 def test_the_underdog_side_is_available_too():
     """Picking the away team is legal: it is the side, not the home team."""
     games = {1: [_game(1, "CAR", "KC", 0.10)]}
-    plan = plan_survivor(2025, 1, games, horizon=1)
+    plan = plan_survivor(2025, 1, games, through_week=1)
     assert plan.recommendation.team == "KC"
     assert abs(plan.recommendation.win_prob - 0.90) < 1e-9
 
@@ -56,7 +56,7 @@ def test_deviating_this_week_is_priced_over_the_whole_path():
         1: [_game(1, "KC", "CAR", 0.90), _game(1, "BUF", "NYJ", 0.88)],
         2: [_game(2, "KC", "NYG", 0.85), _game(2, "BUF", "PHI", 0.50)],
     }
-    plan = plan_survivor(2025, 1, games, horizon=2)
+    plan = plan_survivor(2025, 1, games, through_week=2)
     alt = next(a for a in plan.alternatives if a["team"] == "KC")
     # Taking KC now forces BUF in week 2 at 0.50 — clearly worse over the path,
     # even though KC has the higher single-week probability.
@@ -72,7 +72,7 @@ def test_horizon_shortens_rather_than_failing_when_teams_run_out():
         2: [_game(2, "CAR", "KC", 0.2)],
         3: [_game(3, "KC", "CAR", 0.9)],
     }
-    plan = plan_survivor(2025, 1, games, horizon=3)
+    plan = plan_survivor(2025, 1, games, through_week=3)
     assert plan.recommendation is not None
     assert plan.horizon == 2
     assert "shortened" in plan.note.lower()
@@ -85,13 +85,13 @@ def test_equal_survival_paths_prefer_surviving_sooner():
         1: [_game(1, "KC", "CAR", 0.90), _game(1, "CAR", "KC", 0.10)],
         2: [_game(2, "KC", "NYG", 0.10), _game(2, "CAR", "NYG", 0.90)],
     }
-    plan = plan_survivor(2025, 1, games, horizon=2)
+    plan = plan_survivor(2025, 1, games, through_week=2)
     assert plan.recommendation.win_prob == 0.90
 
 
 def test_no_feasible_path_is_reported_not_crashed():
     games = {1: [_game(1, "KC", "CAR", 0.9)]}
-    plan = plan_survivor(2025, 1, games, used_teams=["KC", "CAR"], horizon=1)
+    plan = plan_survivor(2025, 1, games, used_teams=["KC", "CAR"], through_week=1)
     assert plan.recommendation is None
     assert plan.note
 
@@ -144,3 +144,55 @@ def test_leverage_mode_trades_expected_points_for_differentiation():
     lev = build_pickem(2025, 1, _entries(), mode="leverage")
     assert lev.expected_points <= ev.expected_points + 1e-9
     assert [p.pick for p in lev.picks] == [p.pick for p in ev.picks]  # sides unchanged
+
+
+# ------------------------------------------------- planning the whole run
+
+def _season_games(first_week: int, last_week: int) -> dict:
+    """A tidy schedule: sixteen games a week, every team playing once."""
+    from nflpicker.teams import ABBRS
+
+    weeks = {}
+    for w in range(first_week, last_week + 1):
+        # Rotate the pairings each week so no two weeks are identical.
+        order = ABBRS[w % len(ABBRS):] + ABBRS[:w % len(ABBRS)]
+        weeks[w] = [
+            {"game_id": f"{w}-{i}", "home": order[2 * i], "away": order[2 * i + 1],
+             "home_win_prob": 0.55 + (i % 5) * 0.05}
+            for i in range(len(order) // 2)
+        ]
+    return weeks
+
+
+def test_the_plan_runs_to_week_17_not_six_weeks_out():
+    """Survivor is a scheduling constraint, not a forecast.
+
+    Each team may be spent once, so using one this week costs whichever future
+    week wanted it -- and a planner that stops at week six cannot see that
+    cost. Burning the team you needed in week 14 is the exact failure these
+    pools punish.
+    """
+    from nflpicker.picks.survivor import plan_survivor
+
+    plan = plan_survivor(2026, 2, _season_games(1, 18))
+    assert plan.through_week == 17, "week 18 rests starters and is not worth planning"
+    assert [e.week for e in plan.path] == list(range(2, 18))
+    assert len({e.team for e in plan.path}) == len(plan.path), "a team cannot be spent twice"
+
+
+def test_an_early_week_still_gets_a_full_path():
+    """'Especially through week 7' -- planning from week 1 must reach 17 too."""
+    from nflpicker.picks.survivor import plan_survivor
+
+    for start in (1, 3, 7):
+        plan = plan_survivor(2026, start, _season_games(1, 18))
+        assert plan.recommendation is not None, f"no pick from week {start}"
+        assert plan.through_week == 17
+        assert [e.week for e in plan.path] == list(range(start, 18))
+
+
+def test_a_late_start_plans_only_what_is_left():
+    from nflpicker.picks.survivor import plan_survivor
+
+    plan = plan_survivor(2026, 16, _season_games(1, 18))
+    assert [e.week for e in plan.path] == [16, 17]

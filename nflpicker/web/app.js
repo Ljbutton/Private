@@ -901,114 +901,9 @@ function gapChip(delta) {
   return `<span class="gap ${cls}">${delta > 0 ? "+" : "−"}${Math.abs(delta)}</span>`;
 }
 
-function comparisonBlock(con, data) {
-  const hasData = con && con.n_lists > 0 && (con.comparison || []).length;
-  const sources = hasData
-    ? con.sources.map((k) => esc(con.source_names[k] || k)).join(", ") : "";
-  // team -> where the consensus puts it, so our own table can carry the gap.
-  const theirs = {};
-  const spreads = {};
-  if (hasData) {
-    for (const r of con.comparison) {
-      theirs[r.team] = r.consensus_rank;
-      spreads[r.team] = r.spread;
-    }
-  }
-
-  /* A disagreement is only worth flagging when the sources agree with each
-     other. Being far from a team nobody can place says nothing. */
-  const flagged = (team, gap) =>
-    gap !== null && Math.abs(gap) >= 8 && (spreads[team] ?? 99) <= 8;
-
-  const left = `<div class="panel">
-    <header><h2>Power ranking</h2>
-      <span class="hint">by projected finish${hasData
-        ? ` · gap is where ${con.n_lists} published list${con.n_lists === 1 ? "" : "s"} put them`
-        : ""}</span></header>
-    <div class="table-scroll tall"><table class="slate">
-      <thead><tr><th>#</th><th>Team</th><th class="num">Rec</th>
-        <th class="num" title="Expected wins from 20,000 simulations of the rest of the schedule">Proj</th>
-        <th class="num" title="Points better than an average team on a neutral field">Rating</th>
-        <th class="num" title="How many places the published consensus differs — positive means we rate them higher">vs&nbsp;them</th></tr></thead>
-      <tbody>${data.teams.map((t) => {
-        const them = theirs[t.team];
-        const gap = them === undefined ? null : them - t.rank;
-        return `<tr class="${flagged(t.team, gap) ? "flag" : ""}">
-          <td class="num muted">${t.rank}</td>
-          <td class="who">${esc(t.team)} <span class="muted">${esc(t.name)}</span></td>
-          <td class="num muted">${t.record.wins ?? 0}-${t.record.losses ?? 0}</td>
-          <td class="num"><b>${num(t.exp_wins, 1)}</b></td>
-          <td class="num">${signed(t.power)}</td>
-          <td class="num">${gapChip(gap)}</td>
-        </tr>`;
-      }).join("")}</tbody></table></div>
-  </div>`;
-
-  const right = `<div class="panel">
-    <header><h2>Outside consensus</h2>
-      <span class="hint" title="${esc(sources)}">${hasData
-        ? `weeks ${con.weeks.join(" & ")} · ${con.n_lists} list${
-            con.n_lists === 1 ? "" : "s"}`
-        : "paste a published ranking to compare against"}</span></header>
-    ${hasData ? `<div class="table-scroll tall"><table class="slate">
-      <thead><tr><th>#</th><th>Team</th>
-        <th class="num" title="Mean rank across the published lists">Avg</th>
-        <th class="num" title="Best and worst rank any source gave them">Range</th>
-        <th class="num" title="How many places our ranking differs — positive means they rate them higher">vs&nbsp;us</th></tr></thead>
-      <tbody>${con.comparison.slice().sort((a, b) => a.consensus_rank - b.consensus_rank)
-        .map((r) => {
-          const gap = r.our_rank - r.consensus_rank;
-          return `<tr class="${flagged(r.team, -gap) ? "flag" : ""}">
-            <td class="num muted">${r.consensus_rank}</td>
-            <td class="who">${esc(r.team)} <span class="muted">${esc(r.name)}</span></td>
-            <td class="num">${r.mean_rank.toFixed(1)}</td>
-            <td class="num muted">${r.best}–${r.worst}</td>
-            <td class="num">${gapChip(gap)}</td>
-          </tr>`;
-        }).join("")}</tbody></table></div>`
-      : ""}
-  </div>`;
-
-  /* Below both, because it describes both. Inside the right-hand panel it made
-     that column taller than its twin and read as though the highlighting were
-     a property of the consensus table alone. */
-  const footnote = hasData ? `<p class="note rank-note">Mean gap
-    ${con.mean_abs_gap} places. Highlighted rows in either table are the ones
-    worth arguing about: eight or more places apart on a team the sources
-    themselves agree about (a range of eight or less). A team they cannot place
-    is not evidence either way.</p>` : "";
-
-  const importer = `<div class="panel" data-nofold>
-    <header><h2>Add a published ranking</h2>
-      <span class="hint">${hasData
-        ? `${con.n_lists} list${con.n_lists === 1 ? "" : "s"} loaded · ${sources}`
-        : "nothing loaded yet"}</span></header>
-    <div class="import-grid">
-      <textarea id="rank-text" rows="5" placeholder="Paste a published top 32 — &#10;1. Seattle Seahawks&#10;2. Philadelphia Eagles&#10;3. Detroit Lions&#10;…"></textarea>
-      <div class="import-side">
-        <div class="controls">
-          <select id="rank-source">${(con?.available_sources || [])
-            .map((s) => `<option value="${esc(s.key)}">${esc(s.name)}</option>`).join("")}</select>
-          <select id="rank-week">${[1, 2, 3, 4, 5].map((w) =>
-            `<option value="${w}">Week ${w}</option>`).join("")}</select>
-          <button class="btn primary" id="rank-save">Import</button>
-        </div>
-        <div id="rank-msg" class="muted import-msg"></div>
-        <p class="note">Copy the list straight off the page; numbering, full team
-          names and trailing commentary are all fine. It is stored only if it
-          parses to a complete 1&ndash;32 — a half-read list would quietly drag
-          the average toward whichever teams happened to come through.</p>
-      </div>
-    </div>
-  </div>`;
-
-  return `${importer}<div class="grid-2 rank-split" data-nofold>${left}${right}</div>${footnote}`;
-}
-
 async function renderTeams() {
   const root = $("#view");
   const data = await api("/api/teams");
-  const con = await api("/api/rankings?weeks=1,2").catch(() => null);
   // Season win totals only exist when the odds feed publishes futures. Two
   // columns of dashes read as a bug, so drop them when nothing has one.
   const hasWinTotals = data.teams.some(
@@ -1037,11 +932,17 @@ async function renderTeams() {
     <td>${pct(t.sb_prob, 1)}</td>
   </tr>`).join("");
 
-  root.innerHTML = `${comparisonBlock(con, data)}
+  /* One table. There used to be three: a power ranking, a season-projection
+     table in the same order with the same rating in it, and a published
+     consensus to compare against. The first two were the same table twice --
+     a ranking *is* a projection, or it is just the standings retyped -- and
+     the consensus was a second opinion nobody asked this app for. */
+  root.innerHTML = `
   <div class="panel">
-    <header><h2>Season projections</h2>
-      <span class="hint">same order as the ranking above · ▲▼ is how far a team
-        sits from where its record alone would put it</span></header>
+    <header><h2>Power rankings</h2>
+      <span class="hint">sorted by projected wins from 20,000 simulations of the
+        rest of the schedule · ▲▼ is how far a team sits from where its record
+        alone would put it</span></header>
     <div class="table-scroll"><table>
       <thead><tr><th>Team</th><th>Record</th>
         <th title="Expected wins from 20,000 simulations of the remaining schedule — what the ranking is sorted by">Proj. wins</th>
@@ -1427,7 +1328,12 @@ async function renderPerformance() {
    I don't". */
 async function renderSettings() {
   const root = $("#view");
-  const data = await api("/api/settings");
+  // The backup list is not worth failing the whole page over: settings still
+  // need editing on a machine where the directory cannot be read.
+  const [data, backups] = await Promise.all([
+    api("/api/settings"),
+    api("/api/settings/backups").catch(() => ({ backups: [], directory: "", keep: 10 })),
+  ]);
 
   const field = (s) => {
     const id = `set-${s.key}`;
@@ -1478,7 +1384,59 @@ async function renderSettings() {
       effect on the next refresh — no restart. A secret is never sent back to this
       page, so an empty box means "leave it alone", not "clear it"; to remove a key,
       type a space and save.</p>
+  </div>
+
+  <div class="panel">
+    <header><h2>Backup</h2>
+      <span class="hint">your picks, results and settings exist in one file —
+        this makes a copy of it</span></header>
+    <div class="controls">
+      <button class="btn" id="make-backup">Back up now</button>
+      <span id="backup-result" class="muted"></span>
+    </div>
+    <div id="backup-list" class="backup-list"></div>
+    <p class="note">The app already writes a copy before it changes the database's
+      shape, but that is one file per version and a second upgrade from the same
+      version overwrites it — a safety net for the app's own changes, not a backup
+      you should rely on. This one you asked for. The newest
+      ${backups.keep ?? 10} are kept; older ones are removed so a growing
+      database cannot quietly fill the disk. Copies live in
+      <code>${esc(backups.directory || "")}</code> — that folder is inside the data
+      directory, so copy it somewhere else if you want it to survive losing this
+      machine.</p>
   </div>`;
+
+  const paintBackups = (rows) => {
+    const list = $("#backup-list");
+    if (!list) return;
+    list.innerHTML = (rows || []).length
+      ? rows.map((b) => `<div class="backup-row">
+          <span class="nm">${esc(b.name)}</span>
+          <span class="muted">${ago(b.made_at)}</span>
+          <span class="muted num">${(b.bytes / 1048576).toFixed(1)} MB</span>
+        </div>`).join("")
+      : '<div class="empty">No backups yet.</div>';
+  };
+  paintBackups(backups.backups);
+
+  $("#make-backup")?.addEventListener("click", async (ev) => {
+    const out = $("#backup-result");
+    out.textContent = "copying…";
+    out.className = "muted";
+    ev.target.disabled = true;
+    try {
+      const r = await api("/api/settings/backup", { method: "POST" });
+      out.textContent = `Saved ${r.name} (${(r.bytes / 1048576).toFixed(1)} MB)`
+        + (r.pruned ? ` · removed ${r.pruned} older` : "");
+      out.className = "pos";
+      paintBackups(r.backups);
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
 
   $("#test-odds")?.addEventListener("click", async (ev) => {
     const key = $("#set-ODDS_API_KEY").value.trim();

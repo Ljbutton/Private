@@ -785,6 +785,16 @@ td.team { font-weight: 600; }
   .panel.board { padding: 14px 10px 10px; }
 }
 
+/* -------------------------------------------------------------- backups */
+.backup-list { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+.backup-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+  align-items: center; padding: 6px 0; font-size: 12.5px;
+  border-top: 1px solid var(--grid);
+}
+.backup-row .nm { font-variant-numeric: tabular-nums; }
+.backup-row .num { font-variant-numeric: tabular-nums; }
+
 /* ---------------------------------------------------------------- picks */
 /* Two contests, one screen. They are answered together -- the same slate
    decides both -- and they used to be three stacked panels with a table of

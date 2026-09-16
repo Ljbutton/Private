@@ -17,11 +17,18 @@ Two rules worth keeping:
 
 from __future__ import annotations
 
+import contextlib
+import datetime as dt
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import get_config, reset_config
+
+
+class SettingsError(RuntimeError):
+    """Something the user can act on, phrased for the Settings page."""
+
 
 
 @dataclass(frozen=True)
@@ -269,3 +276,98 @@ def validate_odds_key(key: str) -> dict:
     detail = f" {remaining} of {int(remaining or 0) + int(used or 0)} requests left this month." \
         if remaining else ""
     return {"ok": True, "message": f"Key works.{detail}"}
+
+
+# --------------------------------------------------------------- backups
+# A copy you asked for, kept beside the database it came from.
+#
+# The migration path already writes one before it changes the schema, but that
+# is one file per source version and a second migration from the same version
+# overwrites it. It is a safety net for the app's own upgrades, not a backup
+# you can rely on -- and the thing worth protecting here is a season of picks
+# that exists in exactly one place.
+BACKUP_DIR = "backups"
+BACKUP_KEEP = 10
+
+
+def backup_dir() -> Path:
+    return Path(get_config().data_dir) / BACKUP_DIR
+
+
+def list_backups() -> list[dict]:
+    """Newest first."""
+    directory = backup_dir()
+    if not directory.exists():
+        return []
+    rows = []
+    for path in directory.glob("*.db"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rows.append({
+            "name": path.name,
+            "path": str(path),
+            "bytes": stat.st_size,
+            "made_at": dt.datetime.fromtimestamp(
+                stat.st_mtime, tz=dt.timezone.utc).isoformat(),
+        })
+    return sorted(rows, key=lambda r: r["made_at"], reverse=True)
+
+
+def make_backup() -> dict:
+    """Copy the database, with its settings beside it.
+
+    Uses sqlite's own backup API rather than copying the file. A live database
+    has a write-ahead log, and copying the .db on its own can capture a moment
+    that never existed -- committed pages without the log that explains them.
+    The API takes a consistent snapshot of a database that is still being
+    written to, which is exactly the situation here.
+    """
+    import shutil
+    import sqlite3
+
+    source = Path(get_config().db_path)
+    if not source.exists():
+        raise SettingsError("There is no database to back up yet.")
+
+    directory = backup_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = directory / f"nflpicker-{stamp}.db"
+
+    with sqlite3.connect(str(source)) as src, sqlite3.connect(str(target)) as dst:
+        src.backup(dst)
+
+    # The settings ride along: an API key and an assistant endpoint are part of
+    # "restore this machine", and they are not in the database.
+    env = env_path()
+    if env.exists():
+        with contextlib.suppress(OSError):
+            shutil.copy2(env, target.with_suffix(".env"))
+
+    pruned = _prune_backups()
+    made = target.stat().st_size
+    return {
+        "ok": True,
+        "name": target.name,
+        "path": str(target),
+        "bytes": made,
+        "pruned": pruned,
+        "backups": list_backups(),
+    }
+
+
+def _prune_backups() -> int:
+    """Keep the newest few. Unbounded backups of a growing database fill a disk
+    quietly, and the oldest copy of a season is the least useful one."""
+    existing = list_backups()
+    removed = 0
+    for row in existing[BACKUP_KEEP:]:
+        path = Path(row["path"])
+        with contextlib.suppress(OSError):
+            path.unlink()
+            removed += 1
+        with contextlib.suppress(OSError):
+            path.with_suffix(".env").unlink()
+    return removed

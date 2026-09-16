@@ -1380,7 +1380,7 @@ class Pipeline:
                 "home_win_prob": prediction.home_win_prob, "kickoff": g["kickoff"],
             })
         used = db.get_meta("survivor_used_teams", []) or []
-        survivor = plan_survivor(season, week, by_week, used_teams=used, horizon=6).to_dict()
+        survivor = plan_survivor(season, week, by_week, used_teams=used).to_dict()
 
         comparisons = self._prediction_market_view(week, upcoming, consensus, by_game)
 
@@ -1412,6 +1412,7 @@ class Pipeline:
         )
         records: dict[str, list[float]] = {}
         played: dict[str, int] = {}
+        win_loss: dict[str, list[int]] = {}
         for g in (x for x in completed if int(x["season"]) == int(season)):
             hs, as_ = g.get("home_score"), g.get("away_score")
             if hs is None or as_ is None:
@@ -1421,10 +1422,18 @@ class Pipeline:
                 bucket[0] += float(scored)
                 bucket[1] += float(allowed)
                 played[team] = played.get(team, 0) + 1
+            # Ties count as neither, which is what a 0.5 win rate would say
+            # anyway and keeps the arithmetic honest about a rare case.
+            if float(hs) != float(as_):
+                winner, loser = ((g["home"], g["away"]) if float(hs) > float(as_)
+                                 else (g["away"], g["home"]))
+                win_loss.setdefault(winner, [0, 0])[0] += 1
+                win_loss.setdefault(loser, [0, 0])[1] += 1
         return build_power_ratings(
             elo.as_points(), efficiencies, week=week, elo_raw=elo.snapshot(),
             records={t: (pf, pa) for t, (pf, pa) in records.items()},
             games_played=played,
+            win_loss={t: (w, losses) for t, (w, losses) in win_loss.items()},
         )
 
     def backfill_predictions(self, season: int | None = None, *, overwrite: bool = False) -> int:

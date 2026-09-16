@@ -141,3 +141,51 @@ def test_efficiency_no_longer_moves_the_margin_rating():
     assert with_epa.get("KC").power == pytest.approx(plain.get("KC").power, abs=1e-9)
     # ...but it still reaches the totals projection.
     assert with_epa.get("KC").off_rating != plain.get("KC").off_rating
+
+
+# ------------------------------------------- winning, as distinct from outscoring
+
+def test_the_team_that_won_the_games_ranks_above_the_one_that_did_not():
+    """Identical Elo and identical points for and against; different records.
+
+    Point differential is the better forecast, which is why it carries more
+    weight -- but a table where the 3-7 team sits above the 7-3 team on equal
+    everything else is a table nobody believes.
+    """
+    from nflpicker.ratings.power import build_power_ratings
+
+    r = build_power_ratings(
+        {"KC": 4.0, "BUF": 4.0}, week=10,
+        records={"KC": (250.0, 200.0), "BUF": (250.0, 200.0)},
+        games_played={"KC": 10, "BUF": 10},
+        win_loss={"KC": (7, 3), "BUF": (3, 7)},
+    )
+    assert r.get("KC").power > r.get("BUF").power
+
+
+def test_the_record_term_is_faded_in_by_games_played():
+    """One upset in week 1 must not reorder the league."""
+    from nflpicker.ratings.power import build_power_ratings
+
+    early = build_power_ratings(
+        {"KC": 0.0, "BUF": 0.0}, week=1,
+        records={"KC": (30.0, 10.0), "BUF": (10.0, 30.0)},
+        games_played={"KC": 1, "BUF": 1},
+        win_loss={"KC": (1, 0), "BUF": (0, 1)},
+    )
+    late = build_power_ratings(
+        {"KC": 0.0, "BUF": 0.0}, week=10,
+        records={"KC": (300.0, 100.0), "BUF": (100.0, 300.0)},
+        games_played={"KC": 10, "BUF": 10},
+        win_loss={"KC": (10, 0), "BUF": (0, 10)},
+    )
+    assert abs(early.get("KC").power) < abs(late.get("KC").power)
+
+
+def test_an_unknown_record_changes_nothing():
+    """Omitting win_loss must leave the rating exactly as it was."""
+    from nflpicker.ratings.power import build_power_ratings
+
+    args = dict(week=10, records={"KC": (250.0, 200.0)}, games_played={"KC": 10})
+    assert (build_power_ratings({"KC": 4.0}, **args).get("KC").power
+            == build_power_ratings({"KC": 4.0}, **args, win_loss={}).get("KC").power)

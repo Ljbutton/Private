@@ -320,48 +320,6 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         return {"contest": contest, "season": season, "entries": rows}
 
     # ------------------------------------------------------------- news
-    # ------------------------------------------------- outside rankings
-    @app.get("/api/rankings")
-    def external_rankings(season: int | None = None, weeks: str = "1,2") -> dict:
-        """The consensus of published rankings, and how ours compares."""
-        from . import rankings as rankings_module
-
-        season = season or pipeline.season()
-        wanted = tuple(int(w) for w in weeks.split(",") if w.strip().isdigit())
-        result = rankings_module.compare(
-            season, team_rank_order(season), wanted or (1, 2))
-        result["available_sources"] = [
-            {"key": src.key, "name": src.name, "note": src.note}
-            for src in rankings_module.SOURCES
-        ]
-        return result
-
-    @app.post("/api/rankings/import")
-    def import_ranking(payload: dict) -> dict:
-        """Paste a published top-32 in. Refused unless it is a complete 1-32."""
-        from . import rankings as rankings_module
-
-        season = int(payload.get("season") or pipeline.season())
-        week = int(payload.get("week") or 1)
-        source = str(payload.get("source") or "user").strip().lower()
-        try:
-            ranks = rankings_module.parse_text(str(payload.get("text") or ""))
-        except rankings_module.RankingError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        stored = rankings_module.store(source, season, week, ranks)
-        return {"stored": stored, "source": source, "season": season, "week": week}
-
-    @app.delete("/api/rankings/{source}")
-    def delete_ranking(source: str, season: int | None = None,
-                       week: int | None = None) -> dict:
-        season = season or pipeline.season()
-        sql = "DELETE FROM external_rankings WHERE source = ? AND season = ?"
-        params: list[Any] = [source, season]
-        if week:
-            sql += " AND week = ?"
-            params.append(week)
-        db.execute(sql, params)
-        return {"deleted": source}
 
     # --------------------------------------------------------- settings
     @app.get("/api/settings")
@@ -384,6 +342,26 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # afresh on every cycle, so a changed cadence or a new key is picked up
         # on the next pass without a restart.
         return settings_module.save(values)
+
+    @app.get("/api/settings/backups")
+    def list_backups() -> dict:
+        from . import settings as settings_module
+
+        return {"backups": settings_module.list_backups(),
+                "directory": str(settings_module.backup_dir()),
+                "keep": settings_module.BACKUP_KEEP}
+
+    @app.post("/api/settings/backup")
+    def make_backup() -> dict:
+        from . import settings as settings_module
+
+        try:
+            return settings_module.make_backup()
+        except settings_module.SettingsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not write the backup: {exc}") from exc
 
     @app.post("/api/settings/test-odds-key")
     def test_odds_key(payload: dict) -> dict:

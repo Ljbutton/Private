@@ -187,3 +187,83 @@ def test_both_entry_points_agree_on_where_data_lives(tmp_path, monkeypatch):
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
     assert entry.default_data_dir() == config._default_data_dir()
+
+
+# ------------------------------------------------------------- backups
+
+def test_a_backup_is_a_real_snapshot_not_a_file_copy(temp_env):
+    """A live database has a write-ahead log.
+
+    Copying the .db alone can capture a moment that never existed -- committed
+    pages without the log that explains them -- so this goes through sqlite's
+    backup API, which snapshots a database that is still being written to.
+    """
+    import sqlite3
+
+    from nflpicker import db, settings
+
+    db.connect()
+    db.set_meta("marker", {"kept": True})
+
+    result = settings.make_backup()
+    assert result["ok"] and result["bytes"] > 0
+
+    copy = sqlite3.connect(result["path"])
+    row = copy.execute("SELECT value FROM meta WHERE key = 'marker'").fetchone()
+    copy.close()
+    assert row is not None and "kept" in row[0]
+
+
+def test_settings_ride_along_with_the_database(temp_env):
+    """An API key and an assistant endpoint are part of restoring a machine,
+    and they do not live in the database."""
+    from pathlib import Path
+
+    from nflpicker import db, settings
+
+    db.connect()
+    settings.env_path().write_text("ODDS_API_KEY=abc123\n", encoding="utf-8")
+
+    result = settings.make_backup()
+    beside = Path(result["path"]).with_suffix(".env")
+    assert beside.exists()
+    assert "abc123" in beside.read_text(encoding="utf-8")
+
+
+def test_old_backups_are_pruned_so_the_disk_cannot_fill(temp_env, monkeypatch):
+    from nflpicker import db, settings
+
+    db.connect()
+    monkeypatch.setattr(settings, "BACKUP_KEEP", 3)
+
+    import os
+    import time
+
+    # Backup names carry a second-resolution timestamp, so six calls in a tight
+    # loop would reuse one name. Plant distinct older files, then back up.
+    directory = settings.backup_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    for i in range(6):
+        planted = directory / f"nflpicker-2026010{i}-000000.db"
+        planted.write_bytes(b"x")
+        os.utime(planted, (time.time() - 1000 + i, time.time() - 1000 + i))
+
+    assert len(settings.list_backups()) == 6
+    settings.make_backup()
+    remaining = settings.list_backups()
+    assert len(remaining) == 3, [r["name"] for r in remaining]
+    # The newest survive, including the one just made.
+    assert remaining[0]["name"].startswith("nflpicker-2026")
+
+
+def test_backing_up_nothing_is_an_error_you_can_read(temp_env, monkeypatch):
+    from nflpicker import settings
+
+    # db_path is a frozen dataclass property, so point the whole app at an
+    # empty directory instead of trying to reach inside the config.
+    monkeypatch.setenv("NFLPICKER_DATA_DIR", str(temp_env / "empty"))
+    from nflpicker import config
+
+    config.reset_config()
+    with pytest.raises(settings.SettingsError, match="no database"):
+        settings.make_backup()
