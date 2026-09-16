@@ -54,12 +54,36 @@ class OddsApiSource:
             "provider_remaining": self.remaining,
         }
 
-    def _record_call(self) -> None:
+    @staticmethod
+    def _cost_of(response: Any, params: dict[str, Any]) -> int:
+        """How many credits that request actually spent.
+
+        The Odds API bills one credit per market *per region*, not one per
+        HTTP request. Counting requests made the budget guard undercount by
+        exactly the number of markets -- three, here -- so a 500-request
+        budget was spent after 167 polls while the app still believed it had
+        two thirds left.
+
+        `x-requests-last` is the provider's own figure for the call that just
+        happened, so it is preferred; the multiplication is the fallback.
+        """
+        header = getattr(response, "headers", {}) or {}
+        reported = header.get("x-requests-last")
+        if reported is not None:
+            try:
+                return max(1, int(float(reported)))
+            except (TypeError, ValueError):
+                pass
+        markets = len([m for m in str(params.get("markets", "")).split(",") if m])
+        regions = len([r for r in str(params.get("regions", "")).split(",") if r])
+        return max(1, markets * regions)
+
+    def _record_call(self, cost: int = 1) -> None:
         from .. import db
 
         counters = db.get_meta("odds_api_usage", {}) or {}
         period = self._period()
-        counters[period] = int(counters.get(period, 0)) + 1
+        counters[period] = int(counters.get(period, 0)) + max(1, int(cost))
         # Keep only the last few months so meta does not grow forever.
         for key in sorted(counters)[:-6]:
             counters.pop(key, None)
@@ -93,7 +117,7 @@ class OddsApiSource:
         try:
             with httpx.Client(timeout=cfg.http_timeout, headers={"User-Agent": cfg.user_agent}) as c:
                 resp = c.get(f"{BASE}/sports/{SPORT}/odds", params=params)
-            self._record_call()
+            self._record_call(self._cost_of(resp, params))
             remaining = resp.headers.get("x-requests-remaining")
             if remaining is not None:
                 try:

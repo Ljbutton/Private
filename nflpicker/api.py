@@ -490,13 +490,24 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
 
 # --------------------------------------------------------------- helpers
 
+# Feeds the app is built to run without. Their absence changes what is on
+# screen -- a column reads "-" -- but nothing downstream is wrong, so the
+# status strip marks them amber rather than red. A red dot should mean
+# something is broken, and if everything optional reports red on a normal day
+# the strip stops being read at all.
+OPTIONAL_SOURCES = {"prediction_markets", "news", "weather"}
+
+
 def source_health() -> list[dict]:
     """Latest outcome per source, for the status strip in the UI."""
-    return db.query(
+    rows = db.query(
         "SELECT f.source, f.ok, f.ts, f.detail, f.duration_ms FROM fetch_log f "
         "JOIN (SELECT source, MAX(id) AS m FROM fetch_log GROUP BY source) x "
         "ON x.m = f.id ORDER BY f.source"
     )
+    for row in rows:
+        row["optional"] = row["source"] in OPTIONAL_SOURCES
+    return rows
 
 
 def latest_pick(contest: str, season: int, week: int) -> Any:

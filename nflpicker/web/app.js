@@ -120,7 +120,13 @@ function renderStatus(meta) {
     meta.demo ? "synthetic" : "live"));
   rows.push(conn(meta.model.trained ? "ok" : "warn", "Model", esc(meta.model.version)));
   for (const s of meta.sources || []) {
-    rows.push(conn(s.ok ? "ok" : "bad", s.source, ago(s.ts), s.detail || ""));
+    // Amber, not red, for a feed the app is built to run without: the Market
+    // column reads "–" and everything else is unaffected. Red should mean
+    // something is broken. The reason is on the tooltip either way.
+    const cls = s.ok ? "ok" : (s.optional ? "warn" : "bad");
+    const note = s.ok ? (s.detail || "")
+      : `${s.optional ? "Optional feed unavailable" : "Failed"} — ${s.detail || "no detail"}`;
+    rows.push(conn(cls, s.source, ago(s.ts), note));
   }
   if (meta.odds_usage) {
     const u = meta.odds_usage;
@@ -1238,6 +1244,20 @@ async function renderNews() {
         triage signal for what to look at, never a substitute for the market's own reaction.</p>
     </div>
   </div>`;
+
+  // The marks are drawn by the same teamMark() the board uses, and that draws
+  // the logo at opacity 0 until it has actually loaded -- so without this the
+  // badges rendered as bare abbreviations here while working on Home.
+  wireLogos(root);
+
+  // And the buttons had no listener at all: the picker was drawn, styled and
+  // given a selected state that nothing could ever change.
+  $$(".team-pick[data-team]", root).forEach((button) => {
+    button.addEventListener("click", () => {
+      state.injuryTeam = button.dataset.team;
+      renderNews();
+    });
+  });
 }
 
 // ------------------------------------------------------------- performance

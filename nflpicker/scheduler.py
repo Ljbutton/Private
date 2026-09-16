@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
@@ -90,14 +91,27 @@ class Scheduler:
         except Exception:  # noqa: BLE001
             return cfg.refresh_odds
 
-    @staticmethod
-    def _awaiting_opening_lines() -> bool:
-        """Are there upcoming games the market has not priced for us yet?"""
+    # Books post lines about a week out. Beyond that a game having no price is
+    # the normal state of the world, not a market we are waiting on.
+    OPENING_LINE_HORIZON_DAYS = 8
+
+    @classmethod
+    def _awaiting_opening_lines(cls) -> bool:
+        """Are there *imminent* games the market has not priced for us yet?
+
+        The horizon is the whole point. Without it this asked whether any game
+        in the rest of the season lacked a line, which in week 2 is most of the
+        season and stays true until December -- so the budget-aware interval
+        was bypassed essentially always and odds polled at the floor for
+        months. The exception exists to catch an opening number the week it
+        appears, and a game sixteen weeks out has no opening number to miss.
+        """
+        horizon = (now() + dt.timedelta(days=cls.OPENING_LINE_HORIZON_DAYS)).isoformat()
         row = db.query_one(
             "SELECT COUNT(*) AS n FROM games g WHERE g.status = 'scheduled' "
-            "AND g.kickoff IS NOT NULL AND g.kickoff > ? "
+            "AND g.kickoff IS NOT NULL AND g.kickoff > ? AND g.kickoff <= ? "
             "AND NOT EXISTS (SELECT 1 FROM consensus c WHERE c.game_id = g.game_id)",
-            (now_iso(),),
+            (now_iso(), horizon),
         )
         return bool(row and row["n"])
 
