@@ -1165,28 +1165,7 @@ class Pipeline:
             (season,),
         )
         elo = run_elo(completed)
-        epa_meta = db.get_meta("team_epa", {}) or {}
-        efficiencies = {}
-        if epa_meta.get("season") == season and epa_meta.get("rows"):
-            efficiencies = from_epa_frame(pd.DataFrame(epa_meta["rows"]))
-        # Points for and against **this season**, which is what the Pythagorean
-        # term is built from. The `completed` list deliberately spans every
-        # season so Elo carries over, and summing a team's whole career here
-        # would make the term a constant that never moves.
-        records: dict[str, list[float]] = {}
-        for g in (x for x in completed if int(x["season"]) == int(season)):
-            hs, as_ = g.get("home_score"), g.get("away_score")
-            if hs is None or as_ is None:
-                continue
-            for team, scored, allowed in ((g["home"], hs, as_), (g["away"], as_, hs)):
-                bucket = records.setdefault(team, [0.0, 0.0])
-                bucket[0] += float(scored)
-                bucket[1] += float(allowed)
-
-        power = build_power_ratings(
-            elo.as_points(), efficiencies, week=week, elo_raw=elo.snapshot(),
-            records={t: (pf, pa) for t, (pf, pa) in records.items()},
-        )
+        power = self.power_from(completed, elo, season, week=week)
 
         stamp = now_iso()
         db.executemany(
@@ -1255,21 +1234,42 @@ class Pipeline:
         )
         by_game = {p.game_id: p for p in predictions}
         upcoming = {g["game_id"] for g in games if g["status"] != "final"}
+
+        # A finished game keeps whatever the model said while it was still
+        # upcoming -- overwriting that with today's view would be grading the
+        # model against a number it never had to commit to.
+        #
+        # But a database first filled in mid-season has no such row for the
+        # weeks already played, and the board then shows the sportsbook's pick
+        # in the model's column for every one of them. Those games are in this
+        # same frame and already predicted, so they are stored here rather than
+        # left blank -- tagged `:backfill`, the same marker the explicit
+        # backfill uses, because a number produced after the fact is in-sample
+        # and the performance page has to be able to say so.
+        seen = {
+            r["game_id"] for r in db.query(
+                "SELECT DISTINCT p.game_id FROM predictions p JOIN games g"
+                " ON g.game_id = p.game_id WHERE g.season = ?", (season,))
+        }
+        rows = []
+        for p in predictions:
+            live_row = p.game_id in upcoming
+            if not live_row and p.game_id in seen:
+                continue
+            rows.append([
+                p.game_id, stamp,
+                self.predictor.version if live_row else f"{self.predictor.version}:backfill",
+                p.model_margin, p.model_total, p.fair_margin, p.fair_total,
+                p.home_win_prob, p.market_spread, p.market_total, p.spread_edge,
+                p.total_edge, json.dumps(p.components),
+            ])
         db.executemany(
             "INSERT OR REPLACE INTO predictions"
             "(game_id, captured_at, model_version, margin_home, total_points,"
             " fair_margin, fair_total, home_win_prob,"
             " market_spread, market_total, spread_edge, total_edge, components) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                [
-                    p.game_id, stamp, self.predictor.version, p.model_margin, p.model_total,
-                    p.fair_margin, p.fair_total,
-                    p.home_win_prob, p.market_spread, p.market_total, p.spread_edge,
-                    p.total_edge, json.dumps(p.components),
-                ]
-                for p in predictions if p.game_id in upcoming
-            ],
+            rows,
         )
 
         # ---- season simulation
@@ -1396,6 +1396,37 @@ class Pipeline:
                 (contest, season, week, stamp, json.dumps(payload)),
             )
 
+    def power_from(self, completed: list[dict], elo, season: int, *, week: int):
+        """Power ratings from a set of finished games.
+
+        Shared by the model stage and the backfill so the two cannot drift.
+        Records are this season's points for and against, which is what the
+        Pythagorean term is built from -- `completed` deliberately spans every
+        season so Elo carries over, and summing a team's whole career here
+        would make the term a constant that never moves.
+        """
+        epa_meta = db.get_meta("team_epa", {}) or {}
+        efficiencies = (
+            from_epa_frame(pd.DataFrame(epa_meta["rows"]))
+            if epa_meta.get("season") == season and epa_meta.get("rows") else {}
+        )
+        records: dict[str, list[float]] = {}
+        played: dict[str, int] = {}
+        for g in (x for x in completed if int(x["season"]) == int(season)):
+            hs, as_ = g.get("home_score"), g.get("away_score")
+            if hs is None or as_ is None:
+                continue
+            for team, scored, allowed in ((g["home"], hs, as_), (g["away"], as_, hs)):
+                bucket = records.setdefault(team, [0.0, 0.0])
+                bucket[0] += float(scored)
+                bucket[1] += float(allowed)
+                played[team] = played.get(team, 0) + 1
+        return build_power_ratings(
+            elo.as_points(), efficiencies, week=week, elo_raw=elo.snapshot(),
+            records={t: (pf, pa) for t, (pf, pa) in records.items()},
+            games_played=played,
+        )
+
     def backfill_predictions(self, season: int | None = None, *, overwrite: bool = False) -> int:
         """Store what the model would have said about games already played.
 
@@ -1414,11 +1445,22 @@ class Pipeline:
         if not history:
             return 0
         consensus = self.latest_consensus()
+        # The same enrichment the model stage does. Without the forecast every
+        # game looks like a still, temperate one, and the total model -- which
+        # has little else to separate two games -- returns near enough the same
+        # number for all of them.
+        weather = self.load_weather()
         for g in history:
             row = consensus.get(g["game_id"])
             if row:
                 g["spread_home"] = row["spread_home"]
                 g["market_total"] = row["total_points"]
+            forecast = weather.get(g["game_id"])
+            if forecast and g.get("temp") is None:
+                g["temp"] = forecast["temp_f"]
+                g["wind"] = forecast["wind_mph"]
+            if forecast and forecast["indoor"]:
+                g["roof"] = forecast["roof"] or g.get("roof")
 
         existing = {
             r["game_id"] for r in db.query("SELECT DISTINCT game_id FROM predictions")
@@ -1436,9 +1478,15 @@ class Pipeline:
             return 0
 
         # Ratings as of now are fine for the power component here; the ML and
-        # market components are the ones that carry the per-game timing.
-        elo = run_elo([g for g in history if g["status"] == "final"])
-        power = build_power_ratings(elo.as_points(), week=18, elo_raw=elo.snapshot())
+        # market components are the ones that carry the per-game timing. Built
+        # the same way the model stage builds them -- this used to skip the
+        # efficiency and record inputs, and while the power *margin* is
+        # Elo-driven and survives that, the *total* is one offence against the
+        # other defence: with nothing to separate them every team came out
+        # league-average and every game projected the same 45 points.
+        finals = [g for g in history if g["status"] == "final"]
+        elo = run_elo(finals)
+        power = self.power_from(finals, elo, season, week=18)
         predictions = self.predictor.predict_frame(frame, power)
         version = f"{self.predictor.version}:backfill"
         stamp = now_iso()

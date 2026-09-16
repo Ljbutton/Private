@@ -576,10 +576,25 @@ td.team { font-weight: 600; }
    across a row. Four ticks in a column is agreement; a split is a game worth
    opening. */
 .panel.board { padding: 16px 18px 14px; }
+/* Wide enough that a laptop gets three across and every card can carry the
+   team's actual name and four full columns. A fourth column would fit more
+   games on the screen, but only by cutting each of them down to abbreviations,
+   and the board is for reading the five opinions side by side.
+
+   348px is derived, not chosen: the longest name in the league (Commanders,
+   91px) plus the mark, the pick dot, the score and the gaps needs 169px of
+   team column; the team column is 1.1/2.1 of the card's content box, which is
+   the card less its 20px of side padding. Auto-fill adds a column only when
+   every card still clears that, so the name never has to give way at any
+   window width. */
 .gboard {
   display: grid; gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 262px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 348px), 1fr));
 }
+/* Each card sizes its own contents: whether the name fits is a question about
+   this card's width, which the page width does not answer -- the same viewport
+   gives a different card width at every column count. */
+.gcard { container-type: inline-size; }
 
 .gcard {
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -622,14 +637,13 @@ td.team { font-weight: 600; }
 .gcard:hover .gopen { opacity: 1; }
 .gcard:hover .gopen { opacity: 1; }
 
-/* The team takes one half; the three sources share the other. */
 /* The team keeps its half; the four sources share the other. */
 /* The source columns take a floor only as wide as a spread and a percentage
    actually need. Anything more and they eat the team column at the narrowest
    card in a given column count, which is where the abbreviation clips. */
 .gcard-grid {
   display: grid; align-items: center;
-  grid-template-columns: minmax(112px, 1fr) repeat(4, minmax(34px, 0.25fr));
+  grid-template-columns: minmax(112px, 1.1fr) repeat(4, minmax(34px, 0.25fr));
 }
 /* One word each, and never wrapped: four columns in half a card leaves no room
    for "Sportsbook" on two lines, and a heading that wraps into its neighbour
@@ -669,9 +683,17 @@ td.team { font-weight: 600; }
   display: flex; align-items: baseline; gap: 5px; min-width: 0;
   font-size: 12.5px; font-weight: 660; letter-spacing: -0.01em;
 }
-/* The nickname is what gives way when the row is tight, because it has a
-   fallback on hover. A clipped "HOM" beside an intact name is just wrong. */
+/* The name reads as the team; the abbreviation is the fallback for a card too
+   narrow to hold it. Swapped outright rather than ellipsised, because a
+   clipped "Buccaneer" says less than "TB" does. Both are in the markup so the
+   choice is the container's to make at layout time. */
 .tname > .nick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tname > .abbr { display: none; }
+/* Measured against the card's content box, so 325 here is a 345px card. */
+@container (max-width: 325px) {
+  .tname > .nick { display: none; }
+  .tname > .abbr { display: inline; }
+}
 
 .tscore { margin-left: auto; font-size: 14px; font-weight: 700;
   font-variant-numeric: tabular-nums; }
@@ -699,8 +721,12 @@ td.team { font-weight: 600; }
   padding: 7px 1px; min-width: 0;
   border-left: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
 }
-.gline { font-size: 9px; line-height: 1.55; color: var(--text-muted);
-  font-variant-numeric: tabular-nums; }
+/* Reserves its line even when empty. The market column quotes no spread, and
+   a zero-height line box there made that cell shorter than the other three --
+   which `align-items: center` then centred, floating its percentage a row
+   above the ones it is there to be compared against. */
+.gline { font-size: 9px; line-height: 1.55; min-height: 1.55em;
+  color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .gprob { display: inline-flex; align-items: center; gap: 2px;
   font-size: 12px; line-height: 1.45; font-weight: 600;
   font-variant-numeric: tabular-nums; }

@@ -593,7 +593,8 @@ async function renderHome() {
             mineHere ? (yourVerdict === " miss" ? "✕" : "✓") : ""}</button>
         ${teamMark(abbr)}
         <span class="tname" title="${esc(t.full_name || abbr)}${
-          side === "home" ? " (home)" : " (away)"}"><span class="nick">${esc(abbr)}</span></span>
+          side === "home" ? " (home)" : " (away)"}"><span class="nick">${
+            esc(t.name || abbr)}</span><span class="abbr">${esc(abbr)}</span></span>
         <span class="tscore">${score === null || score === undefined ? "" : score}</span>
       </div>
       ${cell("blind", blindHome, blindLineHome, side)}

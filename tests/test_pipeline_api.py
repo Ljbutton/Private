@@ -77,6 +77,55 @@ def test_backfill_is_labelled_so_in_sample_results_can_be_flagged(booted):
     assert versions
 
 
+def test_played_games_get_the_model_s_own_number_not_the_book_s(booted):
+    """A database first filled mid-season still shows a model pick per game.
+
+    The board falls back to the sportsbook's number for any finished game with
+    no prediction row, so leaving the already-played weeks empty put the book's
+    opinion in the model's column for most of the season.
+    """
+    season = booted.season()
+    played = {r["game_id"] for r in db.query(
+        "SELECT game_id FROM games WHERE status = 'final' AND season = ?", (season,))}
+    predicted = {r["game_id"] for r in db.query(
+        "SELECT DISTINCT p.game_id FROM predictions p JOIN games g"
+        " ON g.game_id = p.game_id WHERE g.season = ?", (season,))}
+    assert played and played <= predicted
+
+
+def test_a_played_game_keeps_the_number_the_model_committed_to(booted):
+    """Recomputing must not rewrite history with today's view of an old game."""
+    season = booted.season()
+    row = db.query_one(
+        "SELECT p.game_id, p.margin_home, p.model_version FROM predictions p"
+        " JOIN games g ON g.game_id = p.game_id"
+        " WHERE g.season = ? AND g.status = 'final'"
+        " AND p.model_version NOT LIKE '%backfill' LIMIT 1", (season,))
+    if row is None:  # every finished game predates this install
+        return
+    booted.recompute()
+    after = db.query_one(
+        "SELECT margin_home, model_version FROM predictions WHERE game_id = ?",
+        (row["game_id"],))
+    assert after["margin_home"] == row["margin_home"]
+    assert after["model_version"] == row["model_version"]
+
+
+def test_backfilled_totals_are_not_all_the_league_average(booted):
+    """The power total is one offence against the other defence.
+
+    Built without the efficiency and record inputs every team comes out
+    league-average, and every game projects the identical total -- which is a
+    silent failure, since the number still looks like a projection.
+    """
+    booted.backfill_predictions(overwrite=True)
+    totals = [r["total_points"] for r in db.query(
+        "SELECT total_points FROM predictions"
+        " WHERE model_version LIKE '%backfill' AND total_points IS NOT NULL")]
+    assert len(totals) > 10
+    assert len(set(round(t, 3) for t in totals)) > 1
+
+
 # ----------------------------------------------------------------------- api
 
 @pytest.fixture()

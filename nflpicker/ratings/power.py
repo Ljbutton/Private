@@ -139,15 +139,25 @@ def build_power_ratings(
     week: int = 1,
     elo_raw: dict[str, float] | None = None,
     records: dict[str, tuple[float, float]] | None = None,
+    games_played: dict[str, int] | None = None,
 ) -> PowerRatings:
     """One rating per team: shrunk Elo plus Pythagorean expectation.
 
     `records` is team -> (points for, points against) so far this season. Left
     out, the rating is Elo alone, which is still better than the EPA blend this
     replaced — see the module docstring.
+
+    `games_played` is team -> games behind those points. It is what turns a
+    record into a scoring *rate*, so it is what the offence and defence ratings
+    need when there is no EPA to build them from. Without it the count can only
+    be estimated from the points themselves, which is fine for fading the
+    Pythagorean term in but useless for a rate: dividing points by a games
+    count derived from those same points gives every team the identical
+    scoring profile.
     """
     efficiencies = efficiencies or {}
     records = records or {}
+    games_played = games_played or {}
     eff_points = shrink(efficiencies)
     # Kept only so the value is still reported; it no longer moves `power`.
     weight = efficiency_weight_for_week(week) if eff_points else 0.0
@@ -160,13 +170,20 @@ def build_power_ratings(
         power = ELO_SHRINK * elo_pts
         pyth = None
         points_for, points_against = records.get(abbr, (0.0, 0.0))
-        played = (points_for + points_against) / 45.0    # ~ a game's worth of points
+        counted = float(games_played.get(abbr) or 0.0)
+        played = counted or (points_for + points_against) / 45.0
         pyth = pythagorean_expectation(points_for, points_against)
         if pyth is not None:
             # Faded in by games played: one blowout should not rank a team.
             trust = clamp(played / PYTHAGOREAN_FULL_AT, 0.0, 1.0)
             power += PYTHAGOREAN_POINTS * (pyth - 0.5) * trust
 
+        # Expected points scored and allowed. EPA is the better estimate and is
+        # used where it exists; where it does not, the team's own scoring record
+        # stands in. Falling straight back to the league average instead meant
+        # every team was identical and every game projected exactly 45 points --
+        # a constant wearing the shape of a projection, which is worse than a
+        # rough number because nothing about it looks wrong.
         eff = efficiencies.get(abbr)
         off_rating = LEAGUE_POINTS_PER_GAME
         def_rating = LEAGUE_POINTS_PER_GAME
@@ -174,6 +191,12 @@ def build_power_ratings(
             sample = eff.plays / (eff.plays + 250.0) if eff.plays else 0.0
             off_rating += eff.off_points * sample
             def_rating += eff.def_points * sample
+        elif counted > 0:
+            # Faded in by games played, on the same schedule as the Pythagorean
+            # term: one high-scoring afternoon is not an offence.
+            trust = clamp(counted / PYTHAGOREAN_FULL_AT, 0.0, 1.0)
+            off_rating += (points_for / counted - LEAGUE_POINTS_PER_GAME) * trust
+            def_rating += (points_against / counted - LEAGUE_POINTS_PER_GAME) * trust
 
         teams[abbr] = TeamPower(
             team=abbr,
