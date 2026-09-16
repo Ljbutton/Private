@@ -368,11 +368,11 @@ async function renderScoreboard() {
     <header><h2>Season ${d.season}</h2>
       <span class="hint">Straight-up winners · "same games" scores only games every
         picker had a view on</span></header>
-    <table class="slate totals">
+    <div class="table-scroll"><table class="slate totals">
       <thead><tr><th>Picker</th><th class="num">All their picks</th>
         <th class="num">Same games</th></tr></thead>
       <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
-    </table>
+    </table></div>
   </div>
 
   <div class="panel">
@@ -401,7 +401,7 @@ async function renderScoreboard() {
 
   <div class="panel">
     <header><h2>Week by week</h2><span class="hint">correct out of picked</span></header>
-    <table class="slate">
+    <div class="table-scroll"><table class="slate">
       <thead><tr><th>Week</th>${pickers.map((p) =>
         `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
       <tbody>${d.weeks.map((w) => `<tr>
@@ -591,8 +591,9 @@ async function renderHome() {
           aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
             mineHere ? (yourVerdict === " miss" ? "✕" : "✓") : ""}</button>
         ${teamMark(abbr)}
-        <span class="tname">${esc(t.name || abbr)}<span class="tsub">${
-          esc(t.location || "")} ${side === "away" ? "" : "· home"}</span></span>
+        <span class="tname" title="${esc(t.full_name || abbr)}"><span class="nick">${
+          esc(t.name || abbr)}</span>${
+          side === "home" ? '<span class="thome">home</span>' : ""}</span>
         <span class="tscore">${score === null || score === undefined ? "" : score}</span>
       </div>
       ${cell("blind", blindHome, blindLineHome, side)}

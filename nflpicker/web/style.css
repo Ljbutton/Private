@@ -577,13 +577,13 @@ td.team { font-weight: 600; }
    opening. */
 .panel.board { padding: 16px 18px 14px; }
 .gboard {
-  display: grid; gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 540px), 1fr));
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 375px), 1fr));
 }
 
 .gcard {
   border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface-sunken); padding: 9px 13px 7px; cursor: pointer;
+  background: var(--surface-sunken); padding: 7px 11px 5px; cursor: pointer;
   transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease),
               transform var(--fast) var(--ease);
 }
@@ -594,8 +594,8 @@ td.team { font-weight: 600; }
 .gcard:focus-visible { outline: none; box-shadow: var(--ring); }
 
 .gcard-top {
-  display: flex; align-items: center; gap: 8px; font-size: 11px;
-  color: var(--text-muted); padding-bottom: 7px;
+  display: flex; align-items: center; gap: 8px; font-size: 10.5px;
+  color: var(--text-muted); padding-bottom: 5px;
 }
 .gstate {
   font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
@@ -620,7 +620,7 @@ td.team { font-weight: 600; }
 /* The team keeps its half; the four sources share the other. */
 .gcard-grid, .gcard-foot {
   display: grid; align-items: center;
-  grid-template-columns: minmax(0, 1fr) repeat(4, minmax(52px, 0.25fr));
+  grid-template-columns: minmax(150px, 1fr) repeat(4, minmax(47px, 0.25fr));
 }
 /* One word each, and never wrapped: four columns in half a card leaves no room
    for "Sportsbook" on two lines, and a heading that wraps into its neighbour
@@ -628,7 +628,7 @@ td.team { font-weight: 600; }
    subheading and on each column's tooltip. */
 .ghead {
   font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--text-muted); text-align: center; padding: 0 3px 6px;
+  color: var(--text-muted); text-align: center; padding: 0 3px 4px;
   border-bottom: 1px solid var(--grid); white-space: nowrap; cursor: help;
 }
 .ghead.you { cursor: default; }
@@ -646,16 +646,26 @@ td.team { font-weight: 600; }
 .ghead.you { text-align: left; padding-left: 1px; }
 
 
-.gteam { display: flex; align-items: center; gap: 9px; min-width: 0;
-  padding: 7px 10px 7px 0; }
+.gteam { display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 5px 8px 5px 0; }
 /* The team that lost recedes rather than disappears: the losing side's numbers
    are still the point of a graded card. */
 .gteam.beaten { opacity: .55; }
-.tname { display: flex; flex-direction: column; min-width: 0; line-height: 1.2;
-  font-size: 13.5px; font-weight: 660; letter-spacing: -0.01em; }
-.tsub { font-size: 10px; font-weight: 500; color: var(--text-muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tscore { margin-left: auto; font-size: 16px; font-weight: 700;
+/* One line, not two. The city under the nickname repeated what the mark and
+   the nickname already say, and cost a line on every team -- thirty-two lines
+   of board. The full name is on hover. */
+.tname {
+  display: flex; align-items: baseline; gap: 5px; min-width: 0;
+  font-size: 12.5px; font-weight: 660; letter-spacing: -0.01em;
+}
+/* The nickname is what gives way when the row is tight, because it has a
+   fallback on hover. A clipped "HOM" beside an intact name is just wrong. */
+.tname > .nick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thome {
+  font-size: 8.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-muted); flex: none;
+}
+.tscore { margin-left: auto; font-size: 15px; font-weight: 700;
   font-variant-numeric: tabular-nums; }
 
 /* The team's mark. The abbreviation in the team's own colour is drawn first
@@ -663,7 +673,7 @@ td.team { font-weight: 600; }
    machine with no network degrades to a readable badge rather than to a
    broken-image icon. */
 .tbadge {
-  position: relative; flex: none; width: 27px; height: 27px; border-radius: 50%;
+  position: relative; flex: none; width: 23px; height: 23px; border-radius: 50%;
   display: grid; place-items: center; background: var(--team);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
@@ -677,12 +687,12 @@ td.team { font-weight: 600; }
 
 .gcell {
   display: flex; flex-direction: column; align-items: center; gap: 0;
-  padding: 7px 4px; min-width: 0;
+  padding: 5px 3px; min-width: 0;
   border-left: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
 }
-.gline { font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.gprob { display: inline-flex; align-items: center; gap: 3px;
-  font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gline { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.gprob { display: inline-flex; align-items: center; gap: 2px;
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .gcell.ours .gprob { color: var(--series-1); }
 .gcell.book .gprob { color: var(--text-secondary); }
 .gcell.pmkt .gprob { color: var(--text-muted); }
@@ -690,7 +700,7 @@ td.team { font-weight: 600; }
 /* The tick says which side a source picked. It stays the source's own colour
    until the game is decided -- green here means "was right", the same as it
    does everywhere else in the app, and a pick is not a result. */
-.tick { width: 12px; height: 12px; fill: currentColor; }
+.tick { width: 10px; height: 10px; fill: currentColor; flex: none; }
 /* A borrowed number is still the book's, and the blank spread beside it is
    deliberate rather than missing: copying the book's number into the model's
    column would read as the model agreeing on it. */
@@ -700,8 +710,8 @@ td.team { font-weight: 600; }
 .gcell.miss .gprob { color: var(--critical); }
 
 .gcard-foot {
-  border-top: 1px solid var(--grid); margin-top: 3px; padding-top: 6px;
-  font-size: 11px; color: var(--text-secondary);
+  border-top: 1px solid var(--grid); margin-top: 2px; padding-top: 4px;
+  font-size: 10.5px; color: var(--text-secondary);
 }
 .flabel { font-size: 9px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .08em; color: var(--text-muted); }
@@ -714,7 +724,7 @@ td.team { font-weight: 600; }
    for. */
 @media (max-width: 640px) {
   .gcard-grid, .gcard-foot {
-    grid-template-columns: minmax(0, 1fr) repeat(4, minmax(40px, 0.25fr));
+    grid-template-columns: minmax(118px, 1fr) repeat(4, minmax(40px, 0.25fr));
   }
   .gcard { padding: 8px 10px 6px; }
   .tname { font-size: 12.5px; }
