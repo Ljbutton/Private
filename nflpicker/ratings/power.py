@@ -110,12 +110,20 @@ HEAD_TO_HEAD_POINTS = 1.0
 # it is available because a power rating built from results alone cannot know
 # that the team which went 4-2 did it with a backup.
 #
-# One honest caveat about the estimator. The coefficient above was fitted on
-# the feature pipeline's EWMA of quarterback EPA; the runtime reads the
-# registry's volume-shrunk *mean* of the same quantity. Both shrink toward the
-# league average by dropbacks and both sit on the same scale, so the
-# coefficient transfers in shape -- but an EWMA leans harder on recent games,
-# so the runtime term will move a little more slowly than the measurement did.
+# On the estimator, which is the part that is easy to get wrong. This number
+# is a price per unit of quarterback value, so it is only meaningful next to
+# the specific estimator it was measured against: the feature pipeline's EWMA
+# of quarterback EPA, shrunk toward the league average by dropback volume and
+# regressed across the season boundary. Pipeline.quarterback_registry -- what
+# the runtime actually reads -- now computes that same quantity, and a test
+# pins the two together. It briefly did not: it took a plain arithmetic mean,
+# which weights a rookie year the same as last Sunday, and charging a measured
+# price for an unmeasured quantity is how a term that tested as an improvement
+# ships as a regression.
+#
+# The registry is empty until the first stats refresh populates
+# team_game_stats, and the term is simply absent until then -- the rating
+# degrades to what it was before rather than to something wrong.
 QB_VALUE_POINTS = 10.0
 
 

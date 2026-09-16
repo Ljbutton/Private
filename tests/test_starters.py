@@ -1,5 +1,7 @@
 """The announced starter reaches the model, and is not charged twice."""
 
+import pytest
+
 from nflpicker.availability import build_adjustments
 from nflpicker.starters import apply_to_games, expected_starters
 
@@ -140,3 +142,71 @@ def test_an_empty_run_reports_nothing_rather_than_dividing_by_zero():
     assert out["n"] == 0
     assert out["last_week_rate"] is None
     assert out["announced_rate_when_disagreed"] is None
+
+
+def test_registry_matches_the_estimator_the_coefficient_was_fitted_on(pipeline, temp_env):
+    """The power rating charges QB_VALUE_POINTS per unit of quarterback value.
+
+    That coefficient was measured against the feature builder's ``qb_value``.
+    If the registry the runtime reads computes a different number from the same
+    games, the rating charges the measured price for an unmeasured quantity --
+    which is how a term that tested as an improvement ships as a regression.
+    So: same games in, same value out.
+    """
+    import json
+
+    from nflpicker import db
+    from nflpicker.ml.features import _QbTracker
+
+    games = [
+        (2025, 1, 0.22, 38.0),
+        (2025, 2, -0.10, 31.0),
+        (2025, 3, 0.41, 44.0),
+        (2025, 4, 0.05, 29.0),
+    ]
+    for season, week, epa, dropbacks in games:
+        db.execute(
+            "INSERT OR REPLACE INTO team_game_stats"
+            "(game_id, team, season, week, opponent, payload, updated_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (f"g{week}", "KC", season, week, "DEN",
+             json.dumps({"qb_name": "Pat Mahomes", "qb_epa": epa,
+                         "qb_dropbacks": dropbacks}),
+             "2025-09-01T00:00:00Z"),
+        )
+
+    tracker = _QbTracker()
+    for _, _, epa, dropbacks in games:
+        tracker.update("mahomes", epa, dropbacks)
+
+    values, depth = pipeline.quarterback_registry(2025)
+    assert depth["KC"][0] in values
+    assert values[depth["KC"][0]] == pytest.approx(tracker.value("mahomes"), abs=1e-12)
+
+
+def test_registry_regresses_a_passer_across_the_season_boundary(pipeline, temp_env):
+    """Last year's form is informative, not carried whole -- the same rule the
+    feature builder applies between seasons."""
+    import json
+
+    from nflpicker import db
+    from nflpicker.ml.features import SEASON_REGRESSION
+
+    for season, week in ((2024, 10), (2025, 1)):
+        db.execute(
+            "INSERT OR REPLACE INTO team_game_stats"
+            "(game_id, team, season, week, opponent, payload, updated_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (f"g{season}", "BUF", season, week, "MIA",
+             json.dumps({"qb_name": "Josh Allen", "qb_epa": 0.30,
+                         "qb_dropbacks": 4000.0}),
+             "2025-09-01T00:00:00Z"),
+        )
+
+    values, depth = pipeline.quarterback_registry(2025)
+    key = depth["BUF"][0]
+    # Week 1 of 2025 is the passer's only post-regression observation, so the
+    # carried value shows through: a plain mean would sit above this.
+    carried = 0.30 * (1.0 - SEASON_REGRESSION)
+    assert values[key] < 0.30
+    assert values[key] > carried * 0.9

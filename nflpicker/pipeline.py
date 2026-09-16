@@ -1006,18 +1006,39 @@ class Pipeline:
 
         Keyed by the normalised name rather than a player id because the injury
         feed and the play-by-play share no identifier.
+
+        The estimator is deliberately the same one the feature builder uses for
+        ``qb_value``: an exponentially weighted mean of per-game EPA, shrunk
+        toward zero by dropback volume, regressed across a season boundary.
+        It has to be. ``QB_VALUE_POINTS`` in the power rating was fitted
+        against that quantity, and a coefficient measured on one estimator
+        does not transfer to a different one — a plain arithmetic mean, which
+        this used to take, weights a passer's rookie year the same as last
+        Sunday and lands on a systematically different number, so the points
+        the rating charged per unit were not the points that were measured.
         """
         from .availability import normalize_name
+        from .ml.features import FORM_ALPHA, QB_PRIOR_DROPBACKS, SEASON_REGRESSION
 
         rows = db.query(
             "SELECT team, season, week, payload FROM team_game_stats "
             "WHERE season >= ? ORDER BY season, week",
             (season - 1,),
         )
-        totals: dict[str, list[float]] = {}
+        form: dict[str, float] = {}
         volume: dict[str, float] = {}
         depth: dict[str, list[str]] = {}
+        current: int | None = None
         for row in rows:
+            # Between seasons a passer's form is pulled back toward the league
+            # mean, because rosters and schemes turn over enough that last
+            # year's number is informative but not carried whole.
+            year = int(row["season"])
+            if current is not None and year != current:
+                for key in form:
+                    form[key] *= 1.0 - SEASON_REGRESSION
+            current = year
+
             try:
                 stats = json.loads(row["payload"])
             except (TypeError, ValueError):
@@ -1027,7 +1048,11 @@ class Pipeline:
                 continue
             epa = stats.get("qb_epa")
             if epa is not None:
-                totals.setdefault(key, []).append(float(epa))
+                observed = float(epa)
+                previous = form.get(key)
+                form[key] = observed if previous is None else (
+                    FORM_ALPHA * observed + (1.0 - FORM_ALPHA) * previous
+                )
             volume[key] = volume.get(key, 0.0) + float(stats.get("qb_dropbacks") or 0)
             seen = depth.setdefault(row["team"], [])
             if key in seen:
@@ -1035,9 +1060,10 @@ class Pipeline:
             seen.insert(0, key)   # most recent starter first
 
         values: dict[str, float] = {}
-        for key, samples in totals.items():
-            weight = volume.get(key, 0.0) / (volume.get(key, 0.0) + 250.0)
-            values[key] = (sum(samples) / len(samples)) * weight
+        for key, value in form.items():
+            seen_dropbacks = volume.get(key, 0.0)
+            weight = seen_dropbacks / (seen_dropbacks + QB_PRIOR_DROPBACKS)
+            values[key] = value * weight
         return values, depth
 
     def qb_ids_by_name(self, season: int) -> dict[str, str]:
