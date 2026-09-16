@@ -203,22 +203,8 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
     @app.get("/api/teams")
     def teams() -> dict:
         season = pipeline.season()
-        ratings = {
-            r["team"]: r
-            for r in db.query(
-                "SELECT t.* FROM team_ratings t JOIN (SELECT team, MAX(captured_at) m "
-                "FROM team_ratings WHERE season = ? GROUP BY team) x "
-                "ON x.team = t.team AND x.m = t.captured_at", (season,)
-            )
-        }
-        projections = {
-            r["team"]: r
-            for r in db.query(
-                "SELECT p.* FROM season_projections p JOIN (SELECT team, MAX(captured_at) m "
-                "FROM season_projections WHERE season = ? GROUP BY team) x "
-                "ON x.team = p.team AND x.m = p.captured_at", (season,)
-            )
-        }
+        ratings = latest_team_rows(season, "team_ratings")
+        projections = latest_team_rows(season, "season_projections")
         rows = []
         for abbr, team in TEAMS.items():
             rating = ratings.get(abbr, {})
@@ -263,7 +249,8 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # carries both the rating and who is left to play. The rating breaks
         # ties, because two teams can project to the same win total off very
         # different strength.
-        order = {team: i for i, team in enumerate(team_rank_order(season), start=1)}
+        order = {team: i for i, team in enumerate(
+            team_rank_order(season, ratings, projections), start=1)}
         rows.sort(key=lambda r: order.get(r["team"], 99))
         for i, row in enumerate(rows, start=1):
             row["rank"] = i
@@ -621,26 +608,41 @@ def _is_notable_injury(status: str | None) -> bool:
                                                                 "injured"))
 
 
-def team_rank_order(season: int) -> list[str]:
+def latest_team_rows(season: int, table: str, columns: str = "*") -> dict[str, dict]:
+    """The most recent row per team from a captured_at-stamped table.
+
+    Four call sites had this same correlated-subquery join written out longhand,
+    which is how the Teams endpoint ended up fetching ratings and projections
+    twice per request — once for the payload and once to sort it.
+    """
+    if table not in {"team_ratings", "season_projections"}:
+        raise ValueError(f"not a team table: {table}")
+    return {
+        r["team"]: r
+        for r in db.query(
+            f"SELECT {columns} FROM {table} t JOIN (SELECT team, MAX(captured_at) m "  # noqa: S608
+            f"FROM {table} WHERE season = ? GROUP BY team) x "
+            f"ON x.team = t.team AND x.m = t.captured_at", (season,))
+    }
+
+
+def team_rank_order(season: int, ratings: dict | None = None,
+                    projections: dict | None = None) -> list[str]:
     """Our teams, best first — the one ordering the whole app calls "our rank".
 
     It exists because there were briefly two. The Teams page ranks by projected
     finish while the ranking comparison ranked by rating, so the "ours" column
     beside the consensus disagreed with the rank printed two panels away, and
-    nothing on either screen said why.
+    nothing on either screen said why. Callers that have already fetched the two
+    tables pass them in rather than paying for them again.
     """
-    ratings = {
-        r["team"]: r["power"] for r in db.query(
-            "SELECT t.team, t.power FROM team_ratings t JOIN (SELECT team, "
-            "MAX(captured_at) m FROM team_ratings WHERE season = ? GROUP BY team) x "
-            "ON x.team = t.team AND x.m = t.captured_at", (season,))
-    }
-    projections = {
-        r["team"]: r["exp_wins"] for r in db.query(
-            "SELECT p.team, p.exp_wins FROM season_projections p JOIN (SELECT team, "
-            "MAX(captured_at) m FROM season_projections WHERE season = ? GROUP BY team) x "
-            "ON x.team = p.team AND x.m = p.captured_at", (season,))
-    }
+    if ratings is None:
+        ratings = latest_team_rows(season, "team_ratings")
+    if projections is None:
+        projections = latest_team_rows(season, "season_projections")
+    ratings = {t: r["power"] if isinstance(r, dict) else r for t, r in ratings.items()}
+    projections = {t: p["exp_wins"] if isinstance(p, dict) else p
+                   for t, p in projections.items()}
     teams = sorted(set(ratings) | set(projections))
     # Projected wins first, rating as the tie-break: two teams can project to
     # the same total off very different strength.

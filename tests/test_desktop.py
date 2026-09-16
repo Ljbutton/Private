@@ -70,6 +70,10 @@ def test_a_resolvable_backend_means_the_native_window_is_used(monkeypatch):
 
     from nflpicker import desktop
 
+    # A display, so the headless guard below does not answer first: this test
+    # is about resolving the backend, not about whether one could be shown.
+    monkeypatch.setenv("DISPLAY", ":99")
+
     calls = []
     fake = types.ModuleType("webview.guilib")
     fake.initialize = lambda: calls.append("initialized")
@@ -86,6 +90,7 @@ def test_no_backend_falls_back_rather_than_crashing(monkeypatch):
 
     from nflpicker import desktop
 
+    monkeypatch.setenv("DISPLAY", ":99")
     fake = types.ModuleType("webview.guilib")
 
     def boom():
@@ -95,3 +100,42 @@ def test_no_backend_falls_back_rather_than_crashing(monkeypatch):
     monkeypatch.setitem(sys.modules, "webview.guilib", fake)
 
     assert desktop.available() is False
+
+
+def test_a_linux_box_with_no_display_never_starts_a_toolkit(monkeypatch):
+    """Resolving a backend *starts* one. Qt's initialize() builds a
+    QApplication, and with no display that is a C-level abort rather than an
+    exception -- nothing in Python can catch it and the process just dies. The
+    cheap question has to come first.
+    """
+    import sys as _sys
+    import types
+
+    from nflpicker import desktop
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    tripped = []
+    fake = types.ModuleType("webview.guilib")
+    fake.initialize = lambda: tripped.append("started a toolkit")
+    monkeypatch.setitem(_sys.modules, "webview.guilib", fake)
+
+    assert desktop.available() is False
+    assert tripped == []          # and it never asked
+
+
+def test_a_display_lets_the_check_proceed(monkeypatch):
+    import sys as _sys
+    import types
+
+    from nflpicker import desktop
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":99")
+    fake = types.ModuleType("webview.guilib")
+    fake.initialize = lambda: None
+    monkeypatch.setitem(_sys.modules, "webview.guilib", fake)
+
+    assert desktop.available() is True

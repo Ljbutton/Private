@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import socket
+import sys
 import threading
 import time
 from typing import Any
@@ -109,6 +111,16 @@ def available() -> bool:
     to avoid. ``import_module`` resolves the submodule itself and is unaffected
     by the package attribute shadowing it.
     """
+    # On Linux, resolving a backend *starts a toolkit*: Qt's initialize() builds
+    # a QApplication, and with no display that is a C-level abort, not an
+    # exception -- the `except` below cannot catch it and the process simply
+    # dies. Ask the cheap question first. Windows and macOS always have a window
+    # server when there is a user, so the check is Linux-only.
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return False
+
     try:
         from importlib import import_module
 

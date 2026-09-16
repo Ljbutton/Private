@@ -220,14 +220,19 @@ def picks_for(season: int, week: int | None = None) -> dict[str, dict[str, str]]
     return out
 
 
-def weekly(season: int) -> list[WeekRow]:
-    """One row per week, scored against finished games."""
+def weekly(season: int, picks: dict | None = None) -> list[WeekRow]:
+    """One row per week, scored against finished games.
+
+    `picks` is the output of picks_for(). It is threaded through rather than
+    recomputed because report() needs the same map three times, and building it
+    walks every prediction, consensus and market price in the season.
+    """
     games = db.query(
         "SELECT * FROM games WHERE season = ? AND status = 'final' ORDER BY week", (season,))
     if not games:
         return []
 
-    by_pick = picks_for(season)
+    by_pick = picks if picks is not None else picks_for(season)
     rows: dict[int, WeekRow] = {}
 
     for game in games:
@@ -283,7 +288,7 @@ def season_totals(rows: list[WeekRow]) -> dict:
     }
 
 
-def by_team(season: int) -> list[dict]:
+def by_team(season: int, picks: dict | None = None) -> list[dict]:
     """Per team, how often each picker called that team's games correctly.
 
     "That team's games" means any game it played, not games where the picker
@@ -296,7 +301,7 @@ def by_team(season: int) -> list[dict]:
     if not games:
         return []
 
-    by_pick = picks_for(season)
+    by_pick = picks if picks is not None else picks_for(season)
     tallies: dict[str, dict[str, Tally]] = {}
 
     for game in games:
@@ -338,13 +343,13 @@ def by_team(season: int) -> list[dict]:
 # broken fetch, and every one of these has a different answer -- one is a
 # missing key, one is a limit of what can ever be bought, one is just that you
 # have not picked anything yet.
-def coverage(season: int) -> dict[str, dict]:
+def coverage(season: int, picks: dict | None = None) -> dict[str, dict]:
     """For each source, how many of the season's finished games it had a view
     on, and — when that is none — why not."""
     finals = db.query(
         "SELECT game_id FROM games WHERE season = ? AND status = 'final'", (season,))
     total = len(finals)
-    picks = picks_for(season)
+    picks = picks if picks is not None else picks_for(season)
     counts = dict.fromkeys(PICKERS, 0)
     for game_id in (g["game_id"] for g in finals):
         for picker in PICKERS:
@@ -377,6 +382,15 @@ def coverage(season: int) -> dict[str, dict]:
     }
 
 
+def _no_clv() -> dict:
+    return {
+        "n": 0, "average": None, "beat_rate": None, "picks": [],
+        "note": "No pick has been recorded early enough for the line to move "
+                "afterwards. This fills in once you pick games before kickoff "
+                "and the app is running to watch the number.",
+    }
+
+
 def closing_line_value(season: int) -> dict:
     """Did the line move toward your picks after you made them?
 
@@ -391,8 +405,6 @@ def closing_line_value(season: int) -> dict:
     closed. You backed a home team at -3 and it closed -5; you have +2 points of
     value whether or not they covered.
     """
-    from .market.movement import consensus_series
-
     picks = db.query(
         "SELECT p.*, g.home, g.away, g.kickoff, g.status FROM user_picks p "
         "JOIN games g ON g.game_id = p.game_id "
@@ -400,9 +412,25 @@ def closing_line_value(season: int) -> dict:
         (season,),
     )
 
+    if not picks:
+        return _no_clv()
+
+    # Every line for every picked game, in one query rather than one per pick.
+    # The per-pick version was fine at a dozen picks and quadratic-feeling at a
+    # season of them, for a page that also builds the whole scoreboard.
+    ids = tuple({p["game_id"] for p in picks})
+    placeholders = ",".join("?" for _ in ids)
+    series_by_game: dict[str, list[dict]] = {}
+    for row in db.query(
+        f"SELECT game_id, captured_at, spread_home AS value FROM consensus "  # noqa: S608
+        f"WHERE game_id IN ({placeholders}) AND spread_home IS NOT NULL "
+        f"ORDER BY captured_at", ids,
+    ):
+        series_by_game.setdefault(row["game_id"], []).append(row)
+
     rows: list[dict] = []
     for pick in picks:
-        series = consensus_series(pick["game_id"], "spread")
+        series = series_by_game.get(pick["game_id"], [])
         if len(series) < 2:
             continue                      # no movement observed: nothing to say
         taken_at = pick["updated_at"]
@@ -430,12 +458,7 @@ def closing_line_value(season: int) -> dict:
         })
 
     if not rows:
-        return {
-            "n": 0, "average": None, "beat_rate": None, "picks": [],
-            "note": "No pick has been recorded early enough for the line to "
-                    "move afterwards. This fills in once you pick games before "
-                    "kickoff and the app is running to watch the number.",
-        }
+        return _no_clv()
     values = [r["clv"] for r in rows]
     beat = sum(1 for v in values if v > 0)
     return {
@@ -449,7 +472,10 @@ def closing_line_value(season: int) -> dict:
 
 
 def report(season: int) -> dict:
-    rows = weekly(season)
+    # Built once and shared. Each of the three consumers below used to rebuild
+    # it, so the scoreboard ran the same dozen queries three times over.
+    picks = picks_for(season)
+    rows = weekly(season, picks)
     return {
         "season": season,
         "labels": LABELS,
@@ -457,7 +483,7 @@ def report(season: int) -> dict:
         "pickers": list(PICKERS),
         "weeks": [r.to_dict() for r in rows],
         "totals": season_totals(rows),
-        "teams": by_team(season),
-        "coverage": coverage(season),
+        "teams": by_team(season, picks),
+        "coverage": coverage(season, picks),
         "clv": closing_line_value(season),
     }
