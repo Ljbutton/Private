@@ -172,5 +172,47 @@ def main() -> int:
     return run()
 
 
+def leave(code: int) -> None:
+    """Exit now, instead of waiting on fetches nobody is going to read.
+
+    The window is shut and the server is stopped, so by this point the process
+    has nothing left to do -- and yet it would sit in the task list for as long
+    as the slowest outstanding HTTP request takes to give up, which with three
+    retries and a backoff is minutes on a bad network.
+
+    It looks like a stray daemon thread and it is not. ``asyncio.to_thread``,
+    which is how the startup refresh is kicked off, runs on the default
+    ThreadPoolExecutor, and ``concurrent.futures`` registers an atexit hook
+    that joins *every* worker thread regardless of its daemon flag. So the
+    interpreter blocks inside ``threading._shutdown`` -- after ``main`` has
+    already returned 0 -- until a news feed finishes timing out. Marking
+    threads daemon cannot reach it, and neither can ``server.stop()``, which
+    is what the comment there was trying to guarantee.
+
+    What the user sees is an app they closed still running, and a second
+    launch fighting the first one for the port and the database.
+
+    Leaving abruptly costs nothing here: every write is its own committed
+    transaction, so there is no buffered state to lose, and a fetch that gets
+    cut off is simply one that did not happen this time. The connections are
+    closed first so WAL checkpoints on the way out, and the streams are
+    flushed because ``os._exit`` skips the flushing that a normal exit does --
+    which would otherwise eat the log line saying why the app stopped.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    try:
+        from nflpicker import db
+
+        db.close_all()
+    except Exception:  # noqa: BLE001, S110
+        pass
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    leave(main())

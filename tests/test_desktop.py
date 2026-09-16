@@ -382,3 +382,68 @@ def test_a_real_stdout_is_left_alone(tmp_path):
     entry.ensure_stdio(tmp_path)
     assert _sys.stdout is before
     assert not (tmp_path / "logs").exists()
+
+
+def _entry():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "desktop_entry", "scripts/desktop_entry.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_process_leaves_without_waiting_for_background_fetches(monkeypatch):
+    """Closing the window has to end the process, not merely the window.
+
+    The startup refresh runs on ``asyncio.to_thread``, which means the default
+    ThreadPoolExecutor, and concurrent.futures joins every worker of that pool
+    at interpreter shutdown regardless of the daemon flag. So a normal return
+    from main() hangs until the slowest outstanding HTTP request gives up --
+    minutes, with retries and a backoff, on a bad network -- and the user is
+    left with an app they closed still holding the port and the database.
+
+    Neither marking threads daemon nor stopping the server can reach that,
+    so the entry point exits hard instead.
+    """
+    entry = _entry()
+    called: dict = {}
+    monkeypatch.setattr(entry.os, "_exit", lambda code: called.setdefault("code", code))
+
+    entry.leave(0)
+    assert called["code"] == 0, "leave() must go through os._exit, not a normal return"
+
+
+def test_leaving_closes_the_database_first(monkeypatch):
+    """os._exit runs no atexit handlers, so WAL is checkpointed on the way out
+    rather than left to the next launch to recover."""
+    entry = _entry()
+    order: list[str] = []
+    monkeypatch.setattr(entry.os, "_exit", lambda code: order.append("exit"))
+
+    from nflpicker import db
+
+    monkeypatch.setattr(db, "close_all", lambda: order.append("close"))
+    entry.leave(0)
+    assert order == ["close", "exit"]
+
+
+def test_leaving_survives_a_missing_stdout(monkeypatch):
+    """A windowed build can have sys.stdout set to None; flushing it must not
+    be the thing that stops the app from exiting."""
+    entry = _entry()
+    monkeypatch.setattr(entry.sys, "stdout", None)
+    monkeypatch.setattr(entry.sys, "stderr", None)
+    monkeypatch.setattr(entry.os, "_exit", lambda code: None)
+
+    entry.leave(3)   # must not raise
+
+
+def test_the_entry_point_uses_the_hard_exit(monkeypatch):
+    """Guards the actual bug: `raise SystemExit(main())` returns normally and
+    therefore hangs. The file has to call leave()."""
+    source = open("scripts/desktop_entry.py", encoding="utf-8").read()
+    tail = source.split('if __name__ == "__main__":')[-1]
+    assert "leave(main())" in tail
+    assert "SystemExit" not in tail
