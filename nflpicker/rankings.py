@@ -28,13 +28,14 @@ from .util import now_iso
 class Source:
     key: str
     name: str
-    url_template: str = ""      # {season} and {week} are substituted
     note: str = ""
 
 
-# Fetching these is best effort, and deliberately so: they are articles, not
-# APIs. The URL shapes change every season and the markup changes more often
-# than that, which is why nothing is stored unless it parses to a full 32.
+# These are labels for where a pasted list came from, not fetchers. Nothing here
+# goes and gets a ranking: they are articles rather than APIs, the markup changes
+# without notice, and a scraper that half-works would store eleven teams and drag
+# the consensus toward whichever ones it managed to read. If fetchers are ever
+# added they go through validate() like everything else.
 SOURCES: tuple[Source, ...] = (
     Source("espn", "ESPN", note="Panel of writers, voted."),
     Source("nfl", "NFL.com", note="Single writer."),
