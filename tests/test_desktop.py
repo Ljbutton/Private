@@ -447,3 +447,26 @@ def test_the_entry_point_uses_the_hard_exit(monkeypatch):
     tail = source.split('if __name__ == "__main__":')[-1]
     assert "leave(main())" in tail
     assert "SystemExit" not in tail
+
+
+def test_the_exit_path_survives_a_broken_import(monkeypatch):
+    """This is the last thing the process does. If the module it delegates to
+    cannot be imported -- which in a packaged build is the same class of
+    failure that made the app exit in the first place -- it still has to exit
+    with the code it was given, not a traceback about exiting."""
+    import builtins
+
+    entry = _entry()
+    real_import = builtins.__import__
+
+    def refuse(name, *args, **kwargs):
+        if name == "nflpicker.desktop":
+            raise ImportError("no such module")
+        return real_import(name, *args, **kwargs)
+
+    called: dict = {}
+    monkeypatch.setattr(builtins, "__import__", refuse)
+    monkeypatch.setattr(entry.os, "_exit", lambda code: called.setdefault("code", code))
+
+    entry.leave(1)
+    assert called["code"] == 1

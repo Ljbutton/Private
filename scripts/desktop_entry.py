@@ -174,9 +174,19 @@ def main() -> int:
 
 def leave(code: int) -> None:
     """Exit without waiting on background fetches. See nflpicker.desktop.leave,
-    which the CLI's serve and desktop commands use for the same reason."""
-    from nflpicker.desktop import leave as _leave
+    which the CLI's serve and desktop commands use for the same reason.
 
+    The import is guarded because this is the last thing the process does. A
+    packaged build that failed early enough to never import that module is
+    exactly the case where it might also fail to import it now -- and an
+    exception raised here would replace the exit code that says what went
+    wrong with a traceback about the exit itself.
+    """
+    try:
+        from nflpicker.desktop import leave as _leave
+    except Exception:  # noqa: BLE001
+        os._exit(code)
+        return
     _leave(code)
 
 
