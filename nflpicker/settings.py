@@ -100,8 +100,8 @@ SETTINGS: tuple[Setting, ...] = (
         label="Weekly credit ceiling",
         group="Data sources",
         placeholder="120",
-        help="A burst ceiling, not the bill. The monthly budget still governs "
-             "the total; this stops one busy week spending it.",
+        help="A burst ceiling, not the bill. 480 a month is 120 a week, so this "
+             "is the week's share — it stops one busy week spending the month.",
         needed_for="Nothing on its own — it caps how fast the monthly budget "
                    "can be spent.",
         default="120",
@@ -111,9 +111,12 @@ SETTINGS: tuple[Setting, ...] = (
         label="Daily credit ceiling",
         group="Data sources",
         placeholder="50",
-        help="At 480 a month the sustainable pace is about 16 credits a day, "
-             "so 50 leaves room for a busy Sunday while still stopping a stuck "
-             "refresh loop from spending the month in an afternoon.",
+        help="Each poll costs 3 credits (spread, total, moneyline), and 480 a "
+             "month works out at about 16 credits — five polls — a day. This is "
+             "deliberately above that so a Sunday can poll harder than a "
+             "Tuesday; it is a ceiling on a bad day, not a daily allowance. "
+             "Setting it near 16 would cap every day at the average and leave "
+             "the month unspent.",
         needed_for="Nothing on its own — it is the tightest of the three caps.",
         default="50",
     ),

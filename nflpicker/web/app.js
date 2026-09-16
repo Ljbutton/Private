@@ -94,8 +94,21 @@ function renderStatus(meta) {
   }
   if (meta.odds_usage) {
     const u = meta.odds_usage;
-    rows.push(conn(u.remaining_budget < 40 ? "warn" : "ok", "Odds API",
-      `${u.used}/${u.budget}`, "requests used this month"));
+    // All three windows, because which one is about to stop you is the only
+    // useful thing this line can say. The month is the bill; the day and week
+    // are burst ceilings. Whichever is tightest is the one worth warning on.
+    const tight = Math.min(
+      u.day_budget ? u.day_remaining / u.day_budget : 1,
+      u.week_budget ? u.week_remaining / u.week_budget : 1,
+      u.budget ? u.remaining_budget / u.budget : 1);
+    const perPoll = 3;   // h2h + spreads + totals, one credit each
+    rows.push(conn(tight < 0.15 ? "warn" : "ok", "Odds API",
+      `${u.used}/${u.budget}`,
+      `Today ${u.day_used ?? 0}/${u.day_budget ?? "–"} · `
+      + `week ${u.week_used ?? 0}/${u.week_budget ?? "–"} · `
+      + `month ${u.used}/${u.budget}. Each poll costs ${perPoll} credits `
+      + `(spread, total, moneyline), so the month allows about `
+      + `${Math.round(u.budget / 30 / perPoll)} polls a day.`));
   } else if (!meta.has_odds_key && !meta.demo) {
     rows.push(conn("warn", "Odds API", "no key", "single consensus line only"));
   }
