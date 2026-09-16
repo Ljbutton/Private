@@ -24,6 +24,7 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,7 +34,64 @@ from .config import get_config
 log = logging.getLogger("nflpicker.desktop")
 
 WINDOW_TITLE = "NFL Picker"
-STARTUP_TIMEOUT = 60.0
+
+# A onefile build unpacks its whole payload -- scipy, scikit-learn, pandas,
+# pyarrow -- to a temp directory before a line of Python runs, and on Windows
+# an antivirus scans every file as it lands. Importing them afterwards out of
+# that cold directory is slow again. 60s is a reasonable wait for a developer
+# running from source and much too short for a packaged first launch, where
+# overrunning it meant the app exited without ever showing anything.
+STARTUP_TIMEOUT = 240.0 if getattr(sys, "frozen", False) else 60.0
+
+
+def log_path() -> Path:
+    return Path(get_config().data_dir) / "logs" / "desktop.log"
+
+
+def _start_logging() -> Path | None:
+    """Send startup to a file, because a packaged build has nowhere else.
+
+    The Windows executable is built windowed (`console=False`) so that no
+    terminal sits behind the app. The cost is that every `print` and traceback
+    on the way to the window goes nowhere at all: a failure to start looked
+    exactly like double-clicking the icon and nothing happening, with no record
+    anywhere of what went wrong.
+    """
+    try:
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        return path
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def _alert(title: str, message: str) -> None:
+    """Say something the user can actually see, with no console and no window.
+
+    Best effort by design -- it must never be the reason a start-up failure
+    turns into a crash -- but on Windows it is the only channel there is.
+    """
+    with contextlib.suppress(Exception):
+        if sys.platform == "win32":
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, message, title, 0x40)
+            return
+        if sys.platform == "darwin":
+            import subprocess
+
+            subprocess.run(
+                ["osascript", "-e",
+                 f'display dialog {message!r} with title {title!r} buttons {{"OK"}}'],
+                check=False, timeout=30,
+            )
+            return
+    print(f"{title}: {message}", flush=True)
 
 
 def free_port() -> int:
@@ -141,17 +199,36 @@ def _open_in_browser(url: str, server: ServerThread) -> int:
     """Fallback when no native window is possible."""
     import webbrowser
 
-    print(
+    hint = (
         f"No webview runtime found, so the dashboard is at {url}\n"
         "  Windows: install the Microsoft Edge WebView2 runtime\n"
         "  Linux:   install PyGObject and WebKitGTK "
         "(python3-gi gir1.2-webkit2-4.1)\n"
-        "  macOS:   no extra install needed\n"
-        "Press Ctrl+C to stop.",
-        flush=True,
+        "  macOS:   no extra install needed"
     )
-    with contextlib.suppress(Exception):
-        webbrowser.open(url)
+    log.warning("no webview runtime; falling back to the browser at %s", url)
+    print(hint, flush=True)
+
+    opened = False
+    try:
+        opened = bool(webbrowser.open(url))
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not open a browser: %s", exc)
+
+    # Opening the browser used to be best-effort and silent, and then this
+    # loop slept for ever. With no console and no window that is a process
+    # running invisibly with nothing on screen -- indistinguishable from the
+    # app having failed to start, and only killable from Task Manager.
+    if not opened:
+        _alert(
+            WINDOW_TITLE,
+            "NFL Picker could not open a window, and could not open your "
+            f"browser either.\n\nOpen this address yourself:\n{url}\n\n"
+            "On Windows, installing the Microsoft Edge WebView2 runtime gives "
+            "you the proper app window.\n\nClosing this message quits.",
+        )
+        server.stop()
+        return 1
     try:
         while True:
             time.sleep(3600)
@@ -165,13 +242,22 @@ def _open_in_browser(url: str, server: ServerThread) -> int:
 def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
     """Start the server and open it in a native window."""
     get_config().ensure_dirs()
+    logfile = _start_logging()
+    log.info("starting NFL Picker (frozen=%s, timeout=%.0fs)",
+             getattr(sys, "frozen", False), STARTUP_TIMEOUT)
     server = ServerThread()
 
     print("starting NFL Picker…", flush=True)
     try:
         url = server.start()
     except Exception as exc:  # noqa: BLE001
+        log.exception("could not start the server")
         print(f"could not start the server: {exc}", flush=True)
+        _alert(
+            WINDOW_TITLE,
+            f"NFL Picker could not start.\n\n{exc}\n\n"
+            + (f"Details: {logfile}" if logfile else "No log file could be written."),
+        )
         return 1
 
     if not available():
@@ -188,7 +274,7 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
     except Exception as exc:  # noqa: BLE001
         # A backend can resolve and still fail to open a window (no display,
         # missing runtime). The app must stay usable rather than exit.
-        log.warning("native window failed: %s", exc)
+        log.exception("native window failed")
         print(f"Could not open a native window ({exc}).", flush=True)
         return _open_in_browser(url, server)
     finally:

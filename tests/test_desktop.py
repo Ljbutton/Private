@@ -139,3 +139,102 @@ def test_a_display_lets_the_check_proceed(monkeypatch):
     monkeypatch.setitem(_sys.modules, "webview.guilib", fake)
 
     assert desktop.available() is True
+
+
+# ------------------------------------------------- failures you can see
+
+def test_startup_is_written_to_a_log_file(tmp_path, monkeypatch):
+    """The packaged Windows build is windowed, so there is no console at all.
+
+    Every print and traceback on the way to the window goes nowhere, which made
+    a failure to start look exactly like double-clicking the icon and nothing
+    happening -- with no record anywhere of why.
+    """
+    import logging
+
+    from nflpicker import desktop
+
+    monkeypatch.setattr(desktop, "log_path", lambda: tmp_path / "logs" / "desktop.log")
+    path = desktop._start_logging()
+    try:
+        assert path is not None and path.exists()
+        logging.getLogger("nflpicker.desktop").warning("something went wrong")
+        assert "something went wrong" in path.read_text(encoding="utf-8")
+    finally:
+        for h in list(logging.getLogger().handlers):
+            if isinstance(h, logging.FileHandler):
+                logging.getLogger().removeHandler(h)
+                h.close()
+
+
+def test_a_frozen_build_gets_longer_to_start(monkeypatch):
+    """A onefile build unpacks a quarter of a gigabyte before Python runs, and
+    an antivirus scans all of it. The source-tree timeout is far too short."""
+    import importlib
+    import sys as _sys
+
+    from nflpicker import desktop
+
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    reloaded = importlib.reload(desktop)
+    try:
+        assert reloaded.STARTUP_TIMEOUT > 60.0
+    finally:
+        monkeypatch.undo()
+        importlib.reload(desktop)
+
+
+def test_a_browser_that_will_not_open_is_reported_not_slept_through(monkeypatch):
+    """This used to suppress the failure and then sleep for an hour at a time.
+
+    With no console and no window that is a process running invisibly with
+    nothing on screen -- indistinguishable from a crash, and only killable from
+    Task Manager.
+    """
+    import webbrowser
+
+    from nflpicker import desktop
+
+    monkeypatch.setattr(webbrowser, "open", lambda _url: False)
+    monkeypatch.setattr(desktop.time, "sleep", _never_sleep)
+
+    seen = []
+    monkeypatch.setattr(desktop, "_alert", lambda title, msg: seen.append(msg))
+
+    class _Server:
+        stopped = False
+
+        def stop(self):
+            type(self).stopped = True
+
+    server = _Server()
+    assert desktop._open_in_browser("http://127.0.0.1:9/", server) == 1
+    assert _Server.stopped
+    assert seen and "http://127.0.0.1:9/" in seen[0]
+
+
+def test_a_server_that_will_not_start_says_so(monkeypatch):
+    from nflpicker import desktop
+
+    monkeypatch.setattr(desktop, "_start_logging", lambda: None)
+
+    class _Server:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("server did not start within 240s")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(desktop, "ServerThread", _Server)
+    seen = []
+    monkeypatch.setattr(desktop, "_alert", lambda title, msg: seen.append(msg))
+
+    assert desktop.run() == 1
+    assert seen and "did not start" in seen[0]
+
+
+def _never_sleep(_seconds):
+    raise AssertionError("slept instead of reporting the failure")
