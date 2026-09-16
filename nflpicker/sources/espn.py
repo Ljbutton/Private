@@ -271,6 +271,8 @@ class EspnSource:
                         "position": _dig(athlete, "position", "abbreviation"),
                         "status": item.get("status") or _dig(item, "type", "description"),
                         "detail": (item.get("longComment") or item.get("shortComment") or "")[:400],
+                        "injury": _injury_label(item),
+                        "return_date": iso(_dig(item, "details", "returnDate")) or None,
                         "updated_at": iso(item.get("date")),
                     }
                 )
@@ -306,3 +308,32 @@ class EspnSource:
                 }
             )
         return items
+
+
+def _injury_label(item: dict) -> str | None:
+    """What is actually wrong, in two or three words.
+
+    The feed carries this twice: as structured fields under ``details``, and as
+    a paragraph of prose. Prefer the fields -- "Right Hamstring Strain" is a
+    column, and "Smith was limited in Wednesday's session and is considered
+    day-to-day with a hamstring issue" is not. The prose is still stored, it
+    just stops being the only place the injury is recorded.
+
+    Nothing here is guaranteed to be present, so every part is optional and an
+    entry with none of them returns None rather than an empty-looking string.
+    """
+    details = item.get("details")
+    if not isinstance(details, dict):
+        return None
+    parts = [
+        str(details.get(key)).strip()
+        for key in ("side", "location", "detail")
+        if details.get(key) and str(details.get(key)).strip().lower() != "not specified"
+    ]
+    # "Left Knee Knee" happens when location and detail agree; say it once.
+    seen: list[str] = []
+    for part in parts:
+        if part.lower() not in {p.lower() for p in seen}:
+            seen.append(part)
+    label = " ".join(seen).strip()
+    return label[:60] or None

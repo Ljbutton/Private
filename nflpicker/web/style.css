@@ -1208,3 +1208,39 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    the headline until it became clear that a model replayed through the seasons
    it trained on flatters itself, sometimes by twenty points of win rate. */
 .tile .sub .aside { color: var(--text-muted); font-size: 11px; }
+
+/* ------------------------------------------------- weekly ranking history */
+/* A row of week numbers rather than a dropdown: there are eighteen of them,
+   they are all one or two characters wide, and the whole point of the panel is
+   moving between adjacent weeks to watch a team climb. A select box makes that
+   two clicks each time and hides which weeks exist at all. */
+.week-picker {
+  display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0 12px;
+}
+.week-pick {
+  appearance: none; cursor: pointer; font: inherit; font-variant-numeric: tabular-nums;
+  min-width: 30px; padding: 4px 7px; color: var(--text-secondary);
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: transparent;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
+              color var(--fast) var(--ease);
+}
+.week-pick:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+.week-pick:focus-visible { outline: none; box-shadow: var(--ring); }
+.week-pick.on {
+  color: var(--text-primary); border-color: var(--series-1);
+  background: color-mix(in srgb, var(--series-1) 16%, transparent);
+}
+/* Marks a week that was reconstructed rather than recorded. Deliberately
+   visible on the button itself, not only in the note underneath: the
+   distinction matters most at the moment you are reading that week's numbers. */
+.reb { color: var(--warning); font-weight: 700; margin-left: 1px; }
+
+/* The slate's cells are right-aligned for numbers, but the first column is a
+   name. Without this the team sits hard against the column beside it with a
+   band of empty space to its left, which reads as a broken table rather than
+   an aligned one. */
+.slate td.team { text-align: left; }

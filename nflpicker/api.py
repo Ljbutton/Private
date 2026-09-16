@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
+from .availability import is_notable_injury
 from .backtest.report import performance_report
 from .config import get_config
 from .market import movement
@@ -266,6 +267,69 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             row["record_rank"] = record_rank.get(row["team"])
         return {"season": season, "teams": rows, "divisions": DIVISIONS}
 
+    @app.get("/api/power/history")
+    def power_history(season: int | None = None, week: int | None = None) -> dict:
+        """The power ranking as it stood in a given week, and how it moved.
+
+        Ranked by the rating itself rather than by projected finish -- see
+        Pipeline.store_power_snapshot for why the history has to use one rule
+        for every week even though the Teams page uses the other.
+        """
+        season = season or pipeline.season()
+        weeks = [r["week"] for r in db.query(
+            "SELECT DISTINCT week FROM power_snapshots WHERE season = ? ORDER BY week",
+            (season,),
+        )]
+        if not weeks:
+            return {"season": season, "week": None, "weeks": [],
+                    "teams": [], "sources": {}}
+        week = week if week in weeks else weeks[-1]
+
+        rows = db.query(
+            "SELECT team, rank, power, elo, pythagorean, wins, losses, ties,"
+            " source, captured_at FROM power_snapshots "
+            "WHERE season = ? AND week = ? ORDER BY rank",
+            (season, week),
+        )
+        # Movement against the previous week we actually hold, which is not
+        # always week-1: a gap in the history would otherwise be reported as a
+        # week of dramatic movement that never happened.
+        earlier = [w for w in weeks if w < week]
+        previous = {
+            r["team"]: r["rank"] for r in (
+                db.query("SELECT team, rank FROM power_snapshots "
+                         "WHERE season = ? AND week = ?", (season, earlier[-1]))
+                if earlier else []
+            )
+        }
+        for row in rows:
+            team = TEAMS.get(row["team"])
+            row["name"] = team.full_name if team else row["team"]
+            row["color"] = team.color if team else None
+            was = previous.get(row["team"])
+            row["previous_rank"] = was
+            # Positive means it climbed, which is the direction a reader
+            # expects an arrow to point even though the number went down.
+            row["move"] = None if was is None else was - row["rank"]
+        return {
+            "season": season,
+            "week": week,
+            "weeks": weeks,
+            "compared_to": earlier[-1] if earlier else None,
+            "teams": rows,
+            # Which weeks are a record and which are a reconstruction. Shown
+            # rather than smoothed over: they are not the same claim.
+            "sources": {r["week"]: r["source"] for r in db.query(
+                "SELECT week, MIN(source) AS source FROM power_snapshots "
+                "WHERE season = ? GROUP BY week", (season,),
+            )},
+        }
+
+    @app.post("/api/power/rebuild")
+    def power_rebuild(season: int | None = None) -> dict:
+        """Fill in the weeks the app was not running for, from stored games."""
+        return pipeline.rebuild_power_history(season or pipeline.season())
+
     @app.get("/api/team/{abbr}/history")
     def team_history(abbr: str) -> dict:
         abbr = abbr.upper()
@@ -472,11 +536,24 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # that actually change a projection.
         injuries = [
             r for r in db.query(
-                "SELECT team, player, position, status, detail, MAX(updated_at) AS updated_at "
-                "FROM injuries GROUP BY team, player ORDER BY team, player"
+                # The most recently *written* row, not the one carrying the
+                # latest date. Those differ: a feed stamps its rows with its
+                # own clock, while a player who has cleared the report is
+                # marked healthy with ours, because a feed that has stopped
+                # mentioning him supplies no date at all. Ordering by the date
+                # therefore let a stale "Active" outrank a later listing, and
+                # the player read as healthy while actually being out.
+                "SELECT i.team, i.player, i.position, i.status, i.detail,"
+                " i.injury, i.return_date, i.first_seen, i.updated_at "
+                "FROM injuries i JOIN (SELECT team, player, MAX(id) AS m "
+                "  FROM injuries GROUP BY team, player) x "
+                "  ON x.team = i.team AND x.player = i.player AND x.m = i.id "
+                "ORDER BY i.team, i.player"
             )
             if _is_notable_injury(r.get("status"))
         ]
+        for row in injuries:
+            row["how_long"] = _how_long(row)
         return {
             "items": rows,
             "injuries": [r for r in injuries
@@ -639,25 +716,83 @@ def _moved_toward_us(prediction: dict | None, move: dict) -> float | None:
     return round(movement if lean > 0 else -movement, 2) or 0.0
 
 
-# Statuses that mean "this player may not play". Anything else -- Active,
-# a blank, a status a feed invented -- is not a report, and showing it turns a
-# four-name list into a four-hundred-name one.
-_NOTABLE_INJURY = {
-    "out", "doubtful", "questionable", "injured reserve", "ir",
-    "physically unable to perform", "pup", "did not participate",
-    "limited participation", "non football injury", "nfi", "suspended",
-    "reserve/covid-19", "practice squad/injured",
-}
+# How long a player has been unavailable, and for how much longer.
+#
+# The report answers "how long" in two directions and the feed supplies each
+# only sometimes, so this prefers the forward-looking answer and falls back to
+# the backward-looking one rather than printing a dash. An expected return is
+# what actually changes a decision; time served is what is always knowable.
+_LONG_TERM = ("injured reserve", "ir", "physically unable", "pup",
+              "non football", "nfi", "suspended")
 
 
-def _is_notable_injury(status: str | None) -> bool:
-    value = (status or "").strip().lower()
-    if not value or value in {"active", "full participation", "probable", "healthy"}:
-        return False
-    return value in _NOTABLE_INJURY or any(k in value for k in ("out", "doubtful",
-                                                                "questionable",
-                                                                "reserve", "pup",
-                                                                "injured"))
+def _how_long(row: dict) -> str | None:
+    status = (row.get("status") or "").strip().lower()
+    back = None
+    first = row.get("first_seen")
+    if first:
+        days = _days_since(first)
+        if days is not None:
+            if days < 6:
+                back = "this week"
+            else:
+                weeks = max(1, round(days / 7))
+                back = f"{weeks} week{'' if weeks == 1 else 's'}"
+
+    ahead = None
+    if row.get("return_date"):
+        days = _days_until(row["return_date"])
+        if days is not None and days > 0:
+            weeks = round(days / 7)
+            ahead = "back this week" if weeks < 1 else (
+                f"back in ~{weeks} week{'' if weeks == 1 else 's'}")
+        elif days is not None:
+            ahead = "due back"
+    elif any(k in status for k in _LONG_TERM):
+        # No date, but the status itself is a duration: these designations
+        # carry a minimum absence in the rules, so saying "this week" would be
+        # wrong in a way the reader would act on.
+        ahead = "multi-week"
+
+    # One fact, not two. The panel is half a screen wide and the status badge
+    # is what a reader scans for, so a column carrying both "3 weeks" and "back
+    # in ~2 weeks" pushed the badge off the edge entirely. When a return is
+    # known it is also the more useful of the pair -- time served is history,
+    # time remaining is the thing that changes a decision.
+    return ahead or back
+
+
+def _days_since(stamp: str) -> float | None:
+    from datetime import datetime, timezone
+
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - then).total_seconds() / 86400.0)
+
+
+def _days_until(stamp: str) -> float | None:
+    days = _days_since(stamp)
+    if days is None:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return (then - datetime.now(timezone.utc)).total_seconds() / 86400.0
+
+
+# Moved to nflpicker.availability so the pipeline can apply the same test when
+# it decides a player's spell on the report has begun. Kept as a name here
+# because it reads as a local predicate at every call site.
+_is_notable_injury = is_notable_injury
 
 
 def latest_team_rows(season: int, table: str, columns: str = "*") -> dict[str, dict]:

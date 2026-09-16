@@ -306,6 +306,10 @@ def generate_news(season: int, count: int = 24) -> list[dict]:
 
 DEMO_POSITIONS = ["QB", "RB", "WR", "TE", "LT", "EDGE", "CB", "S", "LB"]
 DEMO_STATUSES = ["Out", "Doubtful", "Questionable", "Injured Reserve"]
+# What the report says is wrong, so the demo exercises the same columns the
+# live feed fills rather than leaving them dashed and looking broken.
+DEMO_INJURIES = ["Hamstring Strain", "Right Knee Sprain", "Ankle", "Concussion",
+                 "Left Shoulder", "Groin", "Foot", "Ribs", "Illness"]
 
 
 def generate_injuries(season: int, per_team: int = 3) -> list[dict]:
@@ -314,18 +318,30 @@ def generate_injuries(season: int, per_team: int = 3) -> list[dict]:
 
     rng = random.Random(season * 811)
     rows: list[dict] = []
-    stamp = now().replace(microsecond=0).isoformat()
+    today = now().replace(microsecond=0)
+    stamp = today.isoformat()
     initials = "ABCDEFGHJKLMPRSTW"
     for team in ABBRS:
         # Distinct initials per team so two entries never collide on name.
         chosen = rng.sample(initials, per_team)
         for i in range(rng.randint(0, per_team)):
+            from datetime import timedelta
+
             position = rng.choice(DEMO_POSITIONS)
+            status = rng.choice(DEMO_STATUSES)
+            # Spread the spells out so the "how long" column has a range to
+            # show rather than every row reading "this week".
+            began = today - timedelta(days=rng.choice([1, 3, 9, 16, 30]))
+            back = (today + timedelta(days=rng.choice([6, 13, 27]))
+                    if status == "Injured Reserve" else None)
             rows.append({
                 "team": team,
                 "player": f"{chosen[i]}.{TEAMS[team].name[:-1]}son",
                 "position": position,
-                "status": rng.choice(DEMO_STATUSES),
+                "status": status,
+                "injury": rng.choice(DEMO_INJURIES),
+                "return_date": back.isoformat() if back else None,
+                "first_seen": began.isoformat(),
                 "detail": "Synthetic demo entry — enable live sources for the real report.",
                 "updated_at": stamp,
             })

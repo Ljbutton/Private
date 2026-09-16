@@ -668,36 +668,95 @@ class Pipeline:
                     for item in tagged
                 ],
             )
+            # Named before the branch because the summary line below reports
+            # it whether or not the feed returned anything to compare against.
+            cleared: list[tuple[str, str]] = []
             if injuries:
                 # Only write when a player's status has actually changed. The
                 # feed is polled every fifteen minutes; storing every player
                 # every time would add tens of thousands of identical rows a
                 # day and make "current status" a scan rather than a lookup.
+                from .availability import is_notable_injury
+
                 current = {
-                    (r["team"], r["player"]): r["status"]
+                    (r["team"], r["player"]): r
                     for r in db.query(
-                        "SELECT i.team, i.player, i.status FROM injuries i "
-                        "JOIN (SELECT team, player, MAX(updated_at) AS m FROM injuries "
+                        # Keyed on the last row written rather than the latest
+                        # date it carries -- see the same query in the API for
+                        # why those are not the same row.
+                        "SELECT i.team, i.player, i.status, i.injury, i.return_date,"
+                        " i.first_seen FROM injuries i "
+                        "JOIN (SELECT team, player, MAX(id) AS m FROM injuries "
                         "      GROUP BY team, player) x ON x.team = i.team "
-                        "AND x.player = i.player AND x.m = i.updated_at"
+                        "AND x.player = i.player AND x.m = i.id"
                     )
                 }
-                changed = [
-                    i for i in injuries
-                    if current.get((i["team"], i["player"])) != i.get("status")
+                # Status is no longer the only field worth a row. A return date
+                # being announced, or a vague listing turning into "Right
+                # Hamstring Strain", is exactly the update the report exists to
+                # carry -- and while the status stayed "Questionable" through
+                # both, neither would ever have been written.
+                def moved(row: dict) -> bool:
+                    was = current.get((row["team"], row["player"]))
+                    if was is None:
+                        return True
+                    return any(was[key] != row.get(key)
+                               for key in ("status", "injury", "return_date"))
+
+                changed = [i for i in injuries if moved(i)]
+                rows = []
+                for i in changed:
+                    was = current.get((i["team"], i["player"]))
+                    # When this spell started. Carried forward while the player
+                    # stays on the report, and restarted when someone who had
+                    # cleared it is listed again -- otherwise a player hurt in
+                    # September and again in December reads as hurt since
+                    # September, which is the opposite of what the column says.
+                    if was and was["first_seen"] and is_notable_injury(was["status"]):
+                        first_seen = was["first_seen"]
+                    else:
+                        # A source that knows when the spell began is better
+                        # than assuming it began the moment we first polled --
+                        # otherwise every player looks newly hurt on the day
+                        # the app is installed.
+                        first_seen = (i.get("first_seen")
+                                      or i.get("updated_at") or stamp)
+                    rows.append([
+                        i["team"], i["player"], i.get("position"), i.get("status"),
+                        i.get("detail"), i.get("injury"), i.get("return_date"),
+                        first_seen, i.get("updated_at") or stamp,
+                    ])
+                # A player who has cleared the report stops being mentioned by
+                # the feed rather than being marked healthy. Since rows are
+                # only written on a change, nothing ever contradicted the last
+                # one -- so a hamstring from week 2 sat there reading "Out" in
+                # week 12, and the report filled up with players who had been
+                # fine for a month.
+                #
+                # Absence is only meaningful in a list that arrived intact, so
+                # this runs on a non-empty fetch. A feed that returns nothing,
+                # or half of itself, must not be read as the whole league
+                # recovering at once.
+                listed = {(i["team"], i["player"]) for i in injuries}
+                cleared = [
+                    key for key, was in current.items()
+                    if key not in listed and is_notable_injury(was["status"])
                 ]
+                for team, player in cleared:
+                    rows.append([team, player, None, "Active", None, None, None,
+                                 None, stamp])
+
                 db.executemany(
-                    "INSERT OR IGNORE INTO injuries"
-                    "(team, player, position, status, detail, updated_at) "
-                    "VALUES(?,?,?,?,?,?)",
-                    [
-                        [i["team"], i["player"], i.get("position"), i.get("status"),
-                         i.get("detail"), i.get("updated_at") or stamp]
-                        for i in changed
-                    ],
+                    "INSERT OR REPLACE INTO injuries"
+                    "(team, player, position, status, detail, injury, return_date,"
+                    " first_seen, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    rows,
                 )
                 injuries = changed
             detail = f"{len(tagged)} items, {len(injuries)} injury rows"
+            if cleared:
+                detail += f", {len(cleared)} cleared"
             result.record("news", True, detail, count=len(tagged))
             db.log_fetch("news", True, detail, int((time.monotonic() - start) * 1000))
         except Exception as exc:  # noqa: BLE001
@@ -1207,6 +1266,13 @@ class Pipeline:
             ],
         )
 
+        # The week's ranking, kept as its own frozen row rather than left to be
+        # dug out of the timestamped history. While this week is current the
+        # snapshot is refreshed on every recompute; once the week turns over
+        # nothing writes to it again, so it stays as it was.
+        with contextlib.suppress(Exception):
+            self.store_power_snapshot(season, week, power, completed)
+
         # ---- predictions
         # Features are built over the whole history so rolling form and Elo
         # cross the season boundary, then narrowed to the season on display.
@@ -1422,6 +1488,136 @@ class Pipeline:
                 "VALUES(?,?,?,?,?)",
                 (contest, season, week, stamp, json.dumps(payload)),
             )
+
+    # ------------------------------------------------- weekly power history
+    def _records_through(self, completed: list[dict], season: int) -> dict[str, list[float]]:
+        """Wins, losses and ties per team, for the snapshot's record column."""
+        out: dict[str, list[float]] = {}
+        for g in (x for x in completed if int(x["season"]) == int(season)):
+            hs, as_ = g.get("home_score"), g.get("away_score")
+            if hs is None or as_ is None:
+                continue
+            for team in (g["home"], g["away"]):
+                out.setdefault(team, [0.0, 0.0, 0.0])
+            if float(hs) == float(as_):
+                out[g["home"]][2] += 1
+                out[g["away"]][2] += 1
+            else:
+                winner, loser = ((g["home"], g["away"]) if float(hs) > float(as_)
+                                 else (g["away"], g["home"]))
+                out[winner][0] += 1
+                out[loser][1] += 1
+        return out
+
+    def store_power_snapshot(self, season: int, week: int, power, completed: list[dict],
+                             *, source: str = "live") -> int:
+        """Freeze one week's power ranking.
+
+        Ordered by the power rating itself, not by projected finish. The Teams
+        page ranks by where a team is projected to *end up*, which is the more
+        useful thing to look at once -- but it comes out of 20,000 simulations
+        of the remaining schedule, and rerunning those for a week that has
+        already happened would be both expensive and a different number than
+        the one that was on screen. A history whose ordering rule changes
+        between weeks cannot be read for movement, which is the entire point of
+        keeping one.
+
+        A live row is never overwritten by a rebuilt one. The reverse is fine:
+        a reconstruction is a stand-in until the real thing exists.
+        """
+        existing = {
+            r["team"]: r["source"] for r in db.query(
+                "SELECT team, source FROM power_snapshots WHERE season = ? AND week = ?",
+                (season, week),
+            )
+        }
+        if source == "rebuilt" and any(v == "live" for v in existing.values()):
+            return 0
+
+        records = self._records_through(completed, season)
+        ranked = sorted(power.teams.values(), key=lambda t: -(t.power or 0.0))
+        stamp = now_iso()
+        rows = []
+        for rank, team in enumerate(ranked, start=1):
+            wins, losses, ties = records.get(team.team, [0.0, 0.0, 0.0])
+            rows.append([season, week, team.team, rank, team.power, team.elo,
+                         team.pythagorean, wins, losses, ties, source, stamp])
+        db.executemany(
+            "INSERT OR REPLACE INTO power_snapshots"
+            "(season, week, team, rank, power, elo, pythagorean,"
+            " wins, losses, ties, source, captured_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        return len(rows)
+
+    def rebuild_power_history(self, season: int | None = None, *,
+                              overwrite: bool = False) -> dict:
+        """Reconstruct the weekly rankings for weeks we were not running for.
+
+        Week 1 of a season the app was installed halfway through has no live
+        snapshot and never will. It does not need to be imported from anywhere:
+        the rating is a function of the games that had finished by then, and
+        those are in the database. So each missing week is recomputed from the
+        games completed before it -- exactly the freeze-after-week-W procedure
+        the rating's own constants were fitted with.
+
+        Marked 'rebuilt', and deliberately not passed off as a record. It is
+        what today's rating code says about that week, which equals what was on
+        screen at the time only if the rating has not changed since -- and it
+        has, twice, this season alone.
+        """
+        season = season or self.season()
+        completed = db.query(
+            "SELECT * FROM games WHERE status = 'final' AND season <= ? "
+            "ORDER BY season, week, kickoff",
+            (season,),
+        )
+        if not completed:
+            return {"season": season, "weeks": [], "reason": "no completed games"}
+
+        have = {
+            r["week"]: r["source"] for r in db.query(
+                "SELECT week, MIN(source) AS source FROM power_snapshots "
+                "WHERE season = ? GROUP BY week", (season,),
+            )
+        }
+        played = sorted({int(g["week"]) for g in completed
+                         if int(g["season"]) == int(season)})
+        if not played:
+            return {"season": season, "weeks": [], "reason": "no completed games this season"}
+
+        # The last week the schedule actually has. Without this the season's
+        # final week produces a ranking for the week after it, which does not
+        # exist -- a week 19 row for an 18-week season, indistinguishable on
+        # screen from a real one.
+        scheduled = db.query(
+            "SELECT MAX(week) AS last FROM games WHERE season = ? AND season_type = 'REG'",
+            (season,),
+        )
+        last_week = (scheduled[0]["last"] if scheduled else None) or max(played)
+
+        written: list[int] = []
+        # Through the last week that has finished, plus the one after it: a
+        # ranking for week N is the state going *into* week N, so the week
+        # after the last completed one is the first that is still live.
+        for week in range(1, min(max(played) + 1, last_week) + 1):
+            if not overwrite and have.get(week) == "live":
+                continue
+            if not overwrite and week in have:
+                continue
+            # Only what had finished before this week kicked off. Including the
+            # week's own results would rank teams by a game they had not played
+            # yet, which is the one mistake a history like this can make.
+            before = [g for g in completed
+                      if int(g["season"]) < int(season) or int(g["week"]) < week]
+            if not any(int(g["season"]) == int(season) for g in before) and week > 1:
+                continue
+            elo = run_elo(before)
+            power = self.power_from(before, elo, season, week=week)
+            if self.store_power_snapshot(season, week, power, before, source="rebuilt"):
+                written.append(week)
+        return {"season": season, "weeks": written}
 
     def power_from(self, completed: list[dict], elo, season: int, *, week: int):
         """Power ratings from a set of finished games.

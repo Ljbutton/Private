@@ -897,7 +897,7 @@ async function renderTeams() {
       <span class="hint">sorted by projected wins from 20,000 simulations of the
         rest of the schedule · ▲▼ is how far a team sits from where its record
         alone would put it</span></header>
-    <div class="table-scroll"><table>
+    <div class="table-scroll"><table id="teams-now">
       <thead><tr><th>Team</th><th>Record</th>
         <th title="Expected wins from 20,000 simulations of the remaining schedule — what the ranking is sorted by">Proj. wins</th>
         <th title="Win expectation implied by points scored and allowed. Point differential predicts the rest of the season better than the record does.">Pythag</th>
@@ -914,6 +914,12 @@ async function renderTeams() {
     <header><h2>Simulated win distribution</h2>
       <span class="hint">Select a team above</span></header>
     <div id="team-dist" style="height:200px"></div>
+  </div>
+  <div class="panel">
+    <header><h2>Week by week</h2>
+      <span class="hint">where every team ranked going into each week, and how
+        far it moved</span></header>
+    <div id="power-history"></div>
   </div>`;
 
   const show = (abbr) => {
@@ -933,8 +939,80 @@ async function renderTeams() {
       ariaLabel: `${team.name} simulated win distribution`,
     });
   };
-  $$("tbody tr", root).forEach((tr) => tr.addEventListener("click", () => show(tr.dataset.team)));
+  $$("#teams-now tbody tr", root).forEach(
+    (tr) => tr.addEventListener("click", () => show(tr.dataset.team)));
   if (data.teams.length) show(data.teams[0].team);
+
+  renderPowerHistory();
+}
+
+/* The ranking as it stood in each past week.
+   Its own panel, and its own ordering: the table above sorts by projected
+   finish, which needs 20,000 simulations of a schedule that has since been
+   played. This one sorts by the rating, which is a function of the games that
+   had finished at the time and so can be stated for any week honestly. Mixing
+   the two rules across weeks would make the movement column fiction. */
+async function renderPowerHistory(week) {
+  const host = $("#power-history");
+  if (!host) return;
+  const query = week === undefined ? "" : `&week=${week}`;
+  const data = await api(`/api/power/history?season=${state.season}${query}`);
+  if (!data.weeks.length) {
+    host.innerHTML = `<div class="empty">No weekly rankings stored yet.
+      <button class="btn" id="power-rebuild">Build them from stored games</button></div>`;
+    $("#power-rebuild", host)?.addEventListener("click", async (ev) => {
+      ev.target.disabled = true;
+      ev.target.textContent = "Working…";
+      await api("/api/power/rebuild", { method: "POST" });
+      renderPowerHistory();
+    });
+    return;
+  }
+
+  const picker = data.weeks.map((w) => `<button class="week-pick${
+    w === data.week ? " on" : ""}" data-week="${w}"
+    title="Week ${w}${data.sources[w] === "rebuilt"
+      ? " — reconstructed from stored games" : ""}">${w}${
+    data.sources[w] === "rebuilt" ? "<span class=\"reb\">*</span>" : ""}</button>`).join("");
+
+  const arrow = (move) => {
+    if (move === null || move === undefined) return `<span class="muted">–</span>`;
+    if (move === 0) return `<span class="muted">—</span>`;
+    return `<span class="drift ${move > 0 ? "up" : "down"}">${
+      move > 0 ? "▲" : "▼"}${Math.abs(move)}</span>`;
+  };
+
+  const rows = data.teams.map((t) => `<tr>
+    <td class="team">${t.rank}. ${esc(t.team)}
+      <span class="muted">${esc(t.name)}</span></td>
+    <td>${arrow(t.move)}</td>
+    <td>${t.wins ?? 0}-${t.losses ?? 0}${t.ties ? `-${t.ties}` : ""}</td>
+    <td>${signed(t.power)}</td>
+    <td class="muted">${t.pythagorean === null || t.pythagorean === undefined
+      ? "–" : pct(t.pythagorean)}</td>
+  </tr>`).join("");
+
+  const rebuilt = Object.values(data.sources).filter((v) => v === "rebuilt").length;
+  host.innerHTML = `
+    <div class="week-picker">${picker}</div>
+    <div class="table-scroll tall"><table class="slate">
+      <thead><tr><th>Team</th>
+        <th title="Places moved since week ${data.compared_to ?? "–"}">Move</th>
+        <th>Record</th>
+        <th title="Points better than an average team on a neutral field">Rating</th>
+        <th title="Win expectation implied by points scored and allowed">Pythag</th>
+      </tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="note">Going into week ${data.week}${data.compared_to
+      ? `, movement against week ${data.compared_to}` : ""}. Ranked by rating,
+      not projected finish, so every week is measured the same way.${rebuilt
+      ? ` <span class="reb">*</span> marks ${rebuilt} week${rebuilt === 1 ? "" : "s"}
+        reconstructed from stored games rather than recorded at the time —
+        what today's rating says about that week, which is not quite the same
+        as what was on screen then.` : ""}</p>`;
+
+  $$(".week-pick", host).forEach((b) => b.addEventListener(
+    "click", () => renderPowerHistory(Number(b.dataset.week))));
 }
 
 // ------------------------------------------------------------------- picks
@@ -1107,13 +1185,21 @@ async function renderNews() {
         ${teamMark(t)}<span class="tp-count">${n || ""}</span></button>`;
     }).join("");
 
+  /* Four columns, because four things are being asked: who, what, how long,
+     how serious. The position and the last-updated timestamp came out -- the
+     first is on the name for anyone who follows the team, and the second is a
+     fact about our polling rather than about the player. The source's prose
+     comment stays too, but as a tooltip: it is the fallback when the feed did
+     not break the injury out into fields, not a column of its own. */
   const shown = (data.injuries || []).filter((i) => i.team === state.injuryTeam);
-  const injuries = shown.map((i) => `<tr>
-    <td class="team">${esc(i.player)}</td>
-    <td>${esc(i.position || "–")}</td>
+  const injuries = shown.map((i) => `<tr${i.detail
+      ? ` title="${esc(i.detail)}"` : ""}>
+    <td class="team">${esc(i.player)}${i.position
+      ? ` <span class="muted">${esc(i.position)}</span>` : ""}</td>
+    <td>${esc(i.injury || "–")}</td>
+    <td class="muted">${esc(i.how_long || "–")}</td>
     <td><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
-    <td class="muted">${esc(i.detail || "")}</td>
-    <td class="muted">${ago(i.updated_at)}</td></tr>`).join("");
+    </tr>`).join("");
 
   root.innerHTML = `<div class="grid-2 news-split">
     <div class="panel">
@@ -1123,7 +1209,10 @@ async function renderNews() {
       <div class="team-picker">${picker}</div>
       ${injuries
         ? `<div class="table-scroll tall"><table class="slate roster">
-            <thead><tr><th>Player</th><th>Pos</th><th>Status</th><th>Detail</th><th>Updated</th></tr></thead>
+            <thead><tr><th>Player</th>
+              <th title="What is hurt, when the feed breaks it out. Hover a row for the full note.">Injury</th>
+              <th title="How long they have been listed, and when they are expected back">How long</th>
+              <th>Status</th></tr></thead>
             <tbody>${injuries}</tbody></table></div>`
         : `<div class="empty">${state.injuryTeam
             ? `Nobody listed for ${esc(state.injuryTeam)} — everyone is available.`

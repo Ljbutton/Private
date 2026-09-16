@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -39,6 +39,13 @@ COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = (
     # the Pythagorean term is shown on the Teams page as the reason a team is
     # rated above or below its record.
     ("team_ratings", "pythagorean", "REAL"),
+    # v11: the injury report is read for four things -- who, what, how long,
+    # and how serious. Only "who" and "how serious" were columns; the other two
+    # were buried in a 400-character prose comment that had to be read to be
+    # understood, which is not what a table is for.
+    ("injuries", "injury", "TEXT"),
+    ("injuries", "return_date", "TEXT"),
+    ("injuries", "first_seen", "TEXT"),
 )
 
 SCHEMA = """
@@ -141,6 +148,38 @@ CREATE TABLE IF NOT EXISTS team_ratings (
 );
 CREATE INDEX IF NOT EXISTS idx_ratings_team ON team_ratings(team, captured_at);
 
+-- The power ranking as it stood in a given week, one row per team per week.
+--
+-- team_ratings already keeps a history, but keyed by capture timestamp: it
+-- answers "what did we think at 14:07 on Tuesday", which nobody asks. This
+-- answers "where did this team rank in week 6", which is the question a
+-- ranking history exists for, and it is a different shape -- one frozen row
+-- per week, carrying the rank itself rather than only the inputs to it.
+--
+-- `source` separates a snapshot taken while that week was live ('live') from
+-- one reconstructed afterwards from the completed games ('rebuilt'). They are
+-- not the same claim: a rebuilt row is what today's rating code says about
+-- that week, which is only what was on screen at the time if the rating has
+-- not changed since. Keeping them apart is what stops a reconstruction from
+-- quietly becoming a record.
+CREATE TABLE IF NOT EXISTS power_snapshots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    season      INTEGER NOT NULL,
+    week        INTEGER NOT NULL,
+    team        TEXT NOT NULL,
+    rank        INTEGER NOT NULL,
+    power       REAL,
+    elo         REAL,
+    pythagorean REAL,
+    wins        REAL,
+    losses      REAL,
+    ties        REAL,
+    source      TEXT NOT NULL DEFAULT 'live',
+    captured_at TEXT NOT NULL,
+    UNIQUE(season, week, team)
+);
+CREATE INDEX IF NOT EXISTS idx_power_snap ON power_snapshots(season, week, rank);
+
 -- Published power rankings from other outlets, one row per team per list.
 -- Kept whole: a partial list is rejected before it reaches here, so anything
 -- stored is a complete 1-32 and the consensus cannot be dragged by a parser
@@ -202,7 +241,10 @@ CREATE TABLE IF NOT EXISTS injuries (
     player      TEXT NOT NULL,
     position    TEXT,
     status      TEXT,
-    detail      TEXT,
+    detail      TEXT,                   -- the source's prose comment, verbatim
+    injury      TEXT,                   -- body part / kind, e.g. "Hamstring"
+    return_date TEXT,                   -- expected return, when the source says
+    first_seen  TEXT,                   -- when this spell was first reported
     updated_at  TEXT NOT NULL,
     UNIQUE(team, player, updated_at)
 );

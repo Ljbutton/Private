@@ -357,3 +357,28 @@ def build_adjustments(
         )
         for team, rows in injuries_by_team.items()
     }
+
+
+# Statuses that mean "this player may not play". Anything else -- Active, a
+# blank, a status a feed invented -- is not a report, and showing it turns a
+# four-name list into a four-hundred-name one.
+#
+# Lives here rather than in the API because the pipeline needs the same test:
+# it decides when a player's spell on the report started, and "started" has to
+# mean the same thing there as the filter on screen means.
+NOTABLE_INJURY = {
+    "out", "doubtful", "questionable", "injured reserve", "ir",
+    "physically unable to perform", "pup", "did not participate",
+    "limited participation", "non football injury", "nfi", "suspended",
+    "reserve/covid-19", "practice squad/injured",
+}
+
+
+def is_notable_injury(status: str | None) -> bool:
+    value = (status or "").strip().lower()
+    if not value or value in {"active", "full participation", "probable", "healthy"}:
+        return False
+    return value in NOTABLE_INJURY or any(k in value for k in ("out", "doubtful",
+                                                              "questionable",
+                                                              "reserve", "pup",
+                                                              "injured"))
