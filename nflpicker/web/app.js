@@ -386,7 +386,10 @@ async function renderScoreboard() {
   const sort = state.sbSort && (state.sbSort.key === "team" || state.sbSort.key === "games"
     || pickers.includes(state.sbSort.key))
     ? state.sbSort
-    : { key: pickers.includes("ours") ? "ours" : (pickers[0] || "team"), dir: "desc" };
+    // Opens on the blend -- what the app actually claims -- rather than on the
+    // first column, which is "you" and is empty until picks have been graded.
+    : { key: ["model", "blind", "book"].find((k) => pickers.includes(k))
+             || pickers[0] || "team", dir: "desc" };
 
   const sortValue = (t, key) => {
     if (key === "team") return t.team;
