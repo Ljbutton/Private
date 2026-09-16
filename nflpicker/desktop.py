@@ -135,8 +135,15 @@ class ServerThread:
 
         from .api import create_app
 
+        # use_colors is pinned rather than left to uvicorn's default, which
+        # is `sys.stdout.isatty()`. There is no terminal behind this window to
+        # colour for, and in a windowed build stdout can be None -- asking it
+        # anything is an AttributeError that surfaces as the opaque "Unable to
+        # configure formatter 'default'". ensure_stdio() covers that at the
+        # entry point; this makes the server independent of it either way.
         config = uvicorn.Config(
-            create_app(), host=self.host, port=self.port, log_level="warning"
+            create_app(), host=self.host, port=self.port, log_level="warning",
+            use_colors=False,
         )
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=self._server.run, daemon=True)

@@ -22,6 +22,45 @@ def default_data_dir() -> Path:
     return base / "NFLPicker"
 
 
+def ensure_stdio(data_dir: Path) -> None:
+    """Give the process a real stdout, because a windowed build has none.
+
+    PyInstaller builds this app with ``console=False`` so no terminal sits
+    behind the window, and on Windows that leaves ``sys.stdout`` and
+    ``sys.stderr`` set to **None** -- not a closed file, not a null sink,
+    None. Any library that touches them raises AttributeError.
+
+    uvicorn is one such library. Its default log formatter decides on colour
+    with ``sys.stdout.isatty()``, so configuring logging raised
+    ``AttributeError: 'NoneType' object has no attribute 'isatty'``, which
+    ``logging.config`` reports as "Unable to configure formatter 'default'".
+    That happened inside ``uvicorn.Config(...)``, before the server ever
+    started, so the app exited without a window.
+
+    It hid from every test for one reason: capturing a subprocess's output
+    *gives it* a real stdout. Running ``--selftest`` with its output
+    redirected -- which is the only way to read it, and what CI does -- was
+    enough to make the failure disappear. The bug only exists when nothing is
+    listening, which is exactly how a user launches the app.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    stream = None
+    try:
+        logs = data_dir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        stream = open(logs / "console.log", "a", encoding="utf-8", buffering=1)
+    except Exception:                                     # noqa: BLE001
+        try:
+            stream = open(os.devnull, "w", encoding="utf-8")
+        except Exception:                                 # noqa: BLE001
+            return
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def selftest() -> int:
     """Start the server, answer one request, exit.
 
@@ -108,6 +147,10 @@ def main() -> int:
     if getattr(sys, "frozen", False):
         # Bundled resources live beside the executable at runtime.
         os.environ.setdefault("NFLPICKER_BUNDLE", str(Path(sys._MEIPASS)))
+
+    # Before anything that might write to stdout, including uvicorn's logging
+    # setup. See ensure_stdio: in a windowed build there is no stdout at all.
+    ensure_stdio(Path(os.environ["NFLPICKER_DATA_DIR"]))
 
     if "--selftest" in sys.argv:
         return selftest()

@@ -138,6 +138,30 @@ jobs:
           test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist | head -50; exit 1; }
           NFLPICKER_DEMO=1 "$BIN" --selftest
 
+      # The smoke test above can never catch a missing-stdout bug, and one
+      # shipped: a windowed build has sys.stdout set to None, uvicorn's default
+      # log formatter picks its colours with sys.stdout.isatty(), and the app
+      # died configuring logging before it ever opened a window. Capturing a
+      # subprocess's output *gives it* a stdout -- so reading the selftest's
+      # output, the only way to check it, was what made the failure disappear.
+      #
+      # This launches it the way a person does, with nothing listening, and
+      # reads only the exit code. The app's own console.log carries the detail.
+      - name: Smoke test with no stdout attached
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\nostdout-data"
+          $p = Start-Process -FilePath dist/NFLPicker.exe `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          if ($p.ExitCode -ne 0) {
+            throw "selftest exited $($p.ExitCode) with no stdout attached"
+          }
+          Write-Host "ok: ran with no stdout attached"
+
       # A GitHub artifact is a zip, and that zip does not carry the executable
       # bit. On Windows that is harmless; on macOS it means the .app unzips
       # without +x and simply will not launch, which looks like a broken build

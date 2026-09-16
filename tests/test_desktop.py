@@ -307,3 +307,76 @@ def test_a_window_the_user_actually_closed_is_a_clean_exit(monkeypatch):
     monkeypatch.setattr(desktop, "_alert", lambda title, msg: pytest.fail(msg))
 
     assert desktop.run() == 0
+
+
+# --------------------------------------------- the windowed build has no stdout
+
+def test_the_server_starts_when_there_is_no_stdout(monkeypatch):
+    """A `console=False` build sets sys.stdout to None, and uvicorn's default
+    log formatter picks its colours with `sys.stdout.isatty()`.
+
+    That raised inside `uvicorn.Config(...)`, reported as the opaque "Unable to
+    configure formatter 'default'", before the server ever started -- so the
+    app exited with no window. Every test missed it because capturing a
+    subprocess's output *gives it* a stdout: running --selftest redirected,
+    the only way to read it, was enough to hide the bug.
+
+    Asserted against the formatter rather than uvicorn's LOGGING_CONFIG,
+    because configure_logging() mutates that module-level dict in place -- by
+    this point in a suite it may already carry use_colors and the failure
+    could not be reproduced from it.
+    """
+    from uvicorn.logging import DefaultFormatter
+
+    monkeypatch.setattr("sys.stdout", None)
+
+    with pytest.raises(AttributeError, match="isatty"):
+        DefaultFormatter(fmt="%(levelprefix)s %(message)s", use_colors=None)
+
+    # What ServerThread now pins, so the server never asks stdout anything.
+    assert DefaultFormatter(
+        fmt="%(levelprefix)s %(message)s", use_colors=False).use_colors is False
+
+
+def test_the_server_pins_use_colors_rather_than_asking_stdout():
+    """The pin has to be in the call, not just in a passing test above it."""
+    import inspect
+
+    from nflpicker import desktop
+
+    assert "use_colors=False" in inspect.getsource(desktop.ServerThread.start)
+
+
+def test_a_missing_stdout_is_replaced_before_anything_uses_it(tmp_path, monkeypatch):
+    import importlib.util
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location(
+        "desktop_entry", "scripts/desktop_entry.py")
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+
+    monkeypatch.setattr(_sys, "stdout", None)
+    monkeypatch.setattr(_sys, "stderr", None)
+    entry.ensure_stdio(tmp_path)
+
+    assert _sys.stdout is not None and _sys.stderr is not None
+    print("captured instead of crashing")
+    _sys.stdout.flush()
+    assert "captured instead of crashing" in (
+        tmp_path / "logs" / "console.log").read_text(encoding="utf-8")
+
+
+def test_a_real_stdout_is_left_alone(tmp_path):
+    import importlib.util
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location(
+        "desktop_entry", "scripts/desktop_entry.py")
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+
+    before = _sys.stdout
+    entry.ensure_stdio(tmp_path)
+    assert _sys.stdout is before
+    assert not (tmp_path / "logs").exists()
