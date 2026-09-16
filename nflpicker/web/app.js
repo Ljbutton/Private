@@ -212,7 +212,10 @@ function kickoffShort(iso) {
    afterwards touches one function and cannot corrupt a template it never
    parses. <details> is used so keyboard support, find-in-page and open state
    all come for free. */
-const FOLDING_TABS = new Set(["teams", "picks", "performance"]);
+// Picks is no longer folded: both contests are meant to be answered in one
+// look, and a collapsed Survivor panel is the opposite of putting them on one
+// page.
+const FOLDING_TABS = new Set(["teams", "performance"]);
 
 function foldPanels(root) {
   if (!FOLDING_TABS.has(state.tab)) return;
@@ -377,6 +380,40 @@ async function renderScoreboard() {
     </tr>`;
   };
 
+  /* Sorting the team table. Every column is a different question -- which
+     teams *we* read best, which ones the market reads best, where the two
+     disagree -- and the answer to each is one click, not a different page. */
+  const sort = state.sbSort && (state.sbSort.key === "team" || state.sbSort.key === "games"
+    || pickers.includes(state.sbSort.key))
+    ? state.sbSort
+    : { key: pickers.includes("ours") ? "ours" : (pickers[0] || "team"), dir: "desc" };
+
+  const sortValue = (t, key) => {
+    if (key === "team") return t.team;
+    if (key === "games") return t.games;
+    const v = t.tallies[key];
+    // A picker with no view on a team sorts last either way rather than
+    // landing at the top of an ascending sort as if it scored zero.
+    return v && v.n ? v.rate : null;
+  };
+  const sortedTeams = [...(d.teams || [])].sort((a, b) => {
+    const av = sortValue(a, sort.key);
+    const bv = sortValue(b, sort.key);
+    if (av === null && bv === null) return a.team.localeCompare(b.team);
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    const cmp = typeof av === "string" ? av.localeCompare(bv) : av - bv;
+    return sort.dir === "desc" ? -cmp : cmp;
+  });
+
+  const sortHead = (key, label, cls) => {
+    const on = key === sort.key;
+    return `<th class="${cls}${on ? " sorted" : ""}" data-sort="${esc(key)}"
+      aria-sort="${on ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}"
+      title="Sort by ${esc(label)}" tabindex="0" role="button"
+      >${esc(label)}<span class="sort-arrow">${on ? (sort.dir === "desc" ? "▾" : "▴") : "⇅"}</span></th>`;
+  };
+
   root.innerHTML = `<div class="panel">
     <header><h2>Season ${d.season}</h2>
       <span class="hint">Straight-up winners · "same games" scores only games every
@@ -387,30 +424,6 @@ async function renderScoreboard() {
       <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
     </table></div>
   </div>
-
-  <div class="panel">
-    <header><h2>By team</h2>
-      <span class="hint">how often each picker called that team's games right ·
-        sorted by our model, best first</span></header>
-    <div class="table-scroll"><table class="slate">
-      <thead><tr><th>Team</th><th class="num">Games</th>${(d.pickers || []).map((p) =>
-        `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
-      <tbody>${(d.teams || []).map((t) => `<tr>
-        <td class="who">${esc(t.team)}</td>
-        <td class="num muted">${t.games}</td>
-        ${d.pickers.map((p) => {
-          const v = t.tallies[p];
-          if (!v.n) return '<td class="num muted">–</td>';
-          // Above half is being read well, below it badly; the midpoint is
-          // where a coin would sit, so it is the only sensible split.
-          const tone = v.rate > 0.5 ? " hit" : (v.rate < 0.5 ? " miss" : "");
-          return `<td class="num${tone}">${pct(v.rate)}<span class="rec">${v.correct}-${v.wrong}</span></td>`;
-        }).join("")}
-      </tr>`).join("")}</tbody>
-    </table></div>
-  </div>
-
-  ${clvBlock(d.clv)}
 
   <div class="panel">
     <header><h2>Week by week</h2><span class="hint">correct out of picked</span></header>
@@ -426,8 +439,50 @@ async function renderScoreboard() {
             : '<td class="num muted">–</td>';
         }).join("")}
       </tr>`).join("")}</tbody>
-    </table>
-  </div>`;
+    </table></div>
+  </div>
+
+  <div class="panel">
+    <header><h2>By team</h2>
+      <span class="hint">how often each picker called that team's games right ·
+        click a column to sort by it</span></header>
+    <div class="table-scroll"><table class="slate sortable">
+      <thead><tr>
+        ${sortHead("team", "Team", "")}
+        ${sortHead("games", "Games", "num")}
+        ${(d.pickers || []).map((p) => sortHead(p, d.labels[p], "num")).join("")}
+      </tr></thead>
+      <tbody>${sortedTeams.map((t) => `<tr>
+        <td class="who">${esc(t.team)}</td>
+        <td class="num muted">${t.games}</td>
+        ${d.pickers.map((p) => {
+          const v = t.tallies[p];
+          if (!v.n) return `<td class="num muted${p === sort.key ? " sorted" : ""}">–</td>`;
+          // Above half is being read well, below it badly; the midpoint is
+          // where a coin would sit, so it is the only sensible split.
+          const tone = v.rate > 0.5 ? " hit" : (v.rate < 0.5 ? " miss" : "");
+          return `<td class="num${tone}${p === sort.key ? " sorted" : ""}">${
+            pct(v.rate)}<span class="rec">${v.correct}-${v.wrong}</span></td>`;
+        }).join("")}
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </div>
+
+  ${clvBlock(d.clv)}`;
+
+  /* Re-sorting is a re-render of this view, not a reload: the payload is
+     already here and the server has no opinion about column order. */
+  $$("th[data-sort]", root).forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      state.sbSort = key === sort.key
+        ? { key, dir: sort.dir === "desc" ? "asc" : "desc" }
+        // A new column starts on its most useful end: best first for a rate,
+        // A-Z for the team name.
+        : { key, dir: key === "team" ? "asc" : "desc" };
+      renderScoreboard();
+    });
+  });
 }
 
 // -------------------------------------------------------------------- home
@@ -1031,21 +1086,8 @@ async function renderTeams() {
 async function renderPicks() {
   const root = $("#view");
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
-  const edges = data.ats?.edges || [];
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
-
-  const edgeRows = edges.map((e) => `<tr>
-    <td class="team">${esc(e.selection)}</td>
-    <td>${esc(e.market)}</td>
-    <td>${esc(e.book || "–")}</td>
-    <td>${american(e.price)}</td>
-    <td>${pct(e.win_prob, 1)}</td>
-    <td>${american(e.fair_price)}</td>
-    <td>${e.edge_points === null ? "–" : signed(e.edge_points)}</td>
-    <td>${(e.expected_value * 100).toFixed(1)}%</td>
-    <td><span class="badge ${e.confidence === "suspect" ? "qb" : ""}">${esc(e.confidence)}</span></td>
-  </tr>`).join("");
 
   const board = pickem[state.pickemMode || "ev"] || pickem.ev || {};
   const pickRows = (board.picks || []).map((p) => `<div class="pick-row">
@@ -1065,25 +1107,7 @@ async function renderPicks() {
     <td>${a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`}</td></tr>`).join("");
 
   root.innerHTML = `
-    <div class="panel">
-    <header><h2>Where we disagree with the line — week ${data.week}</h2>
-      <span class="hint">a list of disagreements, not a bet slip · see the note below</span></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Selection</th><th>Market</th><th>Book</th><th>Price</th><th>Our prob</th>
-        <th>Fair price</th><th>Gap</th><th>EV</th><th>Rating</th></tr></thead>
-      <tbody>${edgeRows || '<tr><td colspan="9" class="muted">Nothing disagrees with the line by much this week — the usual result.</td></tr>'}</tbody>
-    </table></div>
-    <p class="note"><strong>These are not recommendations.</strong> This app has measured its
-      own record against the spread at <strong>51.0% walk-forward, against a 52.4%
-      break-even</strong>, and the fitted market weight is 0.98 — meaning the closing line
-      carries almost everything and our disagreement with it carries almost nothing. A row
-      appearing here is a disagreement that cleared a threshold, which is not the same as an
-      edge; on this evidence most of them are noise. It is here to show you where the model
-      parts company with the market, so you can go and look at those games. A rating of
-      <strong>suspect</strong> means the gap is so large it is more likely our blind spot than
-      the market's.</p>
-  </div>
-
+  <div class="grid-2 pick-split">
   <div class="panel">
     <header><h2>ESPN pick'em</h2>
       <div class="controls" style="margin-left:auto">
@@ -1110,43 +1134,56 @@ async function renderPicks() {
       first is what pays.</p>
   </div>
 
-  <div class="panel">
+  <div class="panel survivor-now">
     <header><h2>Survivor</h2>
       <span class="hint">${survivor.horizon ? `planned ${survivor.horizon} weeks ahead` : ""}</span></header>
     ${survivor.recommendation ? `
-      <div class="tiles" style="margin-bottom:12px">
+      <div class="tiles">
         <div class="tile"><div class="label">This week</div>
           <div class="value">${esc(survivor.recommendation.team)}</div>
           <div class="sub">vs ${esc(survivor.recommendation.opponent)} ·
             ${pct(survivor.recommendation.win_prob, 1)} to win</div></div>
         <div class="tile"><div class="label">Path survival</div>
           <div class="value">${pct(survivor.survival_prob, 1)}</div>
-          <div class="sub">through week ${(survivor.week || 0) + (survivor.horizon || 1) - 1}</div></div>
+          <div class="sub">through week ${survivor.through_week
+            || ((survivor.week || 0) + (survivor.horizon || 1) - 1)}</div></div>
       </div>
-      <div class="grid-2">
-        <div><h3 style="font-size:12px;margin-bottom:6px">Planned path</h3>
-          <table><thead><tr><th>Week</th><th>Team</th><th>Opponent</th><th>Win prob</th></tr></thead>
-          <tbody>${path}</tbody></table></div>
-        <div><h3 style="font-size:12px;margin-bottom:6px">If you deviate this week</h3>
-          <table><thead><tr><th>Team</th><th>Opp</th><th>Win prob</th><th>Path</th><th>Cost</th></tr></thead>
-          <tbody>${alts || '<tr><td colspan="5" class="muted">No alternatives.</td></tr>'}</tbody></table></div>
+      <div class="used-block">
+        <h3>Teams you have already used<span class="hint">click a mark to use or
+          release it — the plan replans itself</span></h3>
+        <div class="team-picker used">${(state.meta?.teams
+          ? Object.keys(state.meta.teams).sort() : []).map((t) => {
+            const used = (data.survivor_used || []).includes(t);
+            return `<button class="team-pick${used ? " used" : ""}" data-used="${esc(t)}"
+              title="${esc(t)} — ${used ? "used, click to release" : "available, click to mark used"}"
+              aria-pressed="${used}">${teamMark(t)}</button>`;
+          }).join("")}</div>
       </div>
-      <p class="note">The recommendation is not always this week's safest team. Spending a strong
-        team now can cost more later than it gains today, so the optimiser solves the whole
-        remaining path — the cost column is what deviating actually costs over that path.</p>
     ` : `<div class="empty">${esc(survivor.note || "No survivor plan available.")}</div>`}
-    <div class="used-block">
-      <h3>Teams you have already used<span class="hint">click a mark to use or
-        release it — the plan replans itself</span></h3>
-      <div class="team-picker used">${(state.meta?.teams
-        ? Object.keys(state.meta.teams).sort() : []).map((t) => {
-          const used = (data.survivor_used || []).includes(t);
-          return `<button class="team-pick${used ? " used" : ""}" data-used="${esc(t)}"
-            title="${esc(t)} — ${used ? "used, click to release" : "available, click to mark used"}"
-            aria-pressed="${used}">${teamMark(t)}</button>`;
-        }).join("")}</div>
+  </div>
+  </div>
+
+  ${survivor.recommendation ? `
+  <div class="panel">
+    <header><h2>The rest of the run</h2>
+      <span class="hint">the whole remaining path, and what this week's alternatives
+        cost across it</span></header>
+    <div class="grid-2">
+      <div><h3 class="sub-head">Planned path</h3>
+        <div class="table-scroll"><table class="slate">
+          <thead><tr><th>Week</th><th>Team</th><th>Opponent</th><th class="num">Win prob</th></tr></thead>
+          <tbody>${path}</tbody></table></div></div>
+      <div><h3 class="sub-head">If you deviate this week</h3>
+        <div class="table-scroll"><table class="slate">
+          <thead><tr><th>Team</th><th>Opp</th><th class="num">Win prob</th>
+            <th class="num">Path</th><th class="num">Cost</th></tr></thead>
+          <tbody>${alts || '<tr><td colspan="5" class="muted">No alternatives.</td></tr>'}</tbody>
+        </table></div></div>
     </div>
-  </div>`;
+    <p class="note">The recommendation is not always this week's safest team. Spending a strong
+      team now can cost more later than it gains today, so the optimiser solves the whole
+      remaining path — the cost column is what deviating actually costs over that path.</p>
+  </div>` : ""}`;
 
   const modeSelect = $("#pickem-mode");
   modeSelect.value = state.pickemMode || "ev";
@@ -1627,13 +1664,28 @@ async function loadState() {
   renderHero(meta);
 }
 
-function setTab(tab) {
+function setTab(tab, { fromHash = false } = {}) {
+  if (!VIEWS[tab]) tab = "home";
   state.tab = tab;
   $$(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
-  // Shown on every page. Hiding it meant changing week was a two-step move --
-  // go to Home, change it, come back -- on the pages most likely to prompt the
-  // question in the first place.
+  // The week selector is shown on every page. Hiding it made changing week a
+  // two-step move -- go to Home, change it, come back -- on the pages most
+  // likely to raise the question.
+  //
+  // The tab also lives in the address, which it did not before: reloading
+  // dropped you back on Home, and there was no way to reopen the app on the
+  // page you were last reading. It is what makes the page addressable at all.
+  if (!fromHash && location.hash.slice(1) !== tab) {
+    history.replaceState(null, "", `#${tab}`);
+  }
   render();
+}
+
+function initRouting() {
+  addEventListener("hashchange", () => {
+    const tab = location.hash.slice(1);
+    if (tab && tab !== state.tab) setTab(tab, { fromHash: true });
+  });
 }
 
 function initTheme() {
@@ -1677,6 +1729,11 @@ function initFullscreen() {
 async function main() {
   initTheme();
   initFullscreen();
+  initRouting();
+  // Open on the page the address names, so a reload or a saved link lands
+  // where it says it will.
+  const initial = location.hash.slice(1);
+  if (initial && VIEWS[initial]) state.tab = initial;
   $$(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   $("#week").addEventListener("change", (e) => { state.week = Number(e.target.value); render(); });
   $("#season").addEventListener("change", async (e) => {
@@ -1717,7 +1774,7 @@ async function main() {
   setInterval(() => { if (state.meta) renderHero(state.meta); }, 30000);
 
   await loadState();
-  await render();
+  setTab(state.tab, { fromHash: true });
 
   // The server refreshes on its own schedule; poll so an open tab reflects it
   // without the user reaching for reload.

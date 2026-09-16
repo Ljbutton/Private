@@ -785,6 +785,41 @@ td.team { font-weight: 600; }
   .panel.board { padding: 14px 10px 10px; }
 }
 
+/* ---------------------------------------------------------------- picks */
+/* Two contests, one screen. They are answered together -- the same slate
+   decides both -- and they used to be three stacked panels with a table of
+   line disagreements on top, so the two things actually being played were
+   below the fold. */
+.pick-split { align-items: start; }
+.pick-split > .panel { margin-bottom: 0; }
+.grid-2.pick-split { margin-bottom: 18px; }
+.survivor-now .tiles { margin-bottom: 12px; }
+.sub-head { font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .1em; color: var(--text-muted); margin-bottom: 7px; }
+/* Under a laptop there is no room for two contests abreast; stacking is the
+   honest answer rather than squeezing both into half a column. */
+@media (max-width: 1100px) {
+  .grid-2.pick-split { grid-template-columns: 1fr; }
+}
+
+/* ------------------------------------------------------------ sortable */
+/* A header that does something has to look like it does something, or the
+   feature is invisible and the column reads as a label. */
+.slate.sortable th[data-sort] {
+  cursor: pointer; user-select: none; white-space: nowrap;
+  transition: color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.slate.sortable th[data-sort]:hover { color: var(--text-primary); background: var(--surface-sunken); }
+.slate.sortable th[data-sort]:focus-visible { outline: none; box-shadow: var(--ring); }
+.slate.sortable th.sorted { color: var(--series-1); }
+/* The idle arrow is dim rather than absent: a column you *could* sort by
+   should say so before you hover it, not only after. */
+.sort-arrow { margin-left: 5px; font-size: 9px; opacity: .35; }
+.slate.sortable th.sorted .sort-arrow { opacity: 1; }
+.slate.sortable td.sorted {
+  background: color-mix(in srgb, var(--series-1) 7%, transparent);
+}
+
 /* ------------------------------------------------------------------- news */
 /* Read by scanning, not by looking one thing up, so both halves stay open and
    sit side by side: the question is "has anything changed before I pick", and
