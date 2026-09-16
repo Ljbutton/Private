@@ -483,10 +483,10 @@ than failing.
 Windows and macOS runners and attaches the result to the run. Actions tab →
 *Build desktop app* → download the artifact for your platform.
 
-- **Windows** — `NFLPicker-windows-full` unzips to one `.exe`.
+- **Windows** — `TheEdge-windows-full` unzips to one `.exe`.
 - **macOS** — two artifacts, one per architecture. Take
-  `NFLPicker-macos-arm-full` on any Mac with Apple silicon (M1 and later) and
-  `NFLPicker-macos-intel-full` on an Intel Mac. `uname -m` says which you have:
+  `TheEdge-macos-arm-full` on any Mac with Apple silicon (M1 and later) and
+  `TheEdge-macos-intel-full` on an Intel Mac. `uname -m` says which you have:
   `arm64` or `x86_64`. The wrong one does not warn, it simply refuses to open.
 
   There are two layers to unwrap, because a GitHub artifact is always a zip and
@@ -495,14 +495,21 @@ Windows and macOS runners and attaches the result to the run. Actions tab →
   *containing* a `.tar.gz`, and the tar is what preserves both:
 
   ```bash
-  cd ~/Downloads                            # where the browser put it
-  unzip -o NFLPicker-macos-arm-full.zip     # skip if Safari already expanded it
-  tar -xzf NFLPicker-macos-arm.tar.gz
-  xattr -dr com.apple.quarantine NFLPicker.app   # it was downloaded, so Gatekeeper
-  open NFLPicker.app
+  cd ~/Downloads                           # where the browser put it
+  unzip -o TheEdge-macos-arm-full.zip      # skip if Safari already expanded it
+  tar -xzf TheEdge-macos-arm.tar.gz
+  xattr -dr com.apple.quarantine TheEdge.app   # it was downloaded, so Gatekeeper
+  open TheEdge.app
   ```
 
-  Lost track of where it landed? `find ~ -maxdepth 3 -name "NFLPicker-macos*"`.
+  Run those from Terminal rather than double-clicking in Finder. Both reach the
+  same `.app`, but Finder's Archive Utility copies the download's quarantine
+  flag onto everything it extracts, while `tar` does not — so the Terminal
+  route usually needs no `xattr` line at all. It is listed anyway because it is
+  harmless when there is nothing to remove, and it is the whole fix when there
+  is.
+
+  Lost track of where it landed? `find ~ -maxdepth 3 -name "TheEdge-macos*"`.
 
   Without the `xattr` line macOS says the app "is damaged and can't be opened".
   It is not damaged — that is what Gatekeeper says about anything unsigned that
@@ -1037,10 +1044,10 @@ Get a key at [the-odds-api.com](https://the-odds-api.com/), then:
 echo "ODDS_API_KEY=your-key-here" >> .env
 
 # packaged app, macOS
-echo "ODDS_API_KEY=your-key-here" >> ~/Library/Application\ Support/NFLPicker/.env
+echo "ODDS_API_KEY=your-key-here" >> ~/Library/Application\ Support/TheEdge/.env
 
 # packaged app, Windows
-echo ODDS_API_KEY=your-key-here >> %LOCALAPPDATA%\NFLPicker\.env
+echo ODDS_API_KEY=your-key-here >> %LOCALAPPDATA%\TheEdge\.env
 ```
 
 Restart the app, then hit refresh. The Connections list in the sidebar will show
@@ -1097,8 +1104,14 @@ scheduler runs every due job immediately and carries on from the last snapshot.
 | | Path |
 |---|---|
 | From source | `data/nflpicker.db` |
-| Packaged, macOS | `~/Library/Application Support/NFLPicker/` |
-| Packaged, Windows | `%LOCALAPPDATA%\NFLPicker\` |
+| Packaged, macOS | `~/Library/Application Support/TheEdge/` |
+| Packaged, Windows | `%LOCALAPPDATA%\TheEdge\` |
+
+Installed before the rename? Those are the paths for a *new* install. An
+existing `NFLPicker` directory keeps being read exactly where it is — the app
+was renamed, the picks were not, and moving a live database on first launch is
+a worse bet than leaving it alone. Nothing is ever written to the old location
+that a new install would then fail to find.
 
 The database is deliberately **outside** the application. Updating means
 replacing code, never touching that file:
