@@ -45,7 +45,9 @@ def test_the_frozen_entry_point_picks_a_per_user_data_directory():
 
     path = default_data_dir()
     assert isinstance(path, Path)
-    assert path.name == "NFLPicker"
+    # Either name is correct: a fresh install gets the new one, an install
+    # that predates the rename keeps the directory its data is already in.
+    assert path.name in {"TheEdge", "NFLPicker"}
     assert path.is_absolute()
 
 

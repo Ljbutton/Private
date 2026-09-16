@@ -133,3 +133,57 @@ def test_an_obviously_malformed_key_is_rejected_without_a_network_call(store):
 
 def test_an_empty_key_says_so(store):
     assert settings.validate_odds_key("")["ok"] is False
+
+
+# ------------------------------------------------- the rename must not orphan data
+
+def test_an_existing_install_keeps_reading_its_own_database(tmp_path, monkeypatch):
+    """The app was renamed; the picks were not.
+
+    An install that already has data under the old name must go on using it.
+    Moving it on first launch would be the version of this that loses a
+    season of picks to a failed copy.
+    """
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "win32")
+    from nflpicker import config
+
+    legacy = tmp_path / "NFLPicker"
+    legacy.mkdir()
+    assert config._default_data_dir() == legacy
+
+
+def test_a_fresh_install_uses_the_new_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "win32")
+    from nflpicker import config
+
+    assert config._default_data_dir() == tmp_path / "TheEdge"
+
+
+def test_the_new_name_wins_when_both_exist(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "win32")
+    from nflpicker import config
+
+    (tmp_path / "NFLPicker").mkdir()
+    (tmp_path / "TheEdge").mkdir()
+    assert config._default_data_dir() == tmp_path / "TheEdge"
+
+
+def test_both_entry_points_agree_on_where_data_lives(tmp_path, monkeypatch):
+    """config.py and desktop_entry.py each compute this, and a packaged build
+    uses one to set the environment variable the other reads."""
+    import importlib.util
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("sys.platform", "win32")
+    (tmp_path / "NFLPicker").mkdir()
+
+    from nflpicker import config
+
+    spec = importlib.util.spec_from_file_location(
+        "desktop_entry", "scripts/desktop_entry.py")
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    assert entry.default_data_dir() == config._default_data_dir()

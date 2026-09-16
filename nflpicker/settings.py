@@ -216,7 +216,7 @@ def save(values: dict[str, str]) -> dict:
         changed.append(key)
 
     lines = [
-        "# NFL Picker settings. Written by the Settings page; safe to edit by hand.",
+        "# The Edge settings. Written by the Settings page; safe to edit by hand.",
         "# Anything here overrides the environment.",
     ]
     lines += [f"{k}={v}" for k, v in sorted(stored.items())]

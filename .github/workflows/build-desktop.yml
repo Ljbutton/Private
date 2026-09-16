@@ -118,8 +118,8 @@ jobs:
         if: startsWith(matrix.target, 'macos')
         run: |
           set -e
-          codesign --force --deep --sign - dist/NFLPicker.app
-          codesign --verify --deep --strict --verbose=2 dist/NFLPicker.app
+          codesign --force --deep --sign - dist/TheEdge.app
+          codesign --verify --deep --strict --verbose=2 dist/TheEdge.app
 
       # Confirms the frozen binary actually starts and serves, rather than
       # only that PyInstaller exited 0 -- the failure this catches is a missing
@@ -131,9 +131,9 @@ jobs:
         run: |
           set -e
           if [ "${{ matrix.target }}" = "windows" ]; then
-            BIN="dist/NFLPicker.exe"
+            BIN="dist/TheEdge.exe"
           else
-            BIN="dist/NFLPicker.app/Contents/MacOS/NFLPicker"
+            BIN="dist/TheEdge.app/Contents/MacOS/TheEdge"
           fi
           test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist | head -50; exit 1; }
           NFLPICKER_DEMO=1 "$BIN" --selftest
@@ -153,7 +153,7 @@ jobs:
         run: |
           $env:NFLPICKER_DEMO = "1"
           $env:NFLPICKER_DATA_DIR = "$PWD\nostdout-data"
-          $p = Start-Process -FilePath dist/NFLPicker.exe `
+          $p = Start-Process -FilePath dist/TheEdge.exe `
                  -ArgumentList "--selftest" -Wait -PassThru
           $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
           if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
@@ -172,23 +172,23 @@ jobs:
         if: startsWith(matrix.target, 'macos')
         run: |
           set -e
-          test -d dist/NFLPicker.app || { echo "no .app bundle"; ls -R dist | head -50; exit 1; }
-          tar -czf NFLPicker-${{ matrix.target }}.tar.gz -C dist NFLPicker.app
-          shasum -a 256 NFLPicker-${{ matrix.target }}.tar.gz
-          du -sh NFLPicker-${{ matrix.target }}.tar.gz
+          test -d dist/TheEdge.app || { echo "no .app bundle"; ls -R dist | head -50; exit 1; }
+          tar -czf TheEdge-${{ matrix.target }}.tar.gz -C dist TheEdge.app
+          shasum -a 256 TheEdge-${{ matrix.target }}.tar.gz
+          du -sh TheEdge-${{ matrix.target }}.tar.gz
 
       - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
         with:
-          name: NFLPicker-windows-${{ inputs.profile || 'full' }}
-          path: dist/NFLPicker.exe
+          name: TheEdge-windows-${{ inputs.profile || 'full' }}
+          path: dist/TheEdge.exe
           if-no-files-found: error
           retention-days: 30
 
       - uses: actions/upload-artifact@v7
         if: startsWith(matrix.target, 'macos')
         with:
-          name: NFLPicker-${{ matrix.target }}-${{ inputs.profile || 'full' }}
-          path: NFLPicker-${{ matrix.target }}.tar.gz
+          name: TheEdge-${{ matrix.target }}-${{ inputs.profile || 'full' }}
+          path: TheEdge-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 30

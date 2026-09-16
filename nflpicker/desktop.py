@@ -33,7 +33,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.desktop")
 
-WINDOW_TITLE = "NFL Picker"
+WINDOW_TITLE = "The Edge"
 
 # A onefile build unpacks its whole payload -- scipy, scikit-learn, pandas,
 # pyarrow -- to a temp directory before a line of Python runs, and on Windows
@@ -241,7 +241,7 @@ def _open_in_browser(url: str, server: ServerThread) -> int:
     if not opened:
         _alert(
             WINDOW_TITLE,
-            "NFL Picker could not open a window, and could not open your "
+            "The Edge could not open a window, and could not open your "
             f"browser either.\n\nOpen this address yourself:\n{url}\n\n"
             "On Windows, installing the Microsoft Edge WebView2 runtime gives "
             "you the proper app window.\n\nClosing this message quits.",
@@ -262,11 +262,11 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
     """Start the server and open it in a native window."""
     get_config().ensure_dirs()
     logfile = _start_logging()
-    log.info("starting NFL Picker (frozen=%s, timeout=%.0fs)",
+    log.info("starting The Edge (frozen=%s, timeout=%.0fs)",
              getattr(sys, "frozen", False), STARTUP_TIMEOUT)
     server = ServerThread()
 
-    print("starting NFL Picker…", flush=True)
+    print("starting The Edge…", flush=True)
     try:
         url = server.start()
     except Exception as exc:  # noqa: BLE001
@@ -274,7 +274,7 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
         print(f"could not start the server: {exc}", flush=True)
         _alert(
             WINDOW_TITLE,
-            f"NFL Picker could not start.\n\n{exc}\n\n"
+            f"The Edge could not start.\n\n{exc}\n\n"
             + (f"Details: {logfile}" if logfile else "No log file could be written."),
         )
         return 1
@@ -315,7 +315,7 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
         log.error("the window loop returned after %.2fs; no window was shown", elapsed)
         _alert(
             WINDOW_TITLE,
-            "NFL Picker opened and closed immediately without showing a "
+            "The Edge opened and closed immediately without showing a "
             "window.\n\nThis usually means the webview backend could not "
             f"load.\n\nDetails: {log_path()}",
         )

@@ -1,4 +1,4 @@
-# PyInstaller spec for the NFL Picker desktop build.
+# PyInstaller spec for The Edge desktop build.
 #
 # Two profiles, because the dependency footprint is dominated by two packages:
 #   full  — everything, including downloading play-by-play and retraining
@@ -95,7 +95,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 common = dict(
-    name="NFLPicker",
+    name="TheEdge",
     debug=False,
     strip=False,
     # UPX is off deliberately. It saves some size, but packed executables are
@@ -114,18 +114,18 @@ if MACOS:
     # pyarrow. That is a quarter of a gigabyte of extraction between the
     # double-click and the window, every time, which reads as a hung app.
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
-    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="NFLPicker")
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="TheEdge")
 
     # macOS wants an .app bundle, not a bare Unix executable. Double-clicking a
     # bare binary in Finder opens it in Terminal, which is not an application.
     app = BUNDLE(
         coll,
-        name="NFLPicker.app",
+        name="TheEdge.app",
         icon=None,
-        bundle_identifier="com.nflpicker.desktop",
+        bundle_identifier="com.theedge.desktop",
         info_plist={
-            "CFBundleName": "NFL Picker",
-            "CFBundleDisplayName": "NFL Picker",
+            "CFBundleName": "The Edge",
+            "CFBundleDisplayName": "The Edge",
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "0.1.0",
             # Without this the window renders at 1x and every line of text on

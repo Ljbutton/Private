@@ -25,7 +25,14 @@ def _load_dotenv(path: Path) -> None:
 
 
 def _default_data_dir() -> Path:
-    """Where a packaged build keeps its data, mirroring scripts/desktop_entry.py."""
+    """Where a packaged build keeps its data, mirroring scripts/desktop_entry.py.
+
+    "TheEdge" for a new install; an existing "NFLPicker" directory is used as
+    it stands. The app was renamed, the picks were not -- and the safe way to
+    carry a database across a rename is to keep reading it where it already
+    is, not to move it on first launch and hope the copy survived. Nothing is
+    ever written to the old location that a new install would look for.
+    """
     import sys
 
     if sys.platform == "win32":
@@ -34,7 +41,11 @@ def _default_data_dir() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "NFLPicker"
+    for name in ("TheEdge", "NFLPicker"):
+        candidate = base / name
+        if candidate.exists():
+            return candidate
+    return base / "TheEdge"
 
 
 # Source checkout first, then the data directory. The second one is what makes a

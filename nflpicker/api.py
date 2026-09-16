@@ -41,7 +41,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         yield
         await scheduler.stop()
 
-    app = FastAPI(title="NFL Picker", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="The Edge", version="0.1.0", lifespan=lifespan)
     app.state.pipeline = pipeline
     app.state.scheduler = scheduler
 

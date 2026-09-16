@@ -13,13 +13,25 @@ from pathlib import Path
 
 
 def default_data_dir() -> Path:
+    """Where the app keeps its data.
+
+    "TheEdge" for a new install; an existing "NFLPicker" directory is used as
+    it stands. The app was renamed, the picks were not -- and the safe way to
+    carry a database across a rename is to keep reading it where it already
+    is, not to move it on first launch and hope the copy survived. Nothing is
+    ever written to the old location that a new install would look for.
+    """
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "NFLPicker"
+    for name in ("TheEdge", "NFLPicker"):
+        candidate = base / name
+        if candidate.exists():
+            return candidate
+    return base / "TheEdge"
 
 
 def ensure_stdio(data_dir: Path) -> None:

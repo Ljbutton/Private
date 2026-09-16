@@ -132,8 +132,19 @@ a { color: var(--series-1); }
   border-right: 1px solid var(--border);
 }
 .side-brand { padding: 0 10px; }
-.logo { font-size: 19px; font-weight: 700; letter-spacing: -0.03em; }
-.logo span { color: var(--series-1); }
+.logo { display: flex; align-items: center; gap: 9px;
+  font-size: 19px; font-weight: 700; letter-spacing: -0.03em; }
+.logo-text span { color: var(--series-1); }
+
+/* The mark is the thing the app is named for: a line climbing away from the
+   market's flat one, with the gap between them left open rather than filled.
+   Drawn rather than lettered so it reads at 28px in the sidebar and at 16px
+   in a tab. */
+.brandmark { width: 26px; height: 26px; flex: none; overflow: visible; }
+.brandmark path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.bm-flat { stroke: var(--text-muted); stroke-width: 2; opacity: .55; }
+.bm-rise { stroke: var(--series-1); stroke-width: 2.6; }
+.bm-dot  { fill: var(--series-1); stroke: var(--surface-sunken); stroke-width: 1.5; }
 .logo-sub {
   margin-top: 3px; font-size: 10px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .14em; color: var(--text-muted);
@@ -180,14 +191,21 @@ a { color: var(--series-1); }
 .icon-btn:hover { color: var(--text-primary); border-color: var(--border-strong); }
 .icon-btn[disabled] { opacity: .45; cursor: progress; }
 .icon-btn.spinning svg { animation: spin 900ms linear infinite; }
+.icon-btn.on { color: var(--series-1); border-color: var(--series-1); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .main { min-width: 0; padding: 26px 30px 40px; }
 
 /* ------------------------------------------------------------------ hero */
 .hero { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 22px; }
-.hero h1 { font-size: 29px; font-weight: 700; letter-spacing: -0.032em; margin-top: 7px; }
-.hero-sub { margin: 5px 0 0; color: var(--text-secondary); font-size: 13.5px; }
+/* The week on screen is the headline. It used to be a subtitle under a
+   greeting, with the date beside it -- and the same date again in the clock
+   two inches to the right. */
+.hero h1 { font-size: 38px; font-weight: 700; letter-spacing: -0.034em;
+  margin-top: 4px; line-height: 1.1; }
+.hero h1.past { color: var(--text-secondary); }
+.hero-greet { font-size: 13.5px; font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 2px; }
 .eyebrow {
   display: flex; align-items: center; gap: 7px;
   font-size: 10.5px; font-weight: 650; text-transform: uppercase;

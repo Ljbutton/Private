@@ -166,14 +166,17 @@ function renderHero(meta) {
     ? `Live · updates every ${fastest >= 60 ? `${Math.round(fastest / 60)} min` : `${fastest}s`}`
     : "Live";
 
-  const day = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  // What you are looking at *is* the headline. The date used to sit here too
+  // and again in the clock two inches to the right, so it said nothing twice.
   // Reads the viewed season rather than the current one, so browsing 2024 does
   // not leave a line at the top insisting it is 2026.
   const season = state.season || meta.season;
   const week = state.week || meta.week;
-  $("#herosub").textContent = season === meta.season && week === meta.week
-    ? `${day} — week ${week} of the ${season} season`
-    : `${day} — viewing week ${week} of ${season}`;
+  const live = season === meta.season && week === meta.week;
+  const line = $("#whenline");
+  line.textContent = `Week ${week} · ${season} season`;
+  line.classList.toggle("past", !live);
+  line.title = live ? "The current week" : "Not the current week";
 }
 
 /* How serious an injury status is, for colour. Out and IR are settled; a
@@ -209,7 +212,7 @@ function kickoffShort(iso) {
    afterwards touches one function and cannot corrupt a template it never
    parses. <details> is used so keyboard support, find-in-page and open state
    all come for free. */
-const FOLDING_TABS = new Set(["teams", "picks", "edge", "performance"]);
+const FOLDING_TABS = new Set(["teams", "picks", "performance"]);
 
 function foldPanels(root) {
   if (!FOLDING_TABS.has(state.tab)) return;
@@ -1377,99 +1380,6 @@ async function renderPerformance() {
   calibrationChart($("#chart-calib"), r.calibration.buckets || [], { height: 240 });
 }
 
-// -------------------------------------------------------------------- edge
-async function renderEdge() {
-  const root = $("#view");
-  const data = await api("/api/edge");
-  const m = data.movement || {};
-  const cov = data.coverage || {};
-
-  if (!m.n) {
-    root.innerHTML = `<div class="panel">
-      <header><h2>Does the line move toward us?</h2></header>
-      <div class="empty">${esc(m.note || "Not enough observations yet.")}</div>
-      <div class="tiles">
-        <div class="tile"><div class="label">Games with a line</div>
-          <div class="value">${cov.games_with_any_line ?? 0}</div></div>
-        <div class="tile"><div class="label">Games with movement</div>
-          <div class="value">${cov.games_with_movement ?? 0}</div>
-          <div class="sub">need two observations each</div></div>
-        <div class="tile"><div class="label">Watching since</div>
-          <div class="value" style="font-size:15px">${cov.watching_since
-            ? when(cov.watching_since) : "–"}</div></div>
-      </div></div>`;
-    return;
-  }
-
-  const verdict = m.beats_coin_flip
-    ? "The line moves toward us more often than chance."
-    : "Not yet distinguishable from a coin flip.";
-
-  root.innerHTML = `<div class="panel">
-    <header><h2>Does the line move toward us?</h2>
-      <span class="hint">${m.n} games where we had a view before the market settled</span></header>
-    <div class="tiles">
-      <div class="tile"><div class="label">Line moved our way</div>
-        <div class="value ${m.beats_coin_flip ? "pos" : ""}">${pct(m.agreement_rate, 1)}</div>
-        <div class="sub">${m.agreed} of ${m.n} · 95% CI ${pct(m.ci_low, 1)}–${pct(m.ci_high, 1)}</div></div>
-      <div class="tile"><div class="label">Closing-line value</div>
-        <div class="value ${(m.avg_clv ?? 0) > 0 ? "pos" : "neg"}">${signed(m.avg_clv, 2)}</div>
-        <div class="sub">points per game vs the close</div></div>
-      <div class="tile"><div class="label">Positive CLV</div>
-        <div class="value">${pct(m.positive_clv_rate, 1)}</div>
-        <div class="sub">share of games</div></div>
-      <div class="tile"><div class="label">Average move</div>
-        <div class="value">${num(m.avg_move, 2)}</div>
-        <div class="sub">points, open to close</div></div>
-    </div>
-    <p class="note"><strong>${esc(verdict)}</strong> This is the sharpest test available,
-      and a different question from "did the pick win". If our number carries information the
-      opening market lacks, the line should drift toward us more often than away — that is
-      measurable without any opinion about the final score, and line movement is far less noisy
-      than results, so it needs a fraction of the sample an ATS record would.
-      A 50% rate is the coin flip: the line was always going to move one way or the other.</p>
-  </div>
-
-  <div class="grid-2">
-    <div class="panel"><header><h2>By how early we formed the view</h2>
-      <span class="hint">an edge should be largest before the market has worked</span></header>
-      <table><thead><tr><th>Lead time</th><th>Games</th><th>Moved our way</th><th>CLV</th></tr></thead>
-      <tbody>${(m.by_lead_time || []).map((b) => `<tr>
-        <td class="team">${esc(b.window)}</td><td>${b.n}</td>
-        <td>${b.agreement_rate === null ? "–" : pct(b.agreement_rate, 1)}</td>
-        <td>${b.avg_clv === null ? "–" : signed(b.avg_clv, 2)}</td></tr>`).join("")}</tbody>
-      </table></div>
-    <div class="panel"><header><h2>What we have witnessed</h2>
-      <span class="hint">this measure cannot be backfilled</span></header>
-      <div class="tiles">
-        <div class="tile"><div class="label">Games with a line</div>
-          <div class="value">${cov.games_with_any_line ?? 0}</div></div>
-        <div class="tile"><div class="label">With movement</div>
-          <div class="value">${cov.games_with_movement ?? 0}</div></div>
-        <div class="tile"><div class="label">Snapshots</div>
-          <div class="value">${(cov.snapshots ?? 0).toLocaleString()}</div></div>
-      </div>
-      <p class="note">Nobody publishes a history of intraday NFL line movement, so this
-        accumulates only while the app is running before kickoff. Leaving it off between
-        Sundays is the one thing that stops this page from ever filling in.</p>
-    </div>
-  </div>
-
-  <div class="panel"><header><h2>Biggest moves</h2>
-    <span class="hint">where the market revised most after we had formed a view</span></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Game</th><th>Opened</th><th>Closed</th><th>Moved</th>
-        <th>Our lean</th><th>Agreed</th><th>CLV</th></tr></thead>
-      <tbody>${(m.biggest_moves || []).map((c) => `<tr>
-        <td class="team">${esc(c.away)} <span class="muted">@</span> ${esc(c.home)}</td>
-        <td>${num(c.open_spread, 1)}</td><td>${num(c.close_spread, 1)}</td>
-        <td>${signed(c.movement, 1)}</td><td>${signed(c.lean, 1)}</td>
-        <td>${c.agreed ? '<span class="badge" style="border-color:var(--good);color:var(--success-text)">yes</span>'
-             : '<span class="badge">no</span>'}</td>
-        <td>${signed(c.clv, 1)}</td></tr>`).join("")}</tbody>
-    </table></div></div>`;
-}
-
 // --------------------------------------------------------------- settings
 /* What you have to tell this app, and where it goes.
 
@@ -1671,7 +1581,7 @@ async function renderAssistant() {
 
 // -------------------------------------------------------------------- shell
 const VIEWS = { home: renderHome, teams: renderTeams,
-  picks: renderPicks, news: renderNews, edge: renderEdge,
+  picks: renderPicks, news: renderNews,
   scoreboard: renderScoreboard, performance: renderPerformance,
   assistant: renderAssistant, settings: renderSettings };
 
@@ -1720,26 +1630,53 @@ async function loadState() {
 function setTab(tab) {
   state.tab = tab;
   $$(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
-  $("#week-wrap").classList.toggle("hidden", !["home", "games", "picks"].includes(tab));
+  // Shown on every page. Hiding it meant changing week was a two-step move --
+  // go to Home, change it, come back -- on the pages most likely to prompt the
+  // question in the first place.
   render();
 }
 
 function initTheme() {
-  const saved = localStorage.getItem("nflpicker-theme");
-  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  // Dark unless told otherwise. A stored choice still wins in both directions,
+  // so someone who picked light keeps light; only the unset case changes.
+  let saved = null;
+  try { saved = localStorage.getItem("theedge-theme") || localStorage.getItem("nflpicker-theme"); }
+  catch { /* private window, blocked storage */ }
+  document.documentElement.setAttribute("data-theme", saved || "dark");
   $("#theme").addEventListener("click", () => {
     const current = document.documentElement.getAttribute("data-theme");
     const isDark = current === "dark" ||
       (!current && matchMedia("(prefers-color-scheme: dark)").matches);
     const next = isDark ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
-    localStorage.setItem("nflpicker-theme", next);
+    try { localStorage.setItem("theedge-theme", next); } catch { /* not fatal */ }
     render();
+  });
+}
+
+/* Full screen. The window has no browser chrome to hide, so this is the only
+   way to give the board the whole display -- which is what it is for. */
+function initFullscreen() {
+  const button = $("#fullscreen");
+  if (!button) return;
+  const sync = () => button.classList.toggle("on", !!document.fullscreenElement);
+  button.addEventListener("click", async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch { /* refused by the platform; the button simply does nothing */ }
+    sync();
+  });
+  document.addEventListener("fullscreenchange", sync);
+  // F11 is what people already press, and a webview does not handle it itself.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "F11") { e.preventDefault(); button.click(); }
   });
 }
 
 async function main() {
   initTheme();
+  initFullscreen();
   $$(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   $("#week").addEventListener("change", (e) => { state.week = Number(e.target.value); render(); });
   $("#season").addEventListener("change", async (e) => {

@@ -3,16 +3,25 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>NFL Picker</title>
+<title>The Edge</title>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🏈</text></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 14 L8 2 L15 14 L8 10.5 Z' fill='%2310b981'/></svg>" />
 </head>
 <body>
 <div class="shell">
 
   <aside class="side">
     <div class="side-brand">
-      <div class="logo">NFL<span>Picker</span></div>
+      <div class="logo">
+        <!-- The edge itself: a line that climbs away from the market's flat
+             one, with the gap between them left open. -->
+        <svg class="brandmark" viewBox="0 0 28 28" aria-hidden="true">
+          <path class="bm-flat" d="M2 20h24" />
+          <path class="bm-rise" d="M2 20 L14 6 L26 13" />
+          <circle class="bm-dot" cx="14" cy="6" r="2.6" />
+        </svg>
+        <span class="logo-text">The<span>Edge</span></span>
+      </div>
       <div class="logo-sub">Model &amp; market desk</div>
     </div>
 
@@ -29,9 +38,6 @@
       <button class="tab" role="tab" data-tab="news" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h13a1 1 0 0 1 1 1v13a2 2 0 0 0 2 2H5a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1zm2 3v4h9V7zm0 6v2h9v-2zm0 4v2h6v-2z"/></svg>
         <span>News</span></button>
-      <button class="tab" role="tab" data-tab="edge" aria-selected="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.5 9.5 11l4 4L21 7.5 19.6 6l-6.1 6.1-4-4L1.6 16z"/><path d="M15 6h6v6h-2V8h-4z"/></svg>
-        <span>Edge</span></button>
       <button class="tab" role="tab" data-tab="scoreboard" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v2h2v4a4 4 0 0 1-4 4h-.4A5 5 0 0 1 13 15.9V18h3v3H8v-3h3v-2.1A5 5 0 0 1 7.4 13H7a4 4 0 0 1-4-4V5h2zm0 4v2a2 2 0 0 0 2 2V7zm12 0v4a2 2 0 0 0 2-2V7z"/></svg>
         <span>Scoreboard</span></button>
@@ -60,17 +66,20 @@
 
   <main class="main">
     <header class="hero">
-      <div>
+      <div class="hero-left">
         <div class="eyebrow"><span class="pulse"></span><span id="cadence">Live</span></div>
-        <h1 id="greeting">NFL Picker</h1>
-        <p class="hero-sub" id="herosub"></p>
+        <h1 id="whenline">Week 1</h1>
       </div>
       <div class="hero-right">
+        <div class="hero-greet" id="greeting"></div>
         <div class="clock" id="clock"></div>
         <div class="clock-date" id="clockdate"></div>
         <div class="hero-controls">
           <select id="season" aria-label="Season"></select>
           <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
+          <button class="icon-btn" id="fullscreen" title="Full screen (F11)" aria-label="Toggle full screen">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg>
+          </button>
           <button class="icon-btn" id="theme" title="Toggle light and dark" aria-label="Toggle theme">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18zm0 2.2V18.8a6.8 6.8 0 0 1 0-13.6z"/></svg>
           </button>
