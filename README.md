@@ -491,25 +491,31 @@ release notes say which platforms that particular run rebuilt: a push builds
 Windows only, and the Mac builds are started by hand from the Actions tab, so
 assets are replaced one at a time rather than all together.
 
-- **Windows** — `TheEdge-windows.zip` unzips to a **folder**. Run `TheEdge.exe`
-  *inside* it; the program needs the files beside it and will not start if you
-  move the exe out on its own. Right-click it once and pin it to the taskbar and
-  you never open the folder again.
+- **Windows** — take `TheEdge-windows-setup.exe`. Double-click it; it installs
+  per user into `%LOCALAPPDATA%\Programs\TheEdge`, needs no administrator
+  rights, and puts The Edge in the Start menu.
 
-  **Unblock it first.** Windows tags everything extracted from a downloaded zip
-  as having come from the internet, and .NET refuses to load a tagged assembly.
-  The app reaches WebView2 through pythonnet, which is .NET, so the tag stops it
-  opening its own window and it falls back to a browser tab — nothing is
-  corrupt, and reinstalling does not help. Clear it once, in PowerShell:
+  The installer is not ceremony, it is the fix for a real problem. Windows tags
+  anything downloaded from the internet, Explorer copies that tag onto every
+  file it extracts from a zip, and **.NET refuses to load a tagged assembly**.
+  The app reaches WebView2 through pythonnet, which is .NET, so on a zip
+  install the tag stopped the app opening its own window and it fell back to a
+  browser tab — nothing corrupt, nothing missing, and reinstalling did not
+  help. With an installer the tag lands on `setup.exe` and is never read again;
+  the files it writes carry none, because the installer wrote them.
+
+  The one-file build never needed any of this, which is why the problem only
+  appeared when the build became a folder: a one-file build unpacks its own
+  payload at runtime, and files a process writes itself are not tagged. That
+  was the part of the one-file-to-folder trade nobody had priced.
+
+  `TheEdge-windows.zip` is still published for anyone who wants it without an
+  installer. It unzips to a folder — run `TheEdge.exe` *inside* it, and clear
+  the tag once, in PowerShell:
 
   ```powershell
   Get-ChildItem -Recurse "$HOME\Downloads\TheEdge-windows" | Unblock-File
   ```
-
-  Unblocking the `.zip` itself *before* extracting works too, and saves doing it
-  per file. The one-file build never needed this, which is why it only appeared
-  when the build became a folder: a one-file build unpacks its own payload at
-  runtime, and files a process writes itself are not tagged.
 
   It is a folder rather than a single file deliberately. A one-file build
   unpacks its whole payload — scipy, scikit-learn, pandas and pyarrow, a

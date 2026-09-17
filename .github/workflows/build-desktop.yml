@@ -236,39 +236,93 @@ jobs:
           }
           Write-Host "ok: the shipped zip opens its own window"
 
-      # The same zip, but tagged the way a browser tags a download.
+      # An installer, which is the actual fix for the tagging problem below.
       #
-      # Windows writes a Zone.Identifier stream onto anything fetched from the
-      # internet, and Explorer copies it onto every file it extracts. .NET
-      # refuses to load an assembly carrying it, and pywebview's Windows
-      # backend reaches WebView2 through pythonnet -- so the app cannot open
-      # its own window and silently opens a browser instead. The one-file build
-      # never hit this: it unpacks its own payload at runtime, and files a
-      # process writes itself are not tagged. Moving to a folder exposed it.
-      #
-      # Reported rather than enforced on this run, because it is a hypothesis
-      # until the log says otherwise, and a red build would hold up the release
-      # that carries the fix.
-      - name: Does a downloaded zip still work? (diagnostic)
+      # The tag lands on whatever was downloaded. When that is a zip, Explorer
+      # copies it onto every file it extracts and .NET then refuses to load
+      # pythonnet -- so the app cannot reach WebView2 and falls back to a
+      # browser tab. When it is an installer, the tag lands on setup.exe, and
+      # the files the installer writes are written by the installer process,
+      # which carry no tag at all. Same reason the old one-file build was never
+      # affected, except paid once at install rather than on every launch.
+      - name: Build the installer
         if: matrix.target == 'windows'
-        continue-on-error: true
         shell: pwsh
         run: |
-          $zip = "marked.zip"
-          Copy-Item TheEdge-windows.zip $zip
-          # Zone 3 is "Internet", which is what a browser writes.
-          Set-Content -Path $zip -Stream Zone.Identifier -Value @(
+          choco install innosetup --no-progress -y
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc /Qp packaging\windows-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          Move-Item packaging\TheEdge-windows-setup.exe . -Force
+          "{0:N0} MB" -f ((Get-Item TheEdge-windows-setup.exe).Length / 1MB)
+
+      # Installs it the way a person would, then runs what it installed. An
+      # installer that produces a file is not an installer that works, and the
+      # thing it is here to fix -- whether the installed copy can open its own
+      # window -- is only answerable by running the installed copy.
+      - name: Smoke test the installer
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $setup = "$PWD\TheEdge-windows-setup.exe"
+          # Tagged first, because that is the state it arrives in.
+          Set-Content -Path $setup -Stream Zone.Identifier -Value @(
             "[ZoneTransfer]", "ZoneId=3")
+          $dir = "$PWD\installed"
+          Start-Process -FilePath $setup -Wait -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+            "/DIR=$dir", "/LOG=$PWD\install.log")
+          if (-not (Test-Path "$dir\TheEdge.exe")) {
+            Get-Content "$PWD\install.log" -Tail 40
+            throw "the installer did not produce $dir\TheEdge.exe"
+          }
+          # The point of the whole exercise: files the installer wrote carry no
+          # zone tag, whatever tag the installer itself arrived with.
+          $dll = "$dir\_internal\pythonnet\runtime\Python.Runtime.dll"
+          $zone = Get-Content -Path $dll -Stream Zone.Identifier -ErrorAction SilentlyContinue
+          if ($zone) { throw "the installed Python.Runtime.dll is still tagged" }
+          Write-Host "installed assemblies carry no zone tag"
+
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\installed-data"
+          $p = Start-Process -FilePath "$dir\TheEdge.exe" `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "installed copy failed its selftest" }
+          if (-not (Select-String -Path $log -Pattern "usable=True" -Quiet)) {
+            throw "the installed copy cannot open its own window"
+          }
+          Write-Host "ok: the installed copy opens its own window"
+
+      # The zip extracted the way Explorer extracts it, which is the case that
+      # actually bites.
+      #
+      # Windows writes a Zone.Identifier stream onto anything fetched from the
+      # internet, and Explorer's zip extractor copies it onto every file it
+      # writes. .NET refuses to load an assembly carrying it, and pywebview
+      # reaches WebView2 through pythonnet -- so the app cannot open its own
+      # window and falls back to a browser tab. The one-file build never hit
+      # this: it unpacks its own payload at runtime, and files a process writes
+      # itself are not tagged. Moving to a folder exposed it.
+      #
+      # The first version of this test tagged the zip and used Expand-Archive,
+      # and reported everything clean. That was the test being wrong rather
+      # than the theory: PowerShell's extractor does not propagate the tag,
+      # Explorer's does, and the person who hit this used Explorer. So the
+      # tags are written onto the extracted files directly, which is the state
+      # Explorer leaves behind and the state Unblock-File is known to fix.
+      - name: A downloaded zip, extracted by Explorer, still fails
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
           $out = "$PWD\marked"
-          Expand-Archive -Path $zip -DestinationPath $out -Force
-          $dll = "$out\TheEdge\_internal\pythonnet\runtime\Python.Runtime.dll"
-          if (Test-Path $dll) {
-            $zone = Get-Content -Path $dll -Stream Zone.Identifier -ErrorAction SilentlyContinue
-            Write-Host "Python.Runtime.dll zone marking: $(if ($zone) { 'BLOCKED' } else { 'clean' })"
-          } else {
-            Write-Host "no pythonnet runtime in the bundle at all"
-            Get-ChildItem -Recurse "$out\TheEdge\_internal" -Filter "*.runtimeconfig.json" |
-              ForEach-Object { Write-Host "  config: $($_.FullName)" }
+          Expand-Archive -Path TheEdge-windows.zip -DestinationPath $out -Force
+          # What Explorer would have left behind.
+          Get-ChildItem -Recurse -File "$out" | ForEach-Object {
+            Set-Content -Path $_.FullName -Stream Zone.Identifier -Value @(
+              "[ZoneTransfer]", "ZoneId=3")
           }
           $env:NFLPICKER_DEMO = "1"
           $env:NFLPICKER_DATA_DIR = "$PWD\marked-data"
@@ -276,13 +330,30 @@ jobs:
                  -ArgumentList "--selftest" -Wait -PassThru
           $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
           if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
-          Write-Host "marked-zip selftest exit: $($p.ExitCode)"
+
+          $blocked = -not (Select-String -Path $log -Pattern "usable=True" -Quiet)
+          Write-Host "tagged copy opens its own window: $(-not $blocked)"
+
+          # Then the documented fix, which must work -- it is what the README
+          # and the app's own dialog tell people to run.
+          Get-ChildItem -Recurse -File "$out" | Unblock-File
+          $env:NFLPICKER_DATA_DIR = "$PWD\unblocked-data"
+          $p = Start-Process -FilePath "$out\TheEdge\TheEdge.exe" `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- after Unblock-File"; Get-Content $log }
+          if (-not (Select-String -Path $log -Pattern "usable=True" -Quiet)) {
+            throw "Unblock-File did not restore the native window — the advice in the README and the app dialog is wrong"
+          }
+          Write-Host "ok: Unblock-File restores the native window"
 
       - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
         with:
           name: TheEdge-windows-${{ inputs.profile || 'full' }}
-          path: TheEdge-windows.zip
+          path: |
+            TheEdge-windows-setup.exe
+            TheEdge-windows.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -358,24 +429,31 @@ jobs:
 
             | File | For |
             |---|---|
-            | `TheEdge-windows.zip` | Windows. Unzip, unblock (below), then run `TheEdge.exe` **inside** the folder. |
+            | `TheEdge-windows-setup.exe` | **Windows — use this one.** Double-click, done. |
+            | `TheEdge-windows.zip` | Windows, portable. Needs unblocking (below). |
             | `TheEdge-macos-arm.tar.gz` | Macs with Apple silicon (M1 and later) |
             | `TheEdge-macos-intel.tar.gz` | Intel Macs |
 
             `uname -m` says which Mac you have: `arm64` or `x86_64`.
 
-            **Windows: unblock the files after extracting.** Windows tags
-            anything out of a downloaded zip as internet-sourced, and .NET
-            will not load a tagged assembly — which stops the app opening its
-            own window and drops it to a browser tab. In PowerShell:
+            **The installer exists to avoid a real problem.** Windows tags
+            anything downloaded from the internet, Explorer copies that tag
+            onto every file it extracts from a zip, and .NET refuses to load a
+            tagged assembly — which stops the app opening its own window and
+            drops it to a browser tab. The installer sidesteps it entirely:
+            the tag lands on `setup.exe`, and the files the installer writes
+            carry none.
+
+            If you take the zip instead, unblock it after extracting:
 
             ```powershell
             Get-ChildItem -Recurse "$HOME\Downloads\TheEdge-windows" | Unblock-File
             ```
 
-            It will also warn on first run because the build is unsigned —
-            *More info* → *Run anyway*. On macOS, extract from Terminal rather
-            than Finder and see the README for the Gatekeeper step.
+            Either way Windows warns on first run because the build is
+            unsigned — *More info* → *Run anyway*. On macOS, extract from
+            Terminal rather than Finder and see the README for the Gatekeeper
+            step.
 
             This tag moves with every build, so the links above are always the
             newest one.
