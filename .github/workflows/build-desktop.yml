@@ -355,13 +355,18 @@ jobs:
 
           $opened = Select-String -Path $log -Pattern "usable=True" -Quiet
           Write-Host "RESULT tagged copy opens its own window: $opened"
+          # Confirmed on run 35180447121, which reproduced the reported error
+          # exactly: "Failed to resolve Python.Runtime.Loader.Initialize from
+          # ...\_internal\pythonnet\runtime\Python.Runtime.dll". So this is
+          # an assertion now rather than the warning it started as -- the
+          # behaviour is known, and a build where tagged assemblies stopped
+          # breaking the window would mean something changed underneath that
+          # everything written about this depends on.
           if ($opened) {
-            # Not fatal, because it would mean the explanation is incomplete
-            # rather than that the product regressed -- and blocking the
-            # release on my own theory being tidy would be the wrong trade.
-            Write-Warning ("Tagged DLLs did not stop the native window here. " +
-              "The zone tag may not be the whole story, even though " +
-              "Unblock-File fixed it on the machine that hit it.")
+            throw ("Tagged DLLs no longer stop the native window. That is not " +
+              "good news by default: the README, the release notes and the " +
+              "app's own dialog all explain this failure, and if it has gone " +
+              "away those explanations are now wrong.")
           }
 
           # Then the documented fix, which must work -- it is what the README
