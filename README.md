@@ -496,6 +496,21 @@ assets are replaced one at a time rather than all together.
   move the exe out on its own. Right-click it once and pin it to the taskbar and
   you never open the folder again.
 
+  **Unblock it first.** Windows tags everything extracted from a downloaded zip
+  as having come from the internet, and .NET refuses to load a tagged assembly.
+  The app reaches WebView2 through pythonnet, which is .NET, so the tag stops it
+  opening its own window and it falls back to a browser tab — nothing is
+  corrupt, and reinstalling does not help. Clear it once, in PowerShell:
+
+  ```powershell
+  Get-ChildItem -Recurse "$HOME\Downloads\TheEdge-windows" | Unblock-File
+  ```
+
+  Unblocking the `.zip` itself *before* extracting works too, and saves doing it
+  per file. The one-file build never needed this, which is why it only appeared
+  when the build became a folder: a one-file build unpacks its own payload at
+  runtime, and files a process writes itself are not tagged.
+
   It is a folder rather than a single file deliberately. A one-file build
   unpacks its whole payload — scipy, scikit-learn, pandas and pyarrow, a
   quarter of a gigabyte — to a temporary directory on *every* launch, which

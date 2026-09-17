@@ -236,6 +236,48 @@ jobs:
           }
           Write-Host "ok: the shipped zip opens its own window"
 
+      # The same zip, but tagged the way a browser tags a download.
+      #
+      # Windows writes a Zone.Identifier stream onto anything fetched from the
+      # internet, and Explorer copies it onto every file it extracts. .NET
+      # refuses to load an assembly carrying it, and pywebview's Windows
+      # backend reaches WebView2 through pythonnet -- so the app cannot open
+      # its own window and silently opens a browser instead. The one-file build
+      # never hit this: it unpacks its own payload at runtime, and files a
+      # process writes itself are not tagged. Moving to a folder exposed it.
+      #
+      # Reported rather than enforced on this run, because it is a hypothesis
+      # until the log says otherwise, and a red build would hold up the release
+      # that carries the fix.
+      - name: Does a downloaded zip still work? (diagnostic)
+        if: matrix.target == 'windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $zip = "marked.zip"
+          Copy-Item TheEdge-windows.zip $zip
+          # Zone 3 is "Internet", which is what a browser writes.
+          Set-Content -Path $zip -Stream Zone.Identifier -Value @(
+            "[ZoneTransfer]", "ZoneId=3")
+          $out = "$PWD\marked"
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+          $dll = "$out\TheEdge\_internal\pythonnet\runtime\Python.Runtime.dll"
+          if (Test-Path $dll) {
+            $zone = Get-Content -Path $dll -Stream Zone.Identifier -ErrorAction SilentlyContinue
+            Write-Host "Python.Runtime.dll zone marking: $(if ($zone) { 'BLOCKED' } else { 'clean' })"
+          } else {
+            Write-Host "no pythonnet runtime in the bundle at all"
+            Get-ChildItem -Recurse "$out\TheEdge\_internal" -Filter "*.runtimeconfig.json" |
+              ForEach-Object { Write-Host "  config: $($_.FullName)" }
+          }
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\marked-data"
+          $p = Start-Process -FilePath "$out\TheEdge\TheEdge.exe" `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          Write-Host "marked-zip selftest exit: $($p.ExitCode)"
+
       - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
         with:
@@ -316,13 +358,22 @@ jobs:
 
             | File | For |
             |---|---|
-            | `TheEdge-windows.zip` | Windows. Unzip, then run `TheEdge.exe` **inside** the folder. |
+            | `TheEdge-windows.zip` | Windows. Unzip, unblock (below), then run `TheEdge.exe` **inside** the folder. |
             | `TheEdge-macos-arm.tar.gz` | Macs with Apple silicon (M1 and later) |
             | `TheEdge-macos-intel.tar.gz` | Intel Macs |
 
             `uname -m` says which Mac you have: `arm64` or `x86_64`.
 
-            Windows will warn on first run because the build is unsigned —
+            **Windows: unblock the files after extracting.** Windows tags
+            anything out of a downloaded zip as internet-sourced, and .NET
+            will not load a tagged assembly — which stops the app opening its
+            own window and drops it to a browser tab. In PowerShell:
+
+            ```powershell
+            Get-ChildItem -Recurse "$HOME\Downloads\TheEdge-windows" | Unblock-File
+            ```
+
+            It will also warn on first run because the build is unsigned —
             *More info* → *Run anyway*. On macOS, extract from Terminal rather
             than Finder and see the README for the Gatekeeper step.
 

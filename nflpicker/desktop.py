@@ -234,6 +234,39 @@ def unavailable_because() -> str | None:
     return _UNAVAILABLE_BECAUSE
 
 
+# The .NET bridge pywebview reaches WebView2 through. When this is what
+# failed, the cause is nearly always the files being tagged rather than the
+# files being wrong.
+_DOTNET_MARKERS = ("python.runtime", "pythonnet", "clr", "loader.initialize")
+
+
+def _why_message(why: str, url: str) -> str:
+    """The dialog text, with the known causes named rather than listed.
+
+    A list of four things it might be is a worse answer than the one it is.
+    Windows tags every file extracted from a downloaded zip as having come
+    from the internet, and .NET will not load an assembly carrying that tag --
+    so pythonnet fails, pywebview cannot reach WebView2, and a browser opens
+    instead. Nothing is corrupt and nothing is missing, which is exactly why
+    the generic advice sends people looking in the wrong place.
+    """
+    head = ("The Edge could not open its own window and has opened your "
+            f"browser instead.\n\nReason: {why}\n\n")
+    if any(marker in why.lower() for marker in _DOTNET_MARKERS):
+        return head + (
+            "This is almost certainly Windows blocking the files, not a broken "
+            "install. Anything extracted from a downloaded zip is tagged as "
+            "coming from the internet, and .NET refuses to load a tagged "
+            "assembly.\n\nTo clear it, run this in PowerShell and start the "
+            "app again:\n\n"
+            "    Get-ChildItem -Recurse '<the TheEdge folder>' | Unblock-File\n\n"
+            f"The dashboard is at {url}")
+    return head + (
+        "On Windows this is usually the WebView2 runtime missing, or "
+        "TheEdge.exe being run outside its folder — the _internal folder next "
+        f"to it is required.\n\nThe dashboard is at {url}")
+
+
 def _open_in_browser(url: str, server: ServerThread) -> int:
     """Fallback when no native window is possible."""
     import webbrowser
@@ -255,14 +288,7 @@ def _open_in_browser(url: str, server: ServerThread) -> int:
     # instead of the app looks like a choice the app made rather than a failure
     # it hit, so nobody goes looking for a reason -- which is exactly how this
     # went two releases without anyone knowing why it happened.
-    _alert(
-        WINDOW_TITLE,
-        "The Edge could not open its own window and has opened your browser "
-        f"instead.\n\nReason: {why}\n\nOn Windows this is usually the WebView2 "
-        "runtime missing, or TheEdge.exe being run outside its folder — the "
-        "_internal folder next to it is required.\n\n"
-        f"The dashboard is at {url}",
-    )
+    _alert(WINDOW_TITLE, _why_message(why, url))
 
     opened = False
     try:

@@ -556,3 +556,40 @@ def test_a_working_window_clears_the_reason(monkeypatch):
 
     assert desktop.available() is True
     assert desktop.unavailable_because() is None
+
+
+def test_a_blocked_dotnet_assembly_is_named_as_such():
+    """The message people actually act on.
+
+    Windows tags every file extracted from a downloaded zip as coming from the
+    internet, and .NET refuses to load a tagged assembly -- so pythonnet fails,
+    pywebview cannot reach WebView2, and a browser opens instead. Nothing is
+    corrupt and nothing is missing, which is why the generic "install WebView2"
+    advice sends people looking in the wrong place entirely.
+    """
+    from nflpicker.desktop import _why_message
+
+    why = ("RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize "
+           r"from C:\Users\x\Downloads\TheEdge\_internal\pythonnet\runtime"
+           r"\Python.Runtime.dll")
+    text = _why_message(why, "http://127.0.0.1:1234")
+    assert "Unblock-File" in text
+    assert "WebView2 runtime missing" not in text, (
+        "naming the wrong cause is worse than naming none")
+
+
+def test_an_unknown_reason_keeps_the_general_advice():
+    from nflpicker.desktop import _why_message
+
+    text = _why_message("WebViewException: no backend", "http://127.0.0.1:1")
+    assert "WebView2" in text
+    assert "Unblock-File" not in text
+
+
+def test_the_dialog_always_carries_the_url():
+    """Whatever went wrong, the dashboard is still running and reachable --
+    that is the one line that keeps the app usable while it is diagnosed."""
+    from nflpicker.desktop import _why_message
+
+    for why in ("Python.Runtime.dll blocked", "something else entirely"):
+        assert "http://127.0.0.1:9" in _why_message(why, "http://127.0.0.1:9")
