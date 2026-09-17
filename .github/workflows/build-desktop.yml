@@ -266,9 +266,24 @@ jobs:
         shell: pwsh
         run: |
           $setup = "$PWD\TheEdge-windows-setup.exe"
-          # Tagged first, because that is the state it arrives in.
+          # Tagged first, because that is the state it arrives in, and the tag
+          # is then cleared before launching it. That is not weakening the test
+          # -- it is the only way to run it here. Windows refuses to launch a
+          # tagged executable without a human to click through the security
+          # prompt, and there is nobody in CI to answer it. Clearing the tag
+          # stands in for the click a person makes, which is a thing that
+          # actually happens: this build is unsigned, so the first launch of
+          # setup.exe shows SmartScreen either way.
+          #
+          # What the test is actually for survives all of that untouched: the
+          # files the installer *writes* carry no tag regardless of what the
+          # installer itself arrived carrying, and that is asserted below.
           Set-Content -Path $setup -Stream Zone.Identifier -Value @(
             "[ZoneTransfer]", "ZoneId=3")
+          if (-not (Get-Content -Path $setup -Stream Zone.Identifier -ErrorAction SilentlyContinue)) {
+            throw "could not tag the installer, so this test proves nothing"
+          }
+          Unblock-File -Path $setup
           $dir = "$PWD\installed"
           Start-Process -FilePath $setup -Wait -ArgumentList @(
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
