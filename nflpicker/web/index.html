@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>The Edge</title>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 14 L8 2 L15 14 L8 10.5 Z' fill='%2310b981'/></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'><g fill='none' stroke-linecap='round'><circle cx='14' cy='14' r='11.6' stroke='%235a6168' stroke-width='2.2'/><path d='M14 14 L19.1 10.4' stroke='%23e6ebf0' stroke-width='3'/><path d='M14 14 L6.1 9.5' stroke='%2310b981' stroke-width='2.6'/></g></svg>" />
 </head>
 <body>
 <div class="shell">
@@ -13,12 +13,19 @@
   <aside class="side">
     <div class="side-brand">
       <div class="logo">
-        <!-- The edge itself: a line that climbs away from the market's flat
-             one, with the gap between them left open. -->
+        <!-- A working clock. The rim is the market: the dial everything is
+             measured against, and the one part that does not move. The long
+             green hand is the edge. app.js turns both to the real time on
+             every minute; the angles written here are 1:50, which is the pose
+             the app icon is frozen at and what shows before the script runs.
+             aria-hidden because the header states the time in words. -->
         <svg class="brandmark" viewBox="0 0 28 28" aria-hidden="true">
-          <path class="bm-flat" d="M2 20h24" />
-          <path class="bm-rise" d="M2 20 L14 6 L26 13" />
-          <circle class="bm-dot" cx="14" cy="6" r="2.6" />
+          <circle class="bm-rim" cx="14" cy="14" r="11.6" />
+          <line class="bm-hand bm-hour" id="bm-hour"
+                x1="14" y1="14" x2="14" y2="7.6" transform="rotate(55 14 14)" />
+          <line class="bm-hand bm-minute" id="bm-minute"
+                x1="14" y1="14" x2="14" y2="4.6" transform="rotate(300 14 14)" />
+          <circle class="bm-pip" cx="14" cy="14" r="1.7" />
         </svg>
         <span class="logo-text">The<span>Edge</span></span>
       </div>

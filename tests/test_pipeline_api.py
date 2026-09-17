@@ -147,6 +147,10 @@ def test_state_endpoint_describes_the_installation(client):
     # where that reference reaches the browser.
     assert len(body["teams"]) == 32
     assert body["teams"]["KC"]["name"] == "Chiefs"
+    # The greeting is rendered from this. It can legitimately be empty -- a
+    # machine whose account is called `runner` has no name worth using -- so
+    # what matters is that the shape is always there for the page to read.
+    assert set(body["user"]) == {"name", "full", "source"}
 
 
 def test_games_endpoint_returns_renderable_cards(client):

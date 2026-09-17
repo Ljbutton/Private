@@ -131,6 +131,12 @@ class Config:
         default_factory=lambda: _int("POLYMARKET_MIN_VOLUME", 1000)
     )
 
+    # What to call you. Blank means "read it off the computer's account", which
+    # is what happens on a machine nobody has told this app anything about.
+    user_name: str = field(
+        default_factory=lambda: os.environ.get("NFLPICKER_USER_NAME", "").strip()
+    )
+
     host: str = field(default_factory=lambda: os.environ.get("HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: _int("PORT", 8000))
 

@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
+from . import db, identity
 from .availability import is_notable_injury
 from .backtest.report import performance_report
 from .config import get_config
@@ -71,6 +71,9 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "seasons": pipeline.stored_seasons(),
             "teams": reference(),
             "demo": pipeline.demo,
+            # Read from this computer's account so the app can say hello. It
+            # is served to the page and goes nowhere else.
+            "user": identity.greeting_name(),
             "has_odds_key": cfg.has_odds_key,
             "odds_usage": odds_usage,
             "model": {

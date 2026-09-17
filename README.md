@@ -524,10 +524,11 @@ assets are replaced one at a time rather than all together.
   large payload somewhere and runs it is the behaviour heuristic antivirus
   exists to notice. macOS never had the choice, because a `.app` is already a
   folder the system shows as one icon.
-- **macOS** — two files, one per architecture. Take `TheEdge-macos-arm.tar.gz`
-  on any Mac with Apple silicon (M1 and later) and `TheEdge-macos-intel.tar.gz`
-  on an Intel Mac. `uname -m` says which you have: `arm64` or `x86_64`. The
-  wrong one does not warn, it simply refuses to open.
+- **macOS** — `TheEdge-macos-arm.tar.gz`, for Macs with Apple silicon (M1 and
+  later). `uname -m` says `arm64` on one of those. There is no Intel build: a
+  Mac binary built for the wrong architecture does not warn, it simply refuses
+  to open, so shipping one costs a second runner on every macOS build and
+  offers a second file to pick the wrong one of.
 
   It is a tarball rather than a zip because a zip carries neither the executable
   bit nor a code signature — an `.app` unzipped from one would not launch. The
@@ -568,11 +569,11 @@ assets are replaced one at a time rather than all together.
   pyarrow to a temporary directory on every single launch, which reads as a
   hung app rather than a slow one.
 
-GitHub's free macOS runners are Apple silicon by default; the Intel build uses
-the `macos-15-intel` image, which is what replaced the retired `macos-13`. A
+GitHub's free macOS runners are Apple silicon by default, which is what the
+macOS build asks for (`macos-14`). Worth knowing if that ever has to change: a
 job asking for a retired runner label does not fail — it queues forever with
 nothing assigned to it, which reads as a slow build rather than an impossible
-one, so it is worth knowing which label is current.
+one.
 
 The build runs the test suite first and then boots the frozen binary with
 `--selftest`, because PyInstaller exiting 0 only means the bundle was written.

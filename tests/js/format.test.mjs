@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  ago, american, esc, greetingFor, kickoffShort, liveLabel, num, pct,
+  advanceHand, ago, american, clockAngles, esc, greetingFor, greetingLine,
+  kickoffShort, liveLabel, num, pct,
   signed, statusClass, when,
 } from "../../nflpicker/web/format.js";
 
@@ -177,5 +178,71 @@ describe("greetingFor", () => {
     assert.equal(greetingFor(at(17)), "Good afternoon");
     assert.equal(greetingFor(at(18)), "Good evening");
     assert.equal(greetingFor(at(23)), "Good evening");
+  });
+
+  it("adds the name, and the comma with it", () => {
+    assert.equal(greetingLine(at(9), "Luke"), "Good morning, Luke.");
+    assert.equal(greetingLine(at(20), "Luke"), "Good evening, Luke.");
+  });
+
+  it("reads as a finished sentence when there is no name", () => {
+    for (const nameless of ["", null, undefined, "   "]) {
+      assert.equal(greetingLine(at(9), nameless), "Good morning.");
+    }
+  });
+});
+
+describe("the clock in the logo", () => {
+  const at = (h, m) => new Date(2026, 8, 16, h, m, 0);
+
+  it("points the hands where a clock points them", () => {
+    assert.deepEqual(clockAngles(at(12, 0)), { hour: 0, minute: 0 });
+    assert.deepEqual(clockAngles(at(3, 0)), { hour: 90, minute: 0 });
+    assert.deepEqual(clockAngles(at(9, 30)), { hour: 285, minute: 180 });
+    // Midnight and noon are the same face.
+    assert.deepEqual(clockAngles(at(0, 15)), clockAngles(at(12, 15)));
+  });
+
+  it("creeps the hour hand through the hour", () => {
+    // Half past four does not leave the short hand on the 4; that is what
+    // separates a clock from a drawing of one.
+    assert.equal(clockAngles(at(4, 30)).hour, 135);
+  });
+
+  it("is the pose the icon is frozen at, at ten to two", () => {
+    const { hour, minute } = clockAngles(at(1, 50));
+    assert.equal(Math.round(hour), 55);      // up and to the right
+    assert.equal(minute, 300);               // up and to the left
+  });
+
+  it("never turns a hand backwards", () => {
+    // The bug this exists for: 354 degrees to 0 is six degrees forward and
+    // 354 backwards, and an animated hand takes whichever it is told.
+    assert.equal(advanceHand(354, 0), 360);
+    assert.equal(advanceHand(360, 6), 366);
+    assert.equal(advanceHand(3594, 0), 3600);
+  });
+
+  it("stays put when the minute has not changed", () => {
+    assert.equal(advanceHand(300, 300), 300);
+    assert.equal(advanceHand(3900, 300), 3900);
+  });
+
+  it("uses the target as-is when the hand has never been placed", () => {
+    assert.equal(advanceHand(null, 300), 300);
+    assert.equal(advanceHand(undefined, 55), 55);
+  });
+
+  it("walks an hour forward one minute at a time without unwinding", () => {
+    let angle = null;
+    let previous = -1;
+    for (let m = 0; m < 180; m++) {
+      angle = advanceHand(angle, clockAngles(at(1, m % 60)).minute);
+      assert.ok(angle > previous, `minute ${m} went backwards`);
+      previous = angle;
+    }
+    // Three hours of minutes is three full turns, and the accumulated angle
+    // says so rather than resetting.
+    assert.equal(angle, 3 * 360 - 6);
   });
 });

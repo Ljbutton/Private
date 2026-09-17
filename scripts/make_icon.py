@@ -4,21 +4,33 @@ Kept as a script rather than a checked-in binary nobody can edit: the icon is
 derived from the logo, so when the logo changes this regenerates it instead of
 someone hand-editing a .ico in a program they do not have.
 
-Drawn at 1024 and downsampled, because the thin rising line aliases badly if
-each size is drawn at its own scale.
+The sidebar's clock keeps the real time. This one cannot, so it is frozen at
+ten to two -- see ICON_HOUR below.
+
+Drawn at 1024 and downsampled, because thin strokes alias badly if each size
+is drawn at its own scale.
 """
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 BG = (14, 16, 19, 255)        # near-black tile, legible on light and dark taskbars
-FLAT = (90, 97, 104, 255)     # the market's line
-RISE = (46, 230, 160, 255)    # the edge
+RIM = (90, 97, 104, 255)      # the dial: the market, the part that never moves
+HOUR = (214, 221, 228, 255)   # the short hand
+MINUTE = (46, 230, 160, 255)  # the long hand: the edge
 SIZES = (256, 128, 64, 48, 32, 24, 16)
 MASTER = 1024
+
+# Ten to two. The pose is the one every watch is photographed in, for the
+# reason it is worth copying: both hands above the centre, neither hiding the
+# other, and the gap between them wide enough to read at 16 pixels. It is also
+# the arrangement the app asks for -- long hand left, short hand right.
+ICON_HOUR = 1
+ICON_MINUTE = 50
 
 
 def _stroke(d: ImageDraw.ImageDraw, points, fill, width: float) -> None:
@@ -46,16 +58,32 @@ def draw(size: int = MASTER) -> Image.Image:
     def pt(x, y):
         return (size * 0.18 + x * u * 0.64, size * 0.20 + y * u * 0.64)
 
-    # The market's flat line, then the edge climbing away from it. The flat one
-    # is thinner: it is the reference, not the subject.
-    _stroke(d, [pt(2, 20), pt(26, 20)], FLAT, 1.5 * u)
-    _stroke(d, [pt(2, 20), pt(13, 6), pt(26, 12.5)], RISE, 2.6 * u)
+    def hand(degrees: float, length: float):
+        """The far end of a hand, `length` grid units from the centre at
+        `degrees` clockwise from twelve."""
+        a = math.radians(degrees)
+        return pt(14 + length * math.sin(a), 14 - length * math.cos(a))
 
-    r = 2.9 * u
-    cx, cy = pt(13, 6)
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=RISE)
-    # A ring of tile colour separates the dot from the line meeting under it.
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=BG, width=int(0.75 * u))
+    centre = pt(14, 14)
+    r = 11.6 * u * 0.64
+    # The dial. Drawn as a ring rather than a filled disc so the tile shows
+    # through: a filled face would need a second colour and buys nothing.
+    d.ellipse([centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r],
+              outline=RIM, width=int(round(1.8 * u)))
+
+    minute_angle = ICON_MINUTE * 6
+    hour_angle = ((ICON_HOUR % 12) + ICON_MINUTE / 60) * 30
+    # Short and heavy, long and light -- the convention that tells the two
+    # hands apart without a number anywhere on the dial.
+    _stroke(d, [centre, hand(hour_angle, 6.2)], HOUR, 3.0 * u)
+    _stroke(d, [centre, hand(minute_angle, 9.1)], MINUTE, 2.6 * u)
+
+    # Just big enough to look like a pinned centre rather than a join. Any
+    # larger and it merges with the hand it shares a colour with, which at 16px
+    # turns the middle of the dial into one green blob.
+    pip = 1.7 * u * 0.64 + 0.35 * u
+    d.ellipse([centre[0] - pip, centre[1] - pip, centre[0] + pip, centre[1] + pip],
+              fill=MINUTE)
     return img
 
 

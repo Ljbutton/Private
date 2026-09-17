@@ -53,27 +53,23 @@ jobs:
         # matrix context is not available to one -- that combination is not a
         # failing build, it is a workflow that never starts and reports no jobs
         # at all. Inputs are null outside a manual run, so an automatic run
-        # falls through to Windows; macOS is one dropdown away rather than two
-        # more runners on every commit.
+        # falls through to Windows; macOS is one dropdown away rather than
+        # another runner on every commit.
         #
-        # "macos" means both architectures, deliberately. A Mac binary built
-        # for the wrong one does not warn, it simply refuses to open, and
-        # asking which Mac someone has is a worse answer than building both.
+        # Apple silicon only. An Intel build was offered here until the last
+        # Mac it was for stopped being one anybody ran it on; Apple stopped
+        # selling Intel Macs in 2023 and the build is not free -- it is a
+        # second runner on every macOS request and a second file to pick the
+        # wrong one of.
         target: >-
           ${{ fromJSON(
-            inputs.targets == 'macos' && '["macos-arm","macos-intel"]'
-            || inputs.targets == 'both' && '["windows","macos-arm","macos-intel"]'
+            inputs.targets == 'macos' && '["macos-arm"]'
+            || inputs.targets == 'both' && '["windows","macos-arm"]'
             || '["windows"]') }}
 
-    # macos-14 is Apple Silicon. For Intel it has to be macos-15-intel:
-    # macos-13 was the last of the old Intel images and has been retired, and a
-    # job asking for a retired label does not fail -- it queues forever with no
-    # runner assigned, which looks like a slow build rather than an impossible
-    # one.
+    # macos-14 is Apple silicon, which is the only Mac this builds for.
     runs-on: >-
-      ${{ matrix.target == 'windows' && 'windows-latest'
-          || matrix.target == 'macos-arm' && 'macos-14'
-          || 'macos-15-intel' }}
+      ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-14' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -467,9 +463,8 @@ jobs:
             | `TheEdge-windows-setup.exe` | **Windows — use this one.** Double-click, done. |
             | `TheEdge-windows.zip` | Windows, portable. Needs unblocking (below). |
             | `TheEdge-macos-arm.tar.gz` | Macs with Apple silicon (M1 and later) |
-            | `TheEdge-macos-intel.tar.gz` | Intel Macs |
 
-            `uname -m` says which Mac you have: `arm64` or `x86_64`.
+            Apple silicon only — `uname -m` says `arm64` on a Mac this runs on.
 
             **The installer exists to avoid a real problem.** Windows tags
             anything downloaded from the internet, Explorer copies that tag

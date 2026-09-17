@@ -52,6 +52,17 @@ class Setting:
 
 SETTINGS: tuple[Setting, ...] = (
     Setting(
+        key="NFLPICKER_USER_NAME",
+        label="Your name",
+        group="General",
+        placeholder="read from this computer's account",
+        help="Only ever used to say hello. It is not sent anywhere, and the "
+             "app works identically if you leave it blank.",
+        needed_for="Nothing. The app reads the name on this computer's account "
+                   "when the box is empty, and greets you without a name when "
+                   "that account is called something like `admin`.",
+    ),
+    Setting(
         key="ODDS_API_KEY",
         label="Odds API key",
         kind="secret",

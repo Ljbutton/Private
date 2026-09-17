@@ -1,6 +1,7 @@
 import { barChart, calibrationChart, condense, lineChart, sparkline } from "./charts.js";
 import {
-  ago, american, esc, greetingFor, kickoffShort, liveLabel, num, pct,
+  advanceHand, ago, american, clockAngles, esc, greetingLine, kickoffShort,
+  liveLabel, num, pct,
   signed, statusClass, when,
 } from "./format.js";
 
@@ -119,13 +120,39 @@ function renderStatus(meta) {
 /* ------------------------------------------------------------------ hero */
 
 
+/* The brandmark keeps the time.
+
+   Angles are written as CSS transforms rather than as the SVG attribute so
+   they can be transitioned, and they are remembered between calls because
+   `advanceHand` needs to know where the hand already was. */
+const handAt = { hour: null, minute: null };
+
+function setBrandClock(now) {
+  const want = clockAngles(now);
+  for (const hand of ["hour", "minute"]) {
+    const el = $(`#bm-${hand}`);
+    if (!el) continue;
+    handAt[hand] = advanceHand(handAt[hand], want[hand]);
+    el.style.transform = `rotate(${handAt[hand]}deg)`;
+  }
+}
+
 function renderHero(meta) {
   const now = new Date();
+  setBrandClock(now);
   $("#clock").textContent = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   $("#clockdate").textContent = now
     .toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
     .toUpperCase();
-  $("#greeting").textContent = `${greetingFor(now)}.`;
+  // The name comes off this computer's account unless Settings overrides it,
+  // and the tooltip says which -- a guessed name someone cannot see how to
+  // change is worse than no name at all.
+  const user = meta.user || {};
+  const greet = $("#greeting");
+  greet.textContent = greetingLine(now, user.name);
+  greet.title = user.name && user.source !== "settings"
+    ? "Read from this computer's account. Settings → Your name changes it."
+    : "";
 
   // The cadence is read from the scheduler rather than written here, so the
   // line cannot drift away from what the app is actually doing.
@@ -2030,8 +2057,14 @@ async function main() {
     }
   });
 
-  // The clock is the one thing on the page that must not wait for a refresh.
-  setInterval(() => { if (state.meta) renderHero(state.meta); }, 30000);
+  // The clock is the one thing on the page that must not wait for a refresh --
+  // including the one in the logo, which is why it ticks whether or not there
+  // is any state to render around it.
+  setBrandClock(new Date());
+  setInterval(() => {
+    setBrandClock(new Date());
+    if (state.meta) renderHero(state.meta);
+  }, 30000);
 
   await loadState();
   setTab(state.tab, { fromHash: true });

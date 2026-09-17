@@ -79,6 +79,35 @@ export function greetingFor(date) {
   return "Good evening";
 }
 
+/* Where a clock's hands point at a moment, in degrees clockwise from twelve.
+   The hour hand creeps through the hour rather than jumping at the top of it,
+   which is the difference between a clock and a diagram of one. There is no
+   second hand: a mark that redraws itself sixty times a minute in the corner
+   of a page is a distraction, not a feature. */
+export function clockAngles(date) {
+  const minute = date.getMinutes();
+  return { hour: ((date.getHours() % 12) + minute / 60) * 30, minute: minute * 6 };
+}
+
+/* The angle to write for a hand currently sitting at `prev`.
+
+   Always the forward way round, even when that means writing 366 rather than
+   6: hands are animated, and the shortest path from 354 to 0 is backwards.
+   Without this the minute hand unwinds through the whole dial at the top of
+   every hour. */
+export function advanceHand(prev, target) {
+  if (prev === null || prev === undefined) return target;
+  return prev + ((((target - (prev % 360)) % 360) + 360) % 360);
+}
+
+/* "Good morning, Luke." -- or the same line without a name, when the computer
+   could not tell us one worth using. The comma exists only when something
+   follows it; "Good morning, ." is the kind of detail that reads as a bug. */
+export function greetingLine(date, name) {
+  const who = String(name || "").trim();
+  return who ? `${greetingFor(date)}, ${who}.` : `${greetingFor(date)}.`;
+}
+
 /* How serious an injury status is, for colour. Out and IR are settled; a
    questionable is a coin flip that still moves a line by a point. */
 export function statusClass(status) {
