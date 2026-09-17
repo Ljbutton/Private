@@ -145,11 +145,20 @@ a { color: var(--series-1); }
    keep the real time, but they are the same two strokes in the same green,
    pivoting on the dot that always joined them.
 
-   Drawn rather than lettered so it reads at 27px in the sidebar and at 16px
-   in a tab. Nothing else is on the dial -- ticks and a second hand turn to
-   mush below about 24px. */
-.brandmark { width: 30px; height: 30px; flex: none; overflow: visible; }
+   Two marks share these classes. `.brandmark` in the sidebar is the logo: it
+   is the mark on its own, it does not move, and a logo that is different
+   every minute is not one. `.dialmark` in the header is the same mark wearing
+   a dial, with its two strokes as hands, sitting beside the time it tells --
+   which is the one place a clock face is information rather than decoration.
+
+   Drawn rather than lettered so both read at under 35px and at 16px in a tab.
+   Nothing else is on the dial: ticks and a second hand turn to mush that
+   small. */
+.brandmark { width: 28px; height: 28px; flex: none; overflow: visible; }
 .brandmark path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+/* The climbing stroke, which only the sidebar's mark has -- in the header's
+   dial the same two strokes are hands and are drawn as lines. */
+.bm-rise { stroke: var(--series-1); stroke-width: 2.6; }
 /* The dial is lighter than anything inside it: it is the frame, not the
    subject. The flat line keeps the weight it always had. */
 .bm-rim { fill: none; stroke: var(--text-muted); stroke-width: 1.3; opacity: .42; }
@@ -167,6 +176,11 @@ a { color: var(--series-1); }
 .bm-hour { stroke-width: 2.4; }
 .bm-minute { stroke-width: 2; }
 .bm-dot { fill: var(--series-1); stroke: var(--surface-sunken); stroke-width: 1; }
+/* The sidebar's mark is drawn on a 28-unit grid at full size, the header's
+   dial on the same grid shrunk inside a rim, so the same classes want
+   different weights in the two places. */
+.brandmark .bm-flat { stroke-width: 2; }
+.brandmark .bm-dot { stroke-width: 1.5; }
 @media (prefers-reduced-motion: reduce) {
   .bm-hand { transition: none; }
 }
@@ -222,7 +236,7 @@ a { color: var(--series-1); }
 .main { min-width: 0; padding: 26px 30px 40px; }
 
 /* ------------------------------------------------------------------ hero */
-.hero { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 22px; }
+.hero { display: flex; align-items: center; gap: 20px; margin-bottom: 18px; }
 /* The week on screen is the headline. It used to be a subtitle under a
    greeting, with the date beside it -- and the same date again in the clock
    two inches to the right. */
@@ -240,7 +254,19 @@ a { color: var(--series-1); }
   width: 6px; height: 6px; border-radius: 50%; background: var(--series-1);
   animation: live-pulse 2.4s var(--ease) infinite;
 }
-.hero-right { margin-left: auto; text-align: right; flex: none; }
+/* The season and week selectors, full screen and the theme toggle sit on the
+   title's line now. They used to hang under the clock, which pushed every
+   page down by the height of a control for no reason -- the clock is not
+   what they belong to. */
+.hero-mid { margin-left: auto; flex: none; }
+.hero-right { text-align: right; flex: none; display: grid; gap: 4px;
+  justify-items: end; }
+/* The mark beside the time it is telling, which is the one place a clock face
+   is information rather than decoration. */
+.hero-time { display: flex; align-items: center; gap: 10px; }
+.dialmark { width: 40px; height: 40px; flex: none; overflow: visible;
+  margin-bottom: -4px; }
+.dialmark path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .clock {
   font-size: 27px; font-weight: 600; letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums; line-height: 1.1;
@@ -249,7 +275,7 @@ a { color: var(--series-1); }
   font-size: 10.5px; font-weight: 600; text-transform: uppercase;
   letter-spacing: .13em; color: var(--text-muted); margin-top: 2px;
 }
-.hero-controls { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 11px; }
+.hero-controls { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 select, button.btn, textarea,
@@ -913,10 +939,7 @@ td.team { font-weight: 600; }
 /* Sixteen weeks against sixteen games in the column beside it: the run scrolls
    so it does not decide how tall the page is. The header stays put, because a
    column of bare percentages is unreadable once "Win prob" has scrolled away. */
-.survivor-run .table-scroll {
-  max-height: 340px; overflow-y: auto;
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
-}
+.survivor-run .table-scroll { max-height: 340px; overflow-y: auto; }
 .survivor-run thead th {
   position: sticky; top: 0; z-index: 1; background: var(--surface);
 }
@@ -957,8 +980,15 @@ td.team { font-weight: 600; }
 .news-split > .panel { display: flex; flex-direction: column; min-width: 0; }
 .table-scroll.tall, .news-feed { max-height: 600px; overflow-y: auto; }
 /* A scroll box that ends mid-row looks like a rendering fault rather than like
-   more content, so the last line fades instead of being sliced. */
-.table-scroll.tall, .news-feed {
+   more content, so the last line fades instead of being sliced.
+
+   Only while there *is* more, though. The mask used to be unconditional, which
+   meant the last week of the survivor run and the last player in every injury
+   report were dimmed even once you had scrolled all the way to them -- the
+   affordance for "keep going" left sitting on the thing you had arrived at.
+   app.js puts this class on while the box is scrolled short of its end and
+   takes it off when it is not. */
+.scroll-fade {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
 }
 .news-item { padding: 9px 0; border-bottom: 1px solid var(--grid); }
@@ -1070,9 +1100,10 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   .side-nav { flex-direction: row; gap: 4px; }
   .side-nav .tab { padding: 7px 11px; white-space: nowrap; }
   .main { padding: 18px 16px 32px; }
-  .hero { flex-wrap: wrap; }
+  .hero { flex-wrap: wrap; align-items: flex-start; }
   .hero h1 { font-size: 24px; }
-  .hero-right { margin-left: 0; text-align: left; }
+  .hero-mid { margin-left: 0; order: 3; width: 100%; }
+  .hero-right { margin-left: auto; text-align: right; }
   .hero-controls { justify-content: flex-start; }
 }
 
@@ -1238,27 +1269,57 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .drift.up { color: var(--good); }
 .drift.down { color: var(--critical); }
 
-/* ------------------------------------------- ours against everyone else's */
-/* All thirty-two on the page. A ranking read through a 520px window meant
-   scrolling one panel to find a team and then scrolling the other to find it
-   again, which is the one thing a side-by-side comparison exists to avoid.
-   Both tables are the same length, so they settle level with each other. */
-.rank-split .table-scroll.tall { max-height: none; overflow-y: visible; mask-image: none; }
-.rank-split > .panel { display: flex; flex-direction: column; }
-/* Both columns are the same table of the same thirty-two teams, so they should
-   end level rather than leaving a ragged edge. */
-.grid-2.rank-split { align-items: stretch; }
-/* ...and *start* level. The headers sit above the tables, so a hint long enough
-   to wrap in one panel and not the other pushed that table down by a row and
-   put the two rankings permanently out of step -- which is exactly the thing
-   you are trying to read across. Fixed two lines each, whatever the text. */
-.rank-split > .panel > header {
-  flex-direction: column; align-items: flex-start; gap: 2px;
-  min-height: 40px; margin-bottom: 12px;
+/* --------------------------------------------------------- power rankings */
+/* Top sixteen beside bottom sixteen. The whole league on one screen is the
+   only way the bottom half is ever looked at -- through a single scrolling
+   column it is a place you arrive at by accident. */
+.rank-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  align-items: start; }
+.rank-split > .table-scroll { min-width: 0; }
+.rank-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rank-table th {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--text-muted); text-align: left;
+  padding: 0 8px 7px; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-.rank-split > .panel > header .hint {
-  margin-left: 0; max-width: 100%;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.rank-table td { padding: 6px 8px; border-bottom: 1px solid var(--grid);
+  white-space: nowrap; }
+.rank-table tr:last-child td { border-bottom: 0; }
+.rank-table tbody tr { cursor: pointer; }
+.rank-table tbody tr:hover td { background: var(--surface-sunken); }
+/* The open team, marked on both columns so it is findable after a scroll. */
+.rank-table tbody tr.on td {
+  background: color-mix(in srgb, var(--series-1) 12%, transparent);
+}
+.rank-table tbody tr:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: -2px; }
+.rank-table .rk { width: 26px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; text-align: right; padding-right: 4px; }
+.rank-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+/* The mark and the full name, because an abbreviation is a thing you decode
+   and a crest is a thing you recognise. */
+.rank-table td.team { display: flex; align-items: center; gap: 7px;
+  min-width: 0; }
+.rank-table .tname { overflow: hidden; text-overflow: ellipsis; }
+.rank-table .move { width: 40px; text-align: right; font-size: 11px;
+  font-weight: 700; font-variant-numeric: tabular-nums; }
+.rank-table .move.up { color: var(--good); }
+.rank-table .move.down { color: var(--critical); }
+
+/* What a row opens: everything the table used to carry in eleven columns. */
+.team-card { margin-bottom: 14px; }
+.card-head { display: flex; align-items: center; gap: 9px; font-size: 15px;
+  margin-bottom: 10px; }
+.facts { display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+.fact { background: var(--surface-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 10px; }
+.fact-label { font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--text-muted); }
+.fact-value { font-size: 16px; font-weight: 650; margin-top: 2px;
+  font-variant-numeric: tabular-nums; }
+@media (max-width: 1100px) {
+  .rank-split { grid-template-columns: 1fr; }
 }
 .rank-note {
   margin-top: 14px; max-width: none;

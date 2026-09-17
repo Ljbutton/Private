@@ -330,9 +330,10 @@ function clvBlock(clv) {
    good" is one page too many, and of the two this is the one that answers it
    in the terms a pool player thinks in: you, the model, the book, side by
    side, on games everybody called. */
-async function renderPerformance() {
+async function renderPerformance(ticket) {
   const root = $("#view");
   const d = await api(`/api/scoreboard?season=${state.season}`);
+  if (stale(ticket)) return;
   const pickers = d.pickers || [];
   if (!d.weeks.length) {
     root.innerHTML = `<div class="panel"><div class="empty">
@@ -545,9 +546,10 @@ function gameStamp(g) {
   return esc(kickoffShort(g.kickoff)) || "Scheduled";
 }
 
-async function renderHome() {
+async function renderHome(ticket) {
   const root = $("#view");
   const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
+  if (stale(ticket)) return;
   if (!data.games.length) {
     root.innerHTML = '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>';
     return;
@@ -919,77 +921,124 @@ async function openGame(gameId) {
 /* The shared delta. "=" rather than "0" because a zero in a column of signed
    numbers reads as a missing value, and agreeing exactly is worth seeing. */
 
-async function renderTeams() {
+async function renderTeams(ticket) {
   const root = $("#view");
-  const data = await api("/api/teams");
-  // Season win totals only exist when the odds feed publishes futures. Two
-  // columns of dashes read as a bug, so drop them when nothing has one.
+  const [data, history] = await Promise.all([
+    api("/api/teams"),
+    // Movement against the previous week we actually hold. Its own request
+    // because a missing history must cost the ranking nothing.
+    api("/api/power/history").catch(() => ({ teams: [], compared_to: null })),
+  ]);
+  if (stale(ticket)) return;
+
+  // Season win totals only exist when the odds feed publishes futures.
   const hasWinTotals = data.teams.some(
     (t) => t.win_total_line !== null && t.win_total_line !== undefined);
-  /* Where the rating disagrees with the table. A team rated well above its
-     record is one the model thinks has been unlucky -- that gap is the single
-     most useful column here, and it is what a ranking sorted by record can
-     never show. */
-  const drift = (t) => {
-    if (!t.record_rank || !t.rank) return "";
-    const d = t.record_rank - t.rank;
-    if (Math.abs(d) < 3) return "";
-    return `<span class="drift ${d > 0 ? "up" : "down"}">${d > 0 ? "▲" : "▼"}${Math.abs(d)}</span>`;
-  };
-  const rows = data.teams.map((t) => `<tr data-team="${esc(t.team)}" style="cursor:pointer">
-    <td class="team">${t.rank}. ${esc(t.team)} <span class="muted">${esc(t.name)}</span>${drift(t)}</td>
-    <td>${t.record.wins ?? 0}-${t.record.losses ?? 0}${t.record.ties ? `-${t.record.ties}` : ""}</td>
-    <td><b>${num(t.exp_wins, 1)}</b></td>
-    <td class="muted">${t.pythagorean === null || t.pythagorean === undefined
-      ? "–" : pct(t.pythagorean)}</td>
-    <td>${signed(t.power)}</td>
-    <td class="muted">${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}</td>
-    ${hasWinTotals ? `<td>${num(t.win_total_line, 1)}</td><td>${pct(t.over_prob)}</td>` : ""}
-    <td>${pct(t.playoff_prob)}</td>
-    <td>${pct(t.division_prob)}</td>
-    <td>${pct(t.sb_prob, 1)}</td>
-  </tr>`).join("");
 
-  /* One table. There used to be three: a power ranking, a season-projection
-     table in the same order with the same rating in it, and a published
-     consensus to compare against. The first two were the same table twice --
-     a ranking *is* a projection, or it is just the standings retyped -- and
-     the consensus was a second opinion nobody asked this app for. */
+  /* How far a team has moved since the last week we hold a ranking for.
+
+     Blank when there is nothing to compare against, for every team, rather
+     than a column of zeroes. A zero is a claim -- "this team held its place"
+     -- and in week one nobody has held anything yet. `compared_to` is null
+     exactly when no earlier week exists, which is what makes the distinction
+     available at all. */
+  const moved = {};
+  if (history.compared_to !== null && history.compared_to !== undefined) {
+    for (const row of history.teams || []) {
+      if (row.move !== null && row.move !== undefined) moved[row.team] = row.move;
+    }
+  }
+  const moveCell = (abbr) => {
+    const m = moved[abbr];
+    if (m === undefined) return '<td class="move"></td>';
+    if (m === 0) return '<td class="move muted">—</td>';
+    return `<td class="move ${m > 0 ? "up" : "down"}">${m > 0 ? "▲" : "▼"}${
+      Math.abs(m)}</td>`;
+  };
+
+  /* Four columns and a mark. Everything else -- the rating, the Pythagorean,
+     the 80% range, division and title odds, the win total -- moves into the
+     card a row opens. The table had eleven columns of numbers and was, in the
+     reader's words, hard to read; the answer to that is not a smaller font. */
+  const row = (t) => `<tr data-team="${esc(t.team)}" tabindex="0">
+    <td class="rk">${t.rank}</td>
+    <td class="team">${teamMark(t.team)}<span class="tname">${esc(t.name)}</span></td>
+    <td class="num">${t.record.wins ?? 0}-${t.record.losses ?? 0}${
+      t.record.ties ? `-${t.record.ties}` : ""}</td>
+    <td class="num"><b>${num(t.exp_wins, 1)}</b></td>
+    <td class="num">${pct(t.playoff_prob)}</td>
+    ${moveCell(t.team)}
+  </tr>`;
+
+  const head = `<thead><tr><th class="rk">#</th><th>Team</th>
+    <th class="num">Rec</th>
+    <th class="num" title="Expected wins from 20,000 simulations of the remaining schedule">Proj</th>
+    <th class="num" title="Chance of reaching the playoffs">Playoff</th>
+    <th class="move" title="Places moved since the last week held">Move</th></tr></thead>`;
+
+  // Top sixteen beside bottom sixteen: the whole league on one screen, which
+  // is the only way the bottom half is ever looked at.
+  const half = Math.ceil(data.teams.length / 2);
+  const table = (teams) => `<table class="rank-table">${head}
+    <tbody>${teams.map(row).join("")}</tbody></table>`;
+
   root.innerHTML = `
-  <div class="panel">
+  <div class="panel" data-nofold>
     <header><h2>Power rankings</h2>
-      <span class="hint">by rating — how good a team is on a neutral field ·
-        ▲▼ against where its record alone would put it</span></header>
-    <div class="table-scroll"><table id="teams-now">
-      <thead><tr><th>Team</th><th>Record</th>
-        <th title="Expected wins from 20,000 simulations of the remaining schedule. Not the sort order: this folds in who a team still has to play, which the rating deliberately does not.">Proj. wins</th>
-        <th title="Win expectation implied by points scored and allowed. Point differential predicts the rest of the season better than the record does.">Pythag</th>
-        <th title="Points better than an average team on a neutral field">Rating</th>
-        <th>80% range</th>${hasWinTotals ? "<th>Win total</th><th>Over</th>" : ""}
-        <th>Playoff</th><th>Division</th><th>Title</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>
-    <p class="note">${hasWinTotals
-      ? "Over probabilities come from the simulated win distribution against the posted line."
-      : "No season win-total lines are available from the odds feed right now, so those "
-        + "columns are hidden. The simulated win distribution below is unaffected."}</p>
+      <span class="hint">by projected finish, the Pythagorean, the rating and
+        title odds — not by record · click a team for the rest</span></header>
+    <div class="rank-split">
+      <div class="table-scroll">${table(data.teams.slice(0, half))}</div>
+      <div class="table-scroll">${table(data.teams.slice(half))}</div>
+    </div>
+    ${hasWinTotals ? "" : `<p class="note">No season win-total lines are
+      available from the odds feed right now, so the market columns in each
+      card are blank. Nothing else is affected.</p>`}
   </div>
-  <div class="panel" id="team-detail-panel">
+  <div class="panel" id="team-detail-panel" data-nofold>
     <header><h2>Simulated win distribution</h2>
-      <span class="hint">Select a team above</span></header>
+      <div class="controls" style="margin-left:auto">
+        <select id="dist-team" aria-label="Team"></select>
+      </div></header>
+    <div class="team-card" id="team-card"></div>
     <div id="team-dist" style="height:200px"></div>
-  </div>
-  <div class="panel">
-    <header><h2>Week by week</h2>
-      <span class="hint">the same ranking as above, as it stood going into each
-        earlier week · click a team for its whole season</span></header>
-    <div id="power-history"></div>
   </div>`;
+
+  const card = (t) => {
+    const cell = (label, value, hint) => `<div class="fact"${
+      hint ? ` title="${esc(hint)}"` : ""}>
+      <div class="fact-label">${esc(label)}</div>
+      <div class="fact-value">${value}</div></div>`;
+    return [
+      cell("Rating", signed(t.power),
+           "Points better than an average team on a neutral field"),
+      cell("Pythag", t.pythagorean === null || t.pythagorean === undefined
+        ? "–" : pct(t.pythagorean),
+           "Win expectation implied by points scored and allowed"),
+      cell("80% range", `${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}`,
+           "Where four seasons in five finish"),
+      cell("Division", pct(t.division_prob)),
+      cell("Title", pct(t.sb_prob, 1)),
+      ...(hasWinTotals ? [
+        cell("Win total", num(t.win_total_line, 1), "The posted market line"),
+        cell("Over", pct(t.over_prob),
+             "Chance of finishing above the posted line"),
+      ] : []),
+    ].join("");
+  };
 
   const show = (abbr) => {
     const team = data.teams.find((t) => t.team === abbr);
     if (!team) return;
-    $("#team-detail-panel .hint").textContent =
-      `${team.name} — ${num(team.exp_wins, 1)} expected wins`;
+    $("#team-detail-panel .hint")?.remove();
+    $("#team-card").innerHTML =
+      `<div class="card-head">${teamMark(team.team)}<b>${esc(team.name)}</b>
+        <span class="muted">#${team.rank} · ${num(team.exp_wins, 1)} expected wins</span>
+      </div><div class="facts">${card(team)}</div>`;
+    const sel = $("#dist-team");
+    if (sel.value !== abbr) sel.value = abbr;
+    $$("#view tr[data-team]").forEach(
+      (tr) => tr.classList.toggle("on", tr.dataset.team === abbr));
     const dist = team.distribution || {};
     const bars = [];
     for (let w = 0; w <= 17; w++) {
@@ -1002,141 +1051,28 @@ async function renderTeams() {
       ariaLabel: `${team.name} simulated win distribution`,
     });
   };
-  $$("#teams-now tbody tr", root).forEach(
-    (tr) => tr.addEventListener("click", () => show(tr.dataset.team)));
-  if (data.teams.length) show(data.teams[0].team);
 
-  renderPowerHistory();
-}
+  // The distribution used to be whichever team happened to be first, with no
+  // way to ask about any other one.
+  $("#dist-team").innerHTML = data.teams.map(
+    (t) => `<option value="${esc(t.team)}">${t.rank}. ${esc(t.name)}</option>`).join("");
+  $("#dist-team").addEventListener("change", (e) => show(e.target.value));
 
-/* The ranking as it stood in each past week.
-   Its own panel, and its own ordering: the table above sorts by projected
-   finish, which needs 20,000 simulations of a schedule that has since been
-   played. This one sorts by the rating, which is a function of the games that
-   had finished at the time and so can be stated for any week honestly. Mixing
-   the two rules across weeks would make the movement column fiction. */
-async function renderPowerHistory(week) {
-  const host = $("#power-history");
-  if (!host) return;
-  const query = week === undefined ? "" : `&week=${week}`;
-  const data = await api(`/api/power/history?season=${state.season}${query}`);
-  if (!data.weeks.length) {
-    host.innerHTML = `<div class="empty">No weekly rankings stored yet.
-      <button class="btn" id="power-rebuild">Build them from stored games</button></div>`;
-    $("#power-rebuild", host)?.addEventListener("click", async (ev) => {
-      ev.target.disabled = true;
-      ev.target.textContent = "Working…";
-      await api("/api/power/rebuild", { method: "POST" });
-      renderPowerHistory();
+  wireLogos(root);
+  $$("#view tr[data-team]", root).forEach((tr) => {
+    tr.addEventListener("click", () => show(tr.dataset.team));
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(tr.dataset.team); }
     });
-    return;
-  }
-
-  const picker = data.weeks.map((w) => `<button class="week-pick${
-    w === data.week ? " on" : ""}" data-week="${w}"
-    title="Week ${w}${data.sources[w] === "rebuilt"
-      ? " — reconstructed from stored games" : ""}">${w}${
-    data.sources[w] === "rebuilt" ? "<span class=\"reb\">*</span>" : ""}</button>`).join("");
-
-  const arrow = (move) => {
-    if (move === null || move === undefined) return `<span class="muted">–</span>`;
-    if (move === 0) return `<span class="muted">—</span>`;
-    return `<span class="drift ${move > 0 ? "up" : "down"}">${
-      move > 0 ? "▲" : "▼"}${Math.abs(move)}</span>`;
-  };
-
-  const rows = data.teams.map((t) => `<tr data-team="${esc(t.team)}"
-      class="${t.team === state.trackTeam ? "on" : ""}" style="cursor:pointer">
-    <td class="team">${t.rank}. ${esc(t.team)}
-      <span class="muted">${esc(t.name)}</span></td>
-    <td>${arrow(t.move)}</td>
-    <td>${t.wins ?? 0}-${t.losses ?? 0}${t.ties ? `-${t.ties}` : ""}</td>
-    <td>${signed(t.power)}</td>
-    <td class="muted">${t.pythagorean === null || t.pythagorean === undefined
-      ? "–" : pct(t.pythagorean)}</td>
-  </tr>`).join("");
-
-  const rebuilt = Object.values(data.sources).filter((v) => v === "rebuilt").length;
-  host.innerHTML = `
-    <div class="week-picker">${picker}</div>
-    <div id="rank-track"></div>
-    <div class="table-scroll tall"><table class="slate">
-      <thead><tr><th>Team</th>
-        <th title="Places moved since week ${data.compared_to ?? "–"}">Move</th>
-        <th>Record</th>
-        <th title="Points better than an average team on a neutral field">Rating</th>
-        <th title="Win expectation implied by points scored and allowed">Pythag</th>
-      </tr></thead>
-      <tbody>${rows}</tbody></table></div>
-    <p class="note">Going into week ${data.week}${data.compared_to
-      ? `, movement against week ${data.compared_to}` : ""}.${rebuilt
-      ? ` <span class="reb">*</span> marks ${rebuilt} week${rebuilt === 1 ? "" : "s"}
-        reconstructed from stored games rather than recorded at the time —
-        what today's rating says about that week, which is not quite the same
-        as what was on screen then.` : ""}</p>`;
-
-  $$(".week-pick", host).forEach((b) => b.addEventListener(
-    "click", () => renderPowerHistory(Number(b.dataset.week))));
-
-  // A row selects that team's trend. One week of a ranking says where a team
-  // is; the point of keeping every week is seeing where it has been going, and
-  // that is a shape rather than a number.
-  $$("tbody tr", host).forEach((tr) => tr.addEventListener("click", () => {
-    state.trackTeam = tr.dataset.team;
-    $$("tbody tr", host).forEach((r) => r.classList.toggle(
-      "on", r.dataset.team === state.trackTeam));
-    renderRankTrack();
-  }));
-  if (!state.trackTeam && data.teams.length) state.trackTeam = data.teams[0].team;
-  renderRankTrack();
-}
-
-/* One team's rank across every week, as a line.
-
-   Plotted as *negative* rank so that first place sits at the top. The obvious
-   alternative -- an inverted y domain -- silently breaks the shared chart's
-   tick generator, which takes a logarithm of the span and gets NaN when the
-   span runs backwards; the axis then falls back to two unlabelled extremes.
-   Negating instead keeps the domain ascending, so ticks land on whole ranks,
-   and the formatter flips the sign back for anything a reader sees. */
-async function renderRankTrack() {
-  const host = $("#rank-track");
-  if (!host || !state.trackTeam) return;
-  const data = await api(
-    `/api/power/track?season=${state.season}&team=${encodeURIComponent(state.trackTeam)}`);
-  const points = (data.weeks || []).map((w) => ({ x: w.week, y: -w.rank }));
-  if (points.length < 2) {
-    host.innerHTML = `<div class="empty">One week of history for
-      ${esc(data.name)} — a trend needs two.</div>`;
-    return;
-  }
-
-  host.innerHTML = `<div class="track-head">
-      <span class="track-name">${esc(data.name)}</span>
-      <span class="muted">best #${data.best} · worst #${data.worst}
-        · ${points.length} weeks</span>
-    </div><div id="rank-plot" style="height:190px"></div>`;
-
-  lineChart($("#rank-plot"), [{
-    name: data.name, short: esc(data.team), points,
-  }], {
-    height: 190,
-    ariaLabel: `${data.name} power ranking by week`,
-    // Ranks are whole numbers; a tick at "#7.5" is not a place a team can
-    // finish. Anything the padding pushes outside 1-32 is left unlabelled
-    // rather than printed as a rank that cannot exist.
-    yFormat: (v) => {
-      const r = Math.round(-v);
-      return r >= 1 && r <= 32 ? `#${r}` : "";
-    },
-    xFormat: (v) => `Wk ${Math.round(v)}`,
   });
+  if (data.teams.length) show(data.teams[0].team);
 }
 
 // ------------------------------------------------------------------- picks
-async function renderPicks() {
+async function renderPicks(ticket) {
   const root = $("#view");
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
+  if (stale(ticket)) return;
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
@@ -1281,9 +1217,10 @@ async function renderPicks() {
    know before I pick", and the injury report is the half that answers it most
    often. Side by side, one scan covers both; stacked behind summaries it took
    two clicks to learn there was nothing new. */
-async function renderNews() {
+async function renderNews(ticket) {
   const root = $("#view");
   const data = await api("/api/news?limit=80");
+  if (stale(ticket)) return;
   const items = data.items.map((n) => `<div class="news-item">
     <div class="news-tags">
       <span class="badge ${esc(n.category)}">${esc(n.category)}</span>
@@ -1382,7 +1319,7 @@ async function renderNews() {
    what breaks without it, because "Odds API key" answers nothing on its own —
    the question being asked is "what do I need to fill in, and what happens if
    I don't". */
-async function renderSettings() {
+async function renderSettings(ticket) {
   const root = $("#view");
   // The backup list is not worth failing the whole page over: settings still
   // need editing on a machine where the directory cannot be read.
@@ -1390,6 +1327,7 @@ async function renderSettings() {
     api("/api/settings"),
     api("/api/settings/backups").catch(() => ({ backups: [], directory: "", keep: 10 })),
   ]);
+  if (stale(ticket)) return;
 
   const field = (s) => {
     const id = `set-${s.key}`;
@@ -1714,10 +1652,14 @@ async function renderAssistantSetup(status) {
   }
 }
 
-async function renderAssistant() {
+async function renderAssistant(ticket) {
   const root = $("#view");
+  // The status probe starts the managed server if it is not running, which can
+  // take twenty seconds. That is the longest await on any tab, and it is why
+  // this is the tab that used to land on top of whichever one you switched to.
   const status = await api("/api/assistant/status").catch((e) => ({
     ready: false, message: String(e) }));
+  if (stale(ticket)) return;
 
   if (!status.ready) {
     await renderAssistantSetup(status);
@@ -1725,6 +1667,7 @@ async function renderAssistant() {
   }
 
   if (!chat.loaded) await loadChats();
+  if (stale(ticket)) return;
 
   const list = chat.chats.map((c) => `<button class="chat-item${
     c.id === chat.id ? " on" : ""}" data-chat="${esc(c.id)}">
@@ -1858,18 +1801,61 @@ const VIEWS = { home: renderHome, teams: renderTeams,
   performance: renderPerformance,
   assistant: renderAssistant, settings: renderSettings };
 
+/* Which render is allowed to write to the page.
+
+   Every view fetches before it draws, and nothing stopped a slow one from
+   finishing after the reader had moved on -- so clicking Teams and then Picks
+   left you on Picks for a moment and then dropped Teams on top of it. It looked
+   like a sluggish tab; it was the wrong tab arriving late. Worst while the
+   assistant is downloading or answering, because that is when the server is
+   busiest and the gap is widest.
+
+   Each render takes a ticket. A render that comes back holding a stale ticket
+   has been overtaken and says nothing. */
+let renderTicket = 0;
+
 async function render() {
+  const ticket = ++renderTicket;
   const view = VIEWS[state.tab] || renderHome;
   // The hero reports which season and week are on screen, so it has to follow
   // the selectors rather than only the last state load.
   if (state.meta) renderHero(state.meta);
   try {
-    await view();
+    await view(renderTicket);
+    if (ticket !== renderTicket) return;
     foldPanels($("#view"));
+    markScrollFades($("#view"));
   } catch (err) {
+    if (ticket !== renderTicket) return;
     $("#view").innerHTML = `<div class="panel"><div class="empty">
       Could not load this view: ${esc(err.message)}</div></div>`;
   }
+}
+
+/* Every box on the page that fades its bottom edge while more is below.
+   Kept in one place because the rule is the same everywhere and the bug was
+   that it had been written three times as static CSS. */
+const FADE_BOXES = ".table-scroll.tall, .news-feed, .survivor-run .table-scroll";
+
+function markScrollFades(root = document) {
+  $$(FADE_BOXES, root).forEach((box) => {
+    const update = () => box.classList.toggle(
+      "scroll-fade", box.scrollHeight - box.clientHeight - box.scrollTop > 2);
+    if (!box.dataset.fadeWired) {
+      box.addEventListener("scroll", update, { passive: true });
+      box.dataset.fadeWired = "1";
+    }
+    update();
+  });
+}
+
+/* True when this render has been overtaken by a newer one.
+
+   Views call it after every await and before they touch the page. The ticket
+   check in `render` is not enough on its own: a view writes to #view itself,
+   partway through, long before it returns. */
+function stale(ticket) {
+  return ticket !== renderTicket;
 }
 
 async function loadState() {
@@ -1914,6 +1900,10 @@ function setTab(tab, { fromHash = false } = {}) {
   if (!fromHash && location.hash.slice(1) !== tab) {
     history.replaceState(null, "", `#${tab}`);
   }
+  // Clear the old page immediately rather than leaving it up until the new
+  // one has fetched. A tab that responds at once and then fills in reads as
+  // fast; a tab that sits on the last page for two seconds reads as broken.
+  $("#view").innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
   render();
 }
 
@@ -2028,6 +2018,10 @@ async function main() {
   // The clock is the one thing on the page that must not wait for a refresh --
   // including the one in the logo, which is why it ticks whether or not there
   // is any state to render around it.
+  // A narrower window rewraps rows, which changes whether a box still has
+  // anything below the fold.
+  addEventListener("resize", () => markScrollFades(), { passive: true });
+
   setBrandClock(new Date());
   setInterval(() => {
     setBrandClock(new Date());

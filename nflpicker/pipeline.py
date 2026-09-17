@@ -1337,26 +1337,6 @@ class Pipeline:
             ],
         )
 
-        # The week's ranking, kept as its own frozen row rather than left to be
-        # dug out of the timestamped history. While this week is current the
-        # snapshot is refreshed on every recompute; once the week turns over
-        # nothing writes to it again, so it stays as it was.
-        with contextlib.suppress(Exception):
-            self.store_power_snapshot(season, week, power, completed)
-
-        # And the weeks before this one, which an install made mid-season has
-        # never seen. Reconstructed from the games that had finished before
-        # each of them, so the history is complete from the first launch rather
-        # than starting at whatever week someone happened to install in.
-        #
-        # Cheap in the only case that matters: it writes nothing for a week
-        # already held, so the work is done once and every later recompute
-        # finds nothing to do. Suppressed because a ranking history is not
-        # worth failing a recompute over -- the current week's snapshot above
-        # is the part that has to land.
-        with contextlib.suppress(Exception):
-            self.rebuild_power_history(season, completed=completed)
-
         # ---- predictions
         # Features are built over the whole history so rolling form and Elo
         # cross the season boundary, then narrowed to the season on display.
@@ -1479,6 +1459,29 @@ class Pipeline:
                 for t in sim.teams.values()
             ],
         )
+
+        # The week's ranking, frozen. Written *here*, after the simulation,
+        # rather than beside the ratings above: the Teams page orders teams by
+        # a blend that includes projected wins and title odds, and a history
+        # ordered by the rating alone would report movement between two tables
+        # that were never using the same rule. While this week is current the
+        # snapshot is refreshed on every recompute; once the week turns over
+        # nothing writes to it again.
+        with contextlib.suppress(Exception):
+            self.store_power_snapshot(season, week, power, completed,
+                                      projections=_projection_rows(sim))
+
+        # And the weeks before this one, which an install made mid-season has
+        # never seen. Reconstructed from the games that had finished before
+        # each of them, so the history is complete from the first launch rather
+        # than starting at whatever week someone happened to install in.
+        #
+        # Cheap in the only case that matters: it writes nothing for a week
+        # already held, so the work is done once and every later recompute
+        # finds nothing to do. Suppressed because a ranking history is not
+        # worth failing a recompute over.
+        with contextlib.suppress(Exception):
+            self.rebuild_power_history(season, completed=completed)
 
         # ---- picks
         self._store_picks(season, week, games, by_game, consensus)
@@ -1603,16 +1606,16 @@ class Pipeline:
         return out
 
     def store_power_snapshot(self, season: int, week: int, power, completed: list[dict],
-                             *, source: str = "live") -> int:
+                             *, source: str = "live",
+                             projections: dict | None = None) -> int:
         """Freeze one week's power ranking.
 
-        Ordered by the power rating, which is what the Teams page ranks by too.
-        It has to be: a history can only use the rating, because projected
-        finish comes out of 20,000 simulations of a schedule that has since
-        been played. The two used to differ, which put two tables on one page
-        disagreeing about who was second with only a line of small print to
-        explain it; the ranking above now follows this one rather than the
-        other way round.
+        Ordered by the same blend the Teams page uses when the projections for
+        that week are to hand, and by the rating when they are not. That split
+        is not a fudge, it is the only honest reading: a week we were running
+        for has its simulation, and a week reconstructed afterwards cannot --
+        projected finish comes out of twenty thousand replays of a schedule
+        that has since been played. Rebuilt rows are marked as such.
 
         A live row is never overwritten by a rebuilt one. The reverse is fine:
         a reconstruction is a stand-in until the real thing exists.
@@ -1627,7 +1630,7 @@ class Pipeline:
             return 0
 
         records = self._records_through(completed, season)
-        ranked = sorted(power.teams.values(), key=lambda t: -(t.power or 0.0))
+        ranked = self._rank_for_snapshot(power, projections)
         stamp = now_iso()
         rows = []
         for rank, team in enumerate(ranked, start=1):
@@ -1642,6 +1645,19 @@ class Pipeline:
             rows,
         )
         return len(rows)
+
+    @staticmethod
+    def _rank_for_snapshot(power, projections: dict | None) -> list:
+        """Best first, by the blend where it can be and the rating otherwise."""
+        teams = list(power.teams.values())
+        if projections:
+            from .api import ranking_scores
+
+            ratings = {t.team: {"power": t.power, "pythagorean": t.pythagorean}
+                       for t in teams}
+            scores = ranking_scores(ratings, projections)
+            return sorted(teams, key=lambda t: (-scores.get(t.team, 0.0), t.team))
+        return sorted(teams, key=lambda t: (-(t.power or 0.0), t.team))
 
     def rebuild_power_history(self, season: int | None = None, *,
                               completed: list[dict] | None = None,
@@ -2136,6 +2152,14 @@ def _demo_live_games(games: list[dict], week: int) -> list[dict]:
             },
         })
     return out
+
+
+def _projection_rows(sim) -> dict:
+    """The simulation as the shape `ranking_scores` reads."""
+    return {
+        t.team: {"exp_wins": t.exp_wins, "wins_p10": t.wins_p10, "sb_prob": t.sb_prob}
+        for t in sim.teams.values()
+    }
 
 
 def _over_prob(team_season, line: float | None) -> float | None:

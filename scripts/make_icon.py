@@ -4,16 +4,12 @@ Kept as a script rather than a checked-in binary nobody can edit: the icon is
 derived from the logo, so when the logo changes this regenerates it instead of
 someone hand-editing a .ico in a program they do not have.
 
-The sidebar's clock keeps the real time. This one cannot, so it is frozen at
-the pose the mark held before it could tell the time -- see ICON_HOUR below.
-
 Drawn at 1024 and downsampled, because thin strokes alias badly if each size
 is drawn at its own scale.
 """
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -24,11 +20,10 @@ RISE = (46, 230, 160, 255)    # the edge
 SIZES = (256, 128, 64, 48, 32, 24, 16)
 MASTER = 1024
 
-# Twenty-three minutes to four. The mark used to be a fixed shape -- a long
-# stroke climbing from the market's line and a short one falling away from the
-# peak -- and this is the nearest a real time gets to it: long hand down to
-# the left, landing on the line, short hand out to the right. The sidebar's
-# clock keeps the actual time; this one cannot, so it holds that pose.
+# The pose the header's dial is frozen at before app.js sets it to the real
+# time. Kept here because it is derived from this mark: at twenty-three
+# minutes to four the long hand runs down to the left onto the market's line
+# and the short one out to the right, which is the shape below.
 ICON_HOUR = 3
 ICON_MINUTE = 37
 
@@ -47,43 +42,34 @@ def _stroke(d: ImageDraw.ImageDraw, points, fill, width: float) -> None:
 
 
 def draw(size: int = MASTER) -> Image.Image:
-    """The mark, in a dial, on the market's line.
+    """The mark, on its tile. No dial and no hands.
 
-    Laid out in fractions of the tile rather than on the SVG's 28-unit grid.
-    The grid was fine when the mark was a free-standing polyline; once the
-    strokes have to fit inside a dial they are much shorter, and a stroke
-    width inherited from the old layout makes them read as blobs. Fractions
-    keep the length-to-width ratio the original strokes had, which is about
-    five to one and is most of why the mark looks like a mark.
+    The application's icon is the logo, and the logo is the mark: the market's
+    flat line, the long stroke climbing away from it, the short one falling
+    off the peak, and the dot where they meet. The clock is a thing the app
+    does in its header, not a thing the app is called.
     """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+    u = size / 28.0                                  # the SVG's 28-unit grid
+
     d.rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * 0.23), fill=BG)
 
-    centre = (0.5 * size, 0.43 * size)
-    r = 0.375 * size
-    # The dial. A ring, not a filled face: the tile is the face.
-    d.ellipse([centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r],
-              outline=FLAT, width=max(1, round(0.042 * size)))
-    # The market's flat line, where it always was -- under everything else.
-    _stroke(d, [(0.075 * size, 0.885 * size), (0.925 * size, 0.885 * size)],
-            FLAT, 0.044 * size)
+    # Inset from the tile edge. A mark that runs to the corners reads as
+    # cropped once Windows rounds the thumbnail.
+    def pt(x, y):
+        return (size * 0.18 + x * u * 0.64, size * 0.20 + y * u * 0.64)
 
-    def hand(degrees: float, length: float):
-        a = math.radians(degrees)
-        return (centre[0] + length * size * math.sin(a),
-                centre[1] - length * size * math.cos(a))
+    # The market's flat line, then the edge climbing away from it. The flat one
+    # is thinner: it is the reference, not the subject.
+    _stroke(d, [pt(2, 20), pt(26, 20)], FLAT, 1.5 * u)
+    _stroke(d, [pt(2, 20), pt(13, 6), pt(26, 12.5)], RISE, 2.6 * u)
 
-    minute_angle = ICON_MINUTE * 6
-    hour_angle = ((ICON_HOUR % 12) + ICON_MINUTE / 60) * 30
-    _stroke(d, [centre, hand(hour_angle, 0.235)], RISE, 0.072 * size)
-    _stroke(d, [centre, hand(minute_angle, 0.315)], RISE, 0.060 * size)
-
-    # The dot that always joined the two strokes, ringed in tile colour so it
-    # reads as a pivot rather than as a thickening where they meet.
-    dot = 0.052 * size
-    d.ellipse([centre[0] - dot, centre[1] - dot, centre[0] + dot, centre[1] + dot],
-              fill=RISE, outline=BG, width=max(1, round(0.016 * size)))
+    r = 2.9 * u
+    cx, cy = pt(13, 6)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=RISE)
+    # A ring of tile colour separates the dot from the line meeting under it.
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=BG, width=int(0.75 * u))
     return img
 
 

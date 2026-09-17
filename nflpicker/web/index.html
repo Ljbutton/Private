@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>The Edge</title>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'><g fill='none' stroke-linecap='round'><circle cx='14' cy='12' r='10.5' stroke='%235a6168' stroke-width='1.4'/><path d='M2.4 24.8H25.6' stroke='%235a6168' stroke-width='1.8'/><path d='M14 12 L20.5 14.2' stroke='%2310b981' stroke-width='2.4'/><path d='M14 12 L8.1 18.5' stroke='%2310b981' stroke-width='2'/></g></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M2 20h24' stroke='%235a6168' stroke-width='2'/><path d='M2 20 L13 6 L26 12.5' stroke='%2310b981' stroke-width='2.6'/><circle cx='13' cy='6' r='2.6' fill='%2310b981'/></g></svg>" />
 </head>
 <body>
 <div class="shell">
@@ -13,25 +13,15 @@
   <aside class="side">
     <div class="side-brand">
       <div class="logo">
-        <!-- The original mark, put inside a dial and told to keep the time.
-             The grey chord is still the market's flat line and the two green
-             strokes are still the edge climbing away from it -- they are just
-             hands now, pivoting on the dot that always joined them.
-
-             The angles written here are 3:37, which is as near as a real time
-             gets to the shape the mark had before it could tell the time: the
-             long hand down to the left, landing on the market line, and the
-             short one out to the right. It is also the pose the app icon is
-             frozen at, and what shows for the instant before app.js runs.
-             aria-hidden because the header states the time in words. -->
+        <!-- The mark itself: the market's flat line, the long stroke
+             climbing away from it, the short one falling off the peak, and
+             the dot where they meet. It does not move and it does not tell
+             the time -- this is the logo, and a logo that is different every
+             minute is not one. The clock lives in the header. -->
         <svg class="brandmark" viewBox="0 0 28 28" aria-hidden="true">
-          <circle class="bm-rim" cx="14" cy="12" r="10.5" />
-          <path class="bm-flat" d="M2.4 24.8H25.6" />
-          <line class="bm-hand bm-hour" id="bm-hour"
-                x1="14" y1="12" x2="14" y2="5.1" transform="rotate(108.5 14 12)" />
-          <line class="bm-hand bm-minute" id="bm-minute"
-                x1="14" y1="12" x2="14" y2="3.2" transform="rotate(222 14 12)" />
-          <circle class="bm-dot" cx="14" cy="12" r="1.5" />
+          <path class="bm-flat" d="M2 20h24" />
+          <path class="bm-rise" d="M2 20 L13 6 L26 12.5" />
+          <circle class="bm-dot" cx="13" cy="6" r="2.6" />
         </svg>
         <span class="logo-text">The<span>Edge</span></span>
       </div>
@@ -80,10 +70,9 @@
         <div class="eyebrow"><span class="pulse"></span><span id="cadence">Live</span></div>
         <h1 id="whenline">Week 1</h1>
       </div>
-      <div class="hero-right">
-        <div class="hero-greet" id="greeting"></div>
-        <div class="clock" id="clock"></div>
-        <div class="clock-date" id="clockdate"></div>
+      <!-- The controls sit on the title's line rather than under the clock,
+           which is a band of vertical space back on every page. -->
+      <div class="hero-mid">
         <div class="hero-controls">
           <select id="season" aria-label="Season"></select>
           <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
@@ -93,6 +82,27 @@
           <button class="icon-btn" id="theme" title="Toggle light and dark" aria-label="Toggle theme">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18zm0 2.2V18.8a6.8 6.8 0 0 1 0-13.6z"/></svg>
           </button>
+        </div>
+      </div>
+      <div class="hero-right">
+        <div class="hero-greet" id="greeting"></div>
+        <div class="hero-time">
+          <!-- The clock, which is where the dial belongs: beside the time it
+               is telling. Same mark, wearing a dial, with the two strokes as
+               its hands -- app.js turns them on the minute. -->
+          <svg class="dialmark" viewBox="0 0 28 28" aria-hidden="true">
+            <circle class="bm-rim" cx="14" cy="12" r="10.5" />
+            <path class="bm-flat" d="M2.4 24.8H25.6" />
+            <line class="bm-hand bm-hour" id="bm-hour"
+                  x1="14" y1="12" x2="14" y2="5.1" transform="rotate(108.5 14 12)" />
+            <line class="bm-hand bm-minute" id="bm-minute"
+                  x1="14" y1="12" x2="14" y2="3.2" transform="rotate(222 14 12)" />
+            <circle class="bm-dot" cx="14" cy="12" r="1.5" />
+          </svg>
+          <div>
+            <div class="clock" id="clock"></div>
+            <div class="clock-date" id="clockdate"></div>
+          </div>
         </div>
       </div>
     </header>
