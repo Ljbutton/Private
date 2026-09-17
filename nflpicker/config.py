@@ -106,19 +106,23 @@ class Config:
     train_auto: bool = field(default_factory=lambda: _bool("NFLPICKER_TRAIN_AUTO", True))
     # Roughly a week of games. Retraining on two or three new results spends
     # minutes of CPU to move the weights by nothing.
+    train_min_new_games: int = field(
+        default_factory=lambda: _int("NFLPICKER_TRAIN_MIN_NEW_GAMES", 12))
     # How stale a fit may get before one new result is reason enough to redo
     # it. Three days puts the refit on a Wednesday or Thursday, after Monday
     # night has been played and before the next slate is projected.
-    # The last week the survivor plan covers. Seventeen because that is where
-    # most pools settle and because week eighteen rests starters, which is the
-    # week a projection is worth least -- but an eighteen-week pool exists, and
-    # planning one week short of the end loses it.
-    survivor_last_week: int = field(
-        default_factory=lambda: _int("NFLPICKER_SURVIVOR_LAST_WEEK", 17))
     train_max_age_hours: int = field(
         default_factory=lambda: _int("NFLPICKER_TRAIN_MAX_AGE_HOURS", 72))
-    train_min_new_games: int = field(
-        default_factory=lambda: _int("NFLPICKER_TRAIN_MIN_NEW_GAMES", 12))
+
+    # The last week the survivor plan covers: the end of the season.
+    #
+    # It was seventeen, on the reasoning that most pools settle there and that
+    # week eighteen rests starters -- which is true, and is the week a
+    # projection is worth least. It is still the wrong default: a plan that
+    # stops a week early cannot be extended by its reader, while one that runs
+    # a week long can simply be read from the row above.
+    survivor_last_week: int = field(
+        default_factory=lambda: _int("NFLPICKER_SURVIVOR_LAST_WEEK", 18))
     # How much worse a fresh model may be before it is rejected. Walk-forward
     # MAE is computed over all history each time, and one week changes the
     # sample by about a third of a percent, so runs are comparable in practice;

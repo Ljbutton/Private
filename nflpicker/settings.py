@@ -157,13 +157,13 @@ SETTINGS: tuple[Setting, ...] = (
         label="Survivor runs through week",
         kind="number",
         group="General",
-        placeholder="17",
-        help="Most pools settle in week 17, and week 18 rests starters — the "
-             "week a projection is worth least. Set it to 18 if your pool "
-             "runs that far.",
+        placeholder="18",
+        help="The end of the season. Set it to 17 if your pool settles there "
+             "— week 18 rests starters, so it is the week a projection is "
+             "worth least, and planning for it spends a team you could keep.",
         needed_for="How far ahead the survivor path is planned, and how many "
                    "weeks show in the rest of the run.",
-        default="17",
+        default="18",
     ),
     Setting(
         key="NFLPICKER_TRAIN_MAX_AGE_HOURS",

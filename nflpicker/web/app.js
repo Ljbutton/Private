@@ -1000,9 +1000,7 @@ async function renderTeams(ticket) {
   </div>
   <div class="panel" id="team-detail-panel" data-nofold>
     <header><h2>Simulated win distribution</h2>
-      <div class="controls" style="margin-left:auto">
-        <select id="dist-team" aria-label="Team"></select>
-      </div></header>
+      <span class="hint" id="dist-who"></span></header>
     <div class="team-card" id="team-card"></div>
     <div id="team-dist" style="height:200px"></div>
   </div>`;
@@ -1033,13 +1031,11 @@ async function renderTeams(ticket) {
   const show = (abbr) => {
     const team = data.teams.find((t) => t.team === abbr);
     if (!team) return;
-    $("#team-detail-panel .hint")?.remove();
+    $("#dist-who").textContent = `click any team above · showing ${team.name}`;
     $("#team-card").innerHTML =
       `<div class="card-head">${teamMark(team.team)}<b>${esc(team.name)}</b>
         <span class="muted">#${team.rank} · ${num(team.exp_wins, 1)} expected wins</span>
       </div><div class="facts">${card(team)}</div>`;
-    const sel = $("#dist-team");
-    if (sel.value !== abbr) sel.value = abbr;
     $$("#view tr[data-team]").forEach(
       (tr) => tr.classList.toggle("on", tr.dataset.team === abbr));
     const dist = team.distribution || {};
@@ -1055,12 +1051,10 @@ async function renderTeams(ticket) {
     });
   };
 
-  // The distribution used to be whichever team happened to be first, with no
-  // way to ask about any other one.
-  $("#dist-team").innerHTML = data.teams.map(
-    (t) => `<option value="${esc(t.team)}">${t.rank}. ${esc(t.name)}</option>`).join("");
-  $("#dist-team").addEventListener("change", (e) => show(e.target.value));
-
+  // No team picker: the ranking above *is* the picker. A second control that
+  // selects the same thing as the row you just clicked is a second place for
+  // the two to disagree, and one more thing to look at on a page whose whole
+  // complaint was that there was too much to look at.
   wireLogos(root);
   $$("#view tr[data-team]", root).forEach((tr) => {
     tr.addEventListener("click", () => show(tr.dataset.team));

@@ -76,9 +76,11 @@ class SurvivorPlan:
         }
 
 
-# Most pools settle in week 17; week 18 rests starters and is the week a
-# projection is worth least.
-LAST_SURVIVOR_WEEK = 17
+# The end of the regular season. Pools that settle in week 17 set it back --
+# week 18 rests starters and is the week a projection is worth least -- but a
+# plan that stops early cannot be extended by its reader, and one that runs a
+# week long can be ignored from the row above.
+LAST_SURVIVOR_WEEK = 18
 
 
 def _solve(weeks: list[int], teams: list[str], prob: dict[tuple[int, str], float],

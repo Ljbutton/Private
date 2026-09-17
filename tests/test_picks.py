@@ -164,35 +164,40 @@ def _season_games(first_week: int, last_week: int) -> dict:
     return weeks
 
 
-def test_the_plan_runs_to_week_17_not_six_weeks_out():
+def test_the_plan_runs_to_the_end_of_the_season():
     """Survivor is a scheduling constraint, not a forecast.
 
     Each team may be spent once, so using one this week costs whichever future
     week wanted it -- and a planner that stops at week six cannot see that
     cost. Burning the team you needed in week 14 is the exact failure these
     pools punish.
+
+    It stopped at 17 until it was pointed out that a plan which stops early
+    cannot be extended by its reader, while one that runs a week long can be
+    read from the row above. A pool that settles in 17 sets it back.
     """
     from nflpicker.picks.survivor import plan_survivor
 
     plan = plan_survivor(2026, 2, _season_games(1, 18))
-    assert plan.through_week == 17, "week 18 rests starters and is not worth planning"
-    assert [e.week for e in plan.path] == list(range(2, 18))
+    assert plan.through_week == 18
+    assert [e.week for e in plan.path] == list(range(2, 19))
     assert len({e.team for e in plan.path}) == len(plan.path), "a team cannot be spent twice"
 
 
 def test_an_early_week_still_gets_a_full_path():
-    """'Especially through week 7' -- planning from week 1 must reach 17 too."""
+    """'Especially through week 7' -- planning from week 1 must reach the end
+    of the season too, not just from a convenient starting point."""
     from nflpicker.picks.survivor import plan_survivor
 
     for start in (1, 3, 7):
         plan = plan_survivor(2026, start, _season_games(1, 18))
         assert plan.recommendation is not None, f"no pick from week {start}"
-        assert plan.through_week == 17
-        assert [e.week for e in plan.path] == list(range(start, 18))
+        assert plan.through_week == 18
+        assert [e.week for e in plan.path] == list(range(start, 19))
 
 
 def test_a_late_start_plans_only_what_is_left():
     from nflpicker.picks.survivor import plan_survivor
 
     plan = plan_survivor(2026, 16, _season_games(1, 18))
-    assert [e.week for e in plan.path] == [16, 17]
+    assert [e.week for e in plan.path] == [16, 17, 18]
