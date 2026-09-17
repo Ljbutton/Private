@@ -256,3 +256,54 @@ def test_an_empty_rename_is_refused(temp_env):
     with pytest.raises(assistant.AssistantError):
         assistant.rename_chat(chat["id"], "   ")
     assert assistant.list_chats()[0]["title"] == "keep me"
+
+
+# ------------------------------------------------- thinking out loud, untagged
+
+def test_a_reasoning_preamble_without_tags_is_dropped():
+    """The screenshot that prompted this: "Thinking Process:" followed by a
+    numbered plan four times longer than the answer. There is no <think> tag
+    to strip, so the shape has to be recognised instead."""
+    text = (
+        "Thinking Process:\n\n"
+        "1. **Analyze the Request:** User asks what about this week.\n"
+        "2. **Analyze the Data:** Season 2026, Week 2, 16 games.\n\n"
+        "### Answer\n\n"
+        "Week 2 is 16 games. The model likes TEN over IND at 92.2%."
+    )
+    out = assistant._strip_untagged_thinking(text)
+    assert out.startswith("Week 2 is 16 games")
+    assert "Thinking Process" not in out
+
+
+def test_an_answer_that_never_rambled_is_left_alone():
+    """Cutting a real answer in half is far worse than leaving a tidy preamble
+    in place, so the stripper only fires on text that opens like working-out."""
+    for text in [
+        "TEN over IND is the strongest pick at 92.2%.",
+        "The model's ATS rate is 50.7%, below the 52.4% break-even.",
+        "Analysis of the board shows nothing unusual.",   # a real first word
+    ]:
+        assert assistant._strip_untagged_thinking(text) == text
+
+
+def test_thinking_with_no_labelled_answer_keeps_the_conclusion():
+    text = ("Let me think about this.\n\n"
+            "The Chiefs are 1-0 but their Pythagorean is poor.\n\n"
+            "So: Kansas City is overrated at rank 9.")
+    assert assistant._strip_untagged_thinking(text).startswith("So: Kansas City")
+
+
+def test_the_prompt_forbids_showing_the_working():
+    prompt = assistant.SYSTEM_PROMPT
+    assert "Thinking Process" in prompt      # named, so the model cannot miss it
+    assert "Give the answer first" in prompt
+
+
+def test_thinking_is_switched_off_and_the_answer_is_capped():
+    """The biggest single lever on how long an answer takes: a 4B reasoning
+    model will spend a thousand tokens deciding how to approach a question
+    that needs thirty to answer."""
+    assert assistant.NO_THINKING["chat_template_kwargs"]["enable_thinking"] is False
+    assert assistant.NO_THINKING["think"] is False
+    assert 200 <= assistant.MAX_TOKENS <= 1200

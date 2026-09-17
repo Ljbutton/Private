@@ -26,9 +26,9 @@ import re
 from urllib.parse import urlparse
 
 SYSTEM_PROMPT = """You are the analyst sitting beside an NFL model, talking to \
-the person who built it. You are given that model's current state as JSON: this \
-week's games, what the model projects, what the market says, and how the model \
-has actually scored.
+the person who built it. You are given that model's current state as JSON: the \
+season so far, every team's rating and projection, this week's games, what the \
+model projects, what the market says, and how the model has actually scored.
 
 Rules you do not break:
 
@@ -40,8 +40,33 @@ Be honest about that when asked whether the model is any good.
 - This model does not beat the closing line. Its measured ATS rate is around \
 51% against a 52.4% break-even. Do not encourage betting on its edges, and say \
 plainly when a number is inside the noise.
-- Be brief. Numbers over adjectives.
+
+How to answer:
+
+- Give the answer first. No preamble, no restating the question, no describing \
+what you are about to do.
+- Do not show your working. Never write "Thinking Process", "Let me analyse", \
+"Step 1", "First, I will" or anything of that shape. The reader wants the \
+conclusion and the numbers behind it, not the route you took.
+- Asked for a list, give the list. A short line each, with the number that \
+justifies it. No summary paragraph afterwards.
+- Be brief. Numbers over adjectives. Under 150 words unless asked for more.
 """
+
+# Ollama and llama.cpp both read this to turn a reasoning model's thinking off
+# at the template level. It is the single biggest thing that makes an answer
+# arrive sooner: a 4B reasoning model will happily spend a thousand tokens
+# deciding how to approach a question that needs thirty to answer.
+NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}, "think": False}
+
+# Enough for a ranked list with a line of reasoning each, and not enough for an
+# essay. A cap is also a latency ceiling, which is the point.
+MAX_TOKENS = 700
+
+# How many completed games to hand over. The season's results are what lets it
+# answer anything beyond this Sunday; all of them by January is ten kilobytes
+# of JSON, which on a 4B model is context better spent on the question.
+RESULT_LIMIT = 120
 
 
 class AssistantError(RuntimeError):
@@ -124,12 +149,14 @@ def status() -> dict:
 def context(season: int, week: int) -> dict:
     """The slice of the app the model is allowed to see.
 
-    Trimmed hard on purpose: a small model given sixteen games of full JSON
-    spends its whole context window on field names. This is the board reduced
-    to what a question is likely to be about.
+    It used to be this week's sixteen games and nothing else, which made every
+    question about the season unanswerable -- "who are the best five teams" got
+    a reading of one Sunday. It now carries the whole table, the results so far
+    and what the model is built out of, and each part is trimmed hard: a small
+    model given full JSON spends its context window on field names.
     """
-    from . import scoreboard
-    from .api import game_cards
+    from . import db, scoreboard
+    from .api import game_cards, latest_team_rows, team_rank_order
     from .ml.train import load_report
 
     games = []
@@ -151,18 +178,74 @@ def context(season: int, week: int) -> dict:
             "line_moved_toward_us": _round((card.get("movement") or {}).get("toward_us")),
         })
 
+    # Every team, in our order, with the numbers the Teams page ranks on.
+    ratings = latest_team_rows(season, "team_ratings")
+    projections = latest_team_rows(season, "season_projections")
+    teams = []
+    for rank, abbr in enumerate(team_rank_order(season, ratings, projections), start=1):
+        rating = ratings.get(abbr) or {}
+        projection = projections.get(abbr) or {}
+        teams.append({
+            "rank": rank,
+            "team": abbr,
+            "record": f"{int(projection.get('wins_actual') or 0)}-"
+                      f"{int(projection.get('losses_actual') or 0)}",
+            "power": _round(rating.get("power"), 2),
+            "pythagorean": _round(rating.get("pythagorean"), 3),
+            "off_rating": _round(rating.get("off_rating"), 1),
+            "def_rating": _round(rating.get("def_rating"), 1),
+            "exp_wins": _round(projection.get("exp_wins"), 1),
+            "wins_80pct": (None if projection.get("wins_p10") is None
+                           else f"{_round(projection.get('wins_p10'), 1)}"
+                                f"-{_round(projection.get('wins_p90'), 1)}"),
+            "playoff_prob": _round(projection.get("playoff_prob"), 3),
+            "division_prob": _round(projection.get("division_prob"), 3),
+            "title_prob": _round(projection.get("sb_prob"), 3),
+        })
+
+    # The season's results, as short strings. A game is "W3 KC 27-20 DEN",
+    # which a model reads as well as a nested object and at a fifth the tokens.
+    results = [
+        f"W{r['week']} {r['away']} {int(r['away_score'])}-"
+        f"{int(r['home_score'])} {r['home']}"
+        for r in db.query(
+            "SELECT week, home, away, home_score, away_score FROM games "
+            "WHERE season = ? AND status = 'final' AND season_type = 'REG' "
+            "AND home_score IS NOT NULL ORDER BY week DESC, game_id LIMIT ?",
+            (season, RESULT_LIMIT))
+    ]
+
     report = load_report() or {}
     return {
         "season": season,
-        "week": week,
-        "games": games,
+        "current_week": week,
+        "how_the_model_works": {
+            "inputs": [
+                "Elo rating, shrunk toward the mean between seasons",
+                "Pythagorean expectation from points scored and allowed",
+                "EPA efficiency per play, offence and defence, where "
+                "play-by-play exists",
+                "rest days, travel distance, and neutral or home site",
+                "weather at kickoff for outdoor venues",
+                "the quarterback who has been starting, valued in points",
+                "the sportsbook consensus line, which the blend leans on",
+            ],
+            "blind_vs_blend": "blind is the model alone; blend is after the "
+                              "market is weighed in, at the fitted weight below",
+            "fitted_market_weight": report.get("market_weight"),
+            "trained_on": report.get("n_games"),
+            "ranking_inputs": "projected wins, Pythagorean, rating, title odds "
+                              "and the floor of the 80% range — not record",
+        },
+        "teams": teams,
+        "this_week": games,
+        "results_so_far": results,
         "model_record": {
             "walk_forward_margin_mae": _round((report.get("blind") or {}).get("margin_mae"), 2),
             "closing_line_margin_mae": _round(
                 (report.get("blind") or {}).get("market_margin_mae"), 2),
             "walk_forward_ats_rate": _round((report.get("blind") or {}).get("ats_rate"), 3),
             "straight_up_rate": _round((report.get("blind") or {}).get("su_rate"), 3),
-            "fitted_market_weight": report.get("market_weight"),
             "note": "An ATS rate below 0.524 loses money at standard juice.",
         },
         "season_scoreboard": scoreboard.report(season)["totals"]["all"],
@@ -192,6 +275,43 @@ _STRAY_TAG = re.compile(r"</?(think|thinking|reasoning)>", re.I)
 _REASONING_KEYS = ("reasoning_content", "reasoning", "thinking")
 
 
+# Thinking that is not in a tag at all. Some models simply write the essay:
+# "Thinking Process:" then a numbered plan, then -- eventually -- the answer.
+# There is no marker to strip, so the two ends are found instead: where the
+# ramble starts, and where the answer does.
+_PREAMBLE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?\**\s*(thinking(?:\s+process)?|thought process|"
+    r"reasoning|analysis|my approach|let me (?:think|analy[sz]e|work)|"
+    r"step\s*1|first,? (?:i|let)|i (?:need|should|will) to?)\b",
+    re.I)
+_ANSWER_MARK = re.compile(
+    r"^\s*(?:#{1,6}\s*)?\**\s*(?:final\s+)?(?:answer|response|"
+    r"here(?:'s| is)\b|summary|conclusion|recommendation)s?\b[:*]*\s*$",
+    re.I | re.M)
+
+
+def _strip_untagged_thinking(text: str) -> str:
+    """Drop a reasoning preamble a model wrote as ordinary prose.
+
+    Deliberately conservative: it only fires when the text *opens* like
+    working-out, and it only keeps a later section when that section is clearly
+    labelled as the answer. A model that simply answered is never touched,
+    because cutting a real answer in half is far worse than leaving a tidy
+    preamble in place.
+    """
+    if not _PREAMBLE.match(text):
+        return text
+    marks = list(_ANSWER_MARK.finditer(text))
+    if marks:
+        answer = text[marks[-1].end():].strip()
+        if answer:
+            return answer
+    # No labelled answer: keep the last paragraph block, which is where a
+    # model that thinks out loud puts the conclusion.
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    return blocks[-1] if len(blocks) > 1 else text
+
+
 def _reply_from(choice: dict) -> str:
     """The answer, with any thinking removed -- or the thinking if that is all
     there is, because a visible ramble beats a blank bubble."""
@@ -202,7 +322,7 @@ def _reply_from(choice: dict) -> str:
     # it still wearing a `<think>` tag is just the bug with extra steps.
     answer = _STRAY_TAG.sub("", _THINK.sub("", content)).strip()
     if answer:
-        return answer
+        return _strip_untagged_thinking(answer)
     for key in _REASONING_KEYS:
         value = str(message.get(key) or "").strip()
         if value:
@@ -239,6 +359,11 @@ def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0)
         ],
         "temperature": 0.2,
         "stream": False,
+        # A ceiling on the answer is also a ceiling on how long it takes.
+        "max_tokens": MAX_TOKENS,
+        # Servers that do not know these ignore them, which is the whole reason
+        # they can be sent unconditionally.
+        **NO_THINKING,
     }
 
     import httpx

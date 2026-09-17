@@ -169,6 +169,12 @@ def start(wait: float = 20.0) -> bool:
         # Keep the weights with the rest of our data, so a backup covers them
         # and an uninstall takes them. A user's own Ollama models stay theirs.
         env["OLLAMA_MODELS"] = str(models_dir())
+        # Ollama unloads a model five minutes after the last request, and
+        # loading a 3 GB model back off disk is most of what "the assistant is
+        # slow" means: the second question of a session paid the same startup
+        # the first one did. An hour keeps it resident across a sitting without
+        # holding the memory overnight.
+        env.setdefault("OLLAMA_KEEP_ALIVE", "60m")
         models_dir().mkdir(parents=True, exist_ok=True)
         # A windowed build has no console; on Windows a child process would
         # open one, which is a black box flashing up on a user's screen.
