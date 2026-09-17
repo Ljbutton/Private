@@ -487,43 +487,60 @@ jobs:
             This tag moves with every build, so the links above are always the
             newest one.
 
-      # The assets, one at a time, with retries.
+      # The assets, one at a time, retried until the release actually holds
+      # them.
       #
       # softprops/action-gh-release uploads them concurrently, and three files
-      # of 75-90 MB going up at once failed with a bare "Error saving asset" on
-      # three builds out of three -- once leaving the release with *no* assets
-      # at all, because it deletes the old ones first and then fell over
-      # partway through replacing them. The last of those failures is what made
-      # the shape clear: two files finished and the third did not.
+      # of 75-110 MB going up at once failed with a bare "Error saving asset"
+      # on three builds out of three -- once leaving the release with *no*
+      # assets at all. Uploading them one per call fixed that much: a failure
+      # now costs one file instead of the release.
       #
-      # `gh release upload --clobber` replaces one file per call, so a failure
-      # costs that file and not the release, and a retry is a retry of one
-      # upload rather than of all of them.
+      # It did not fix the failure itself. The endpoint still answers 500
+      # ("Error saving asset", "Error creating asset temp dir") several times a
+      # run, and ten seconds is not long enough for it to come back -- one file
+      # burned all three tries inside forty seconds while the two either side
+      # of it went up fine. So the waits are long enough to outlast a bad
+      # minute, and every file gets its own round rather than its own moment.
+      #
+      # And the result is judged by what the release holds, not by exit codes,
+      # because --clobber deletes the old asset before writing the new one: a
+      # file that runs out of tries leaves a hole where somebody's download
+      # used to be, which is the one outcome worth failing the build over.
       - name: Upload the assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -u
-          failed=""
-          for file in downloaded/*; do
-            name=$(basename "$file")
-            for attempt in 1 2 3; do
-              if gh release upload latest "$file" --clobber --repo "$GITHUB_REPOSITORY"; then
+
+          pending=$(cd downloaded && ls)
+          for round in 1 2 3 4 5; do
+            [ -n "$pending" ] || break
+            [ "$round" = 1 ] || sleep $((round * 20))
+            next=""
+            for name in $pending; do
+              if gh release upload latest "downloaded/$name" --clobber \
+                   --repo "$GITHUB_REPOSITORY"; then
                 echo "uploaded $name"
-                break
-              fi
-              if [ "$attempt" = 3 ]; then
-                echo "::error::$name failed three times"
-                failed="$failed $name"
               else
-                echo "$name failed (attempt $attempt), retrying"
-                sleep $((attempt * 10))
+                echo "$name did not upload (round $round)"
+                next="$next $name"
               fi
             done
+            pending=$next
           done
-          # Reported rather than ignored: a release that is quietly missing the
-          # file somebody came for is worse than a red build.
-          if [ -n "$failed" ]; then
-            echo "these assets did not upload:$failed"
+
+          # The upload can report success and still not stick, so ask the
+          # release what it has rather than trusting the loop above.
+          on_release=$(gh release view latest --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name')
+          missing=""
+          for name in $(cd downloaded && ls); do
+            printf '%s\n' "$on_release" | grep -qxF "$name" \
+              || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the release is missing:$missing"
             exit 1
           fi
+          echo "the release holds every file this run built"
