@@ -153,6 +153,19 @@ SETTINGS: tuple[Setting, ...] = (
         needed_for="The Assistant tab.",
     ),
     Setting(
+        key="NFLPICKER_TRAIN_MAX_AGE_HOURS",
+        label="Refit at the latest after",
+        kind="number",
+        group="Model",
+        placeholder="72",
+        help="Hours. Once a fit is this old, a single new result is enough to "
+             "redo it — which is what puts a refit midweek, after Monday "
+             "night, rather than waiting for the next Sunday.",
+        needed_for="Nothing on its own. It is the second of two ways to earn "
+                   "a refit; the first is a week's worth of new results.",
+        default="72",
+    ),
+    Setting(
         key="NFLPICKER_TRAIN_AUTO",
         label="Retrain automatically",
         kind="bool",

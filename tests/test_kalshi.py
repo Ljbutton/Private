@@ -44,10 +44,51 @@ def test_an_event_normalises_to_one_two_sided_quote():
     assert q.volume == 9000
 
 
+def test_one_priced_side_is_still_a_quote():
+    """A binary contract's other side is what is left of the dollar. Early in
+    a week one contract has a book and its opposite has not traded, and
+    dropping those lost the whole game rather than half of it."""
+    quotes = normalise([{"markets": [EVENT["markets"][0]]}])
+    assert len(quotes) == 1
+    assert {quotes[0].home, quotes[0].away} == {"KC", "DEN"}
+    assert abs(quotes[0].home_price - 0.72) < 1e-9
+    assert abs(quotes[0].away_price - 0.28) < 1e-9
+
+
 def test_events_that_cannot_be_resolved_to_two_teams_are_skipped():
-    assert normalise([{"markets": [EVENT["markets"][0]]}]) == []          # one side only
+    # One side, and a ticker that names no matchup to find the other in.
+    assert normalise([{"markets": [{"ticker": "WHO-KNOWS-KC", "yes_bid": 70,
+                                    "yes_ask": 74, "status": "open"}]}]) == []
     assert normalise([{"markets": []}]) == []
     assert normalise([]) == []
+
+
+def test_both_contracts_carrying_the_same_words_still_pair():
+    """The failure this was written for: thirty-two games came back and none
+    survived pairing. The titles are per-event on this series, so both
+    contracts resolved to the same team and the pair collapsed to one. The
+    ticker's trailing segment is per-contract and cannot."""
+    same_words = [{**m, "yes_sub_title": "Denver Broncos at Kansas City Chiefs"}
+                  for m in EVENT["markets"]]
+    quotes = normalise([{**EVENT, "markets": same_words}])
+    assert len(quotes) == 1
+    assert {quotes[0].home, quotes[0].away} == {"KC", "DEN"}
+
+
+def test_the_matchup_is_read_out_of_the_ticker():
+    from nflpicker.sources.kalshi import matchup_from_market, split_matchup
+
+    assert split_matchup("DETBUF") == ("DET", "BUF")
+    assert split_matchup("DENKC") == ("DEN", "KC")
+    assert matchup_from_market(
+        {"ticker": "KXNFLGAME-26SEP17DETBUF-BUF"}) == ("DET", "BUF")
+    # Nonsense, and a split that reads two ways, are both refused rather than
+    # guessed: quoting the wrong game is worse than quoting none. LACLV is the
+    # real ambiguous one -- LAC+LV is the Chargers at the Raiders, LA+CLV is
+    # the Rams at the Browns, and both halves resolve either way.
+    assert split_matchup("ZZZZZZ") is None
+    assert split_matchup("LACLV") is None
+    assert matchup_from_market({"ticker": "KXNFLGAME-BUF"}) is None
 
 
 def test_closed_markets_are_ignored():

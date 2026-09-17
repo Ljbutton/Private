@@ -1,9 +1,12 @@
 """End-to-end: a full refresh in demo mode, then every API endpoint."""
 
+import datetime as dt
+
 import pytest
 from fastapi.testclient import TestClient
 
 from nflpicker import db
+from nflpicker.util import now_iso
 
 
 @pytest.fixture()
@@ -248,3 +251,158 @@ def test_prediction_market_view_is_comparison_only(booted):
             # Each field is rounded to 4dp for the payload, so the identity
             # holds only to within that rounding, not exactly.
             assert abs((g["venue_prob"] - g["book_prob"]) - g["gap"]) < 5e-4
+
+
+# ------------------------------------------------------- what decides the order
+
+def test_the_ranking_is_not_a_standings_table(client):
+    """The complaint this exists for: through September the order was very
+    nearly the standings, because the rating is mostly Elo, Elo moves on
+    results, and every other term in it fades in by games played."""
+    from nflpicker.api import RANK_WEIGHTS
+
+    assert "record" not in RANK_WEIGHTS
+    assert "wins_actual" not in RANK_WEIGHTS
+    # The measures that are about how good a team is carry most of the weight.
+    forward = sum(RANK_WEIGHTS[k] for k in
+                  ("exp_wins", "pythagorean", "sb_prob", "wins_p10"))
+    assert forward > RANK_WEIGHTS["power"]
+    assert abs(sum(RANK_WEIGHTS.values()) - 1.0) < 1e-9
+
+
+def test_a_team_that_wins_ugly_does_not_outrank_one_that_loses_well():
+    from nflpicker.api import ranking_scores
+
+    ratings = {
+        "AAA": {"power": 0.2, "pythagorean": 0.35},   # won, but outscored
+        "BBB": {"power": 0.0, "pythagorean": 0.68},   # lost, but outscored
+    }
+    projections = {
+        "AAA": {"exp_wins": 7.5, "wins_p10": 5, "sb_prob": 0.01},
+        "BBB": {"exp_wins": 10.5, "wins_p10": 8, "sb_prob": 0.09},
+    }
+    scores = ranking_scores(ratings, projections)
+    assert scores["BBB"] > scores["AAA"]
+
+
+def test_the_order_is_the_same_every_time(client):
+    """The Bears and the Ravens were swapping the top spot between renders.
+    Equal scores have to land in the same order or the league looks unstable
+    for a reason no reader can see."""
+    from nflpicker.api import team_rank_order
+
+    flat = {t: {"power": 1.0, "pythagorean": 0.5} for t in ("AAA", "BBB", "CCC")}
+    projections = {t: {"exp_wins": 8.5, "wins_p10": 6, "sb_prob": 0.03}
+                   for t in flat}
+    first = team_rank_order(2026, flat, projections)
+    for _ in range(5):
+        assert team_rank_order(2026, flat, projections) == first
+    assert first == ["AAA", "BBB", "CCC"]
+
+
+def test_a_missing_measure_reads_as_average_rather_than_last():
+    """Week one has no Pythagorean and no projections. A team missing a
+    measure should sit where the others put it, not be dumped at the bottom."""
+    from nflpicker.api import ranking_scores
+
+    ratings = {"AAA": {"power": 3.0, "pythagorean": None},
+               "BBB": {"power": -3.0, "pythagorean": None}}
+    projections = {"AAA": {}, "BBB": {}}
+    scores = ranking_scores(ratings, projections)
+    assert scores["AAA"] > scores["BBB"]
+
+
+# ------------------------------------------------- season odds against the market
+
+def test_the_season_odds_are_pulled_toward_the_posted_totals():
+    """Nobody prices week fourteen in September, so from a month out the
+    simulation was running on ratings alone. Season win totals are posted all
+    year, and they are the only view the market has on the whole run."""
+    from nflpicker.ratings.power import PowerRatings, TeamPower
+    from nflpicker.sim.season import anchor_to_market
+
+    teams = {t: TeamPower(team=t, power=0.0) for t in
+             ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH")}
+    power = PowerRatings(teams=teams)
+    ours = dict.fromkeys(teams, 8.5)
+    lines = dict.fromkeys(teams, 8.5) | {"AAA": 12.5, "BBB": 4.5}
+
+    out = anchor_to_market(power, ours, lines)
+    assert out.teams["AAA"].power > 0        # the market likes them more
+    assert out.teams["BBB"].power < 0        # and likes them less
+    assert out.teams["CCC"].power == 0       # no disagreement, no move
+    # Half the gap, in points: (12.5 - 8.5) * 0.5 * 2.0
+    assert abs(out.teams["AAA"].power - 4.0) < 1e-9
+    # And the ratings the game cards were drawn from are untouched.
+    assert power.teams["AAA"].power == 0.0
+
+
+def test_a_handful_of_posted_totals_is_a_rumour_not_a_market():
+    from nflpicker.ratings.power import PowerRatings, TeamPower
+    from nflpicker.sim.season import anchor_to_market
+
+    power = PowerRatings(teams={t: TeamPower(team=t) for t in ("AAA", "BBB")})
+    out = anchor_to_market(power, {"AAA": 8.0}, {"AAA": 13.0})
+    assert out.teams["AAA"].power == 0.0
+
+
+# --------------------------------------------------------------- when to refit
+
+def test_a_stale_fit_is_redone_for_one_result(temp_env, monkeypatch):
+    """An NFL week lands thirteen games on Sunday, then one on Monday and one
+    on Thursday. A threshold only a Sunday can clear meant a Monday night
+    result sat unlearned for six days."""
+    from nflpicker import db
+    from nflpicker.config import get_config
+    from nflpicker.pipeline import Pipeline, RefreshResult
+
+    db.connect()
+    pipe = Pipeline()
+    monkeypatch.setattr(pipe, "demo", False)
+    monkeypatch.setattr(pipe, "_retrain", lambda completed, new: f"refit on {completed}")
+
+    for gid in ("g1", "g2"):
+        db.execute("INSERT OR REPLACE INTO games(game_id, season, week, season_type, "
+                   "home, away, status, updated_at) "
+                   "VALUES(?, 2026, 1, 'REG', 'KC', 'DEN', 'final', ?)",
+                   (gid, now_iso()))
+    # One of the two was in the last fit, so there is exactly one new result.
+    db.set_meta("train:n_games", 1)
+
+    cfg = get_config()
+    # Fresh fit, one new game, nowhere near the threshold: wait.
+    db.set_meta("train:at", now_iso())
+    result = RefreshResult()
+    pipe.refresh_train(result)
+    assert "waiting for" in _detail(result, "train")
+
+    # Same one game, but the fit is older than the ceiling: refit.
+    old = dt.datetime.now(dt.UTC) - dt.timedelta(hours=cfg.train_max_age_hours + 1)
+    db.set_meta("train:at", old.isoformat())
+    result = RefreshResult()
+    pipe.refresh_train(result)
+    assert "refit on 2" in _detail(result, "train")
+
+
+def test_no_new_results_is_never_a_refit(temp_env, monkeypatch):
+    """Staleness alone must not retrain: refitting the same rows on a timer
+    burns minutes of CPU to reproduce the model it already had."""
+    from nflpicker import db
+    from nflpicker.pipeline import Pipeline, RefreshResult
+
+    db.connect()
+    pipe = Pipeline()
+    monkeypatch.setattr(pipe, "demo", False)
+    monkeypatch.setattr(pipe, "_retrain", lambda completed, new: "should not happen")
+    db.execute("INSERT OR REPLACE INTO games(game_id, season, week, season_type, "
+               "home, away, status, updated_at) "
+               "VALUES('g1', 2026, 1, 'REG', 'KC', 'DEN', 'final', ?)", (now_iso(),))
+    db.set_meta("train:n_games", 1)
+    db.set_meta("train:at", "2020-01-01T00:00:00+00:00")
+    result = RefreshResult()
+    pipe.refresh_train(result)
+    assert "no new results" in _detail(result, "train")
+
+
+def _detail(result, stage: str) -> str:
+    return str((result.stages.get(stage) or {}).get("detail") or "")

@@ -271,3 +271,63 @@ def _seed_of(seeds: np.ndarray, team: np.ndarray) -> np.ndarray:
     """Seed number (1-7) of ``team`` within each simulation's bracket."""
     match = seeds == team[:, None]
     return np.argmax(match, axis=1) + 1
+
+
+# How far a rating has to move to buy one win over a full season.
+#
+# Each remaining game's win probability moves with the normal density at the
+# middle of the margin distribution, so a point of rating is worth about
+# phi(0)/sd of a win per game -- roughly 0.03 -- and seventeen games turn that
+# into half a win. Two points a win is the inverse, and it is an approximation
+# on purpose: it is used to take a step toward the market, not to land on it.
+POINTS_PER_WIN = 2.0
+
+# How much of the gap to the market's number to close. Half: the market is
+# better informed about a season than a rating built from a handful of games,
+# and it is also a single number with no view on how a team got there. Closing
+# all of it would throw away the model; closing none of it is what this
+# replaced.
+MARKET_PULL = 0.5
+
+# Below this many posted totals the market is not speaking, it is a rumour.
+MARKET_MIN_TEAMS = 8
+
+
+def anchor_to_market(
+    power: PowerRatings,
+    exp_wins: dict[str, float],
+    win_totals: dict[str, float],
+    *,
+    pull: float = MARKET_PULL,
+) -> PowerRatings:
+    """Nudge ratings toward the season win totals the books are posting.
+
+    The playoff, division and title odds are the app's own simulation, and the
+    per-game margins it replays already blend the model with the sportsbook
+    line -- but only for the games a book has posted. Nobody prices week
+    fourteen in September, so from about a month out the simulation was running
+    on ratings alone, and the season-long odds with it.
+
+    Season win totals *are* posted, for every team, all year. This is the one
+    place the market has a view on the whole run, so the ratings are pulled
+    part of the way toward it before the odds are simulated. It leaves the
+    model's shape and moves its level.
+
+    Returns a new PowerRatings; the one passed in is left alone, because it is
+    also what the game cards were drawn from.
+    """
+    usable = {t: float(v) for t, v in (win_totals or {}).items()
+              if v is not None and t in power.teams}
+    if len(usable) < MARKET_MIN_TEAMS:
+        return power
+
+    import copy
+
+    adjusted = copy.deepcopy(power)
+    for team, line in usable.items():
+        ours = exp_wins.get(team)
+        if ours is None:
+            continue
+        shift = pull * (line - ours) * POINTS_PER_WIN
+        adjusted.teams[team].power += shift
+    return adjusted

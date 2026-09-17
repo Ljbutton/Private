@@ -254,15 +254,15 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                     "distribution": distribution,
                 }
             )
-        # Ranked by where each team is projected to *finish*, not by how it has
-        # gone so far. That is what a power ranking is for: expected wins comes
-        # out of 20,000 simulations of the remaining schedule, so it already
-        # carries both the rating and who is left to play. The rating breaks
-        # ties, because two teams can project to the same win total off very
-        # different strength.
+        # Ranked by how good a team is rather than by how its Sundays have
+        # gone -- see RANK_WEIGHTS. The score is carried on the row so the
+        # card can show what put a team where it is.
+        scores = ranking_scores(ratings, projections)
         order = {team: i for i, team in enumerate(
             team_rank_order(season, ratings, projections), start=1)}
         rows.sort(key=lambda r: order.get(r["team"], 99))
+        for row in rows:
+            row["rank_score"] = round(scores.get(row["team"], 0.0), 3)
         for i, row in enumerate(rows, start=1):
             row["rank"] = i
         # Where the projection disagrees with the table is the interesting
@@ -871,41 +871,92 @@ def latest_team_rows(season: int, table: str, columns: str = "*") -> dict[str, d
     }
 
 
+# What decides the power ranking's order.
+#
+# It used to be the rating, with projected wins as a tie-break. The rating is
+# mostly shrunk Elo, Elo moves on results, and every other term in it is faded
+# in by games played -- so through September the order was very nearly a
+# standings table with extra steps, and a 1-0 team sat above an 0-1 team that
+# was plainly better.
+#
+# So the order is a blend of the measures that are about how good a team is
+# rather than how its Sundays have gone. Record is not one of the inputs.
+# Projected wins carries the games already banked, which is the only way
+# results enter at all, and it is the schedule-adjusted season outlook that
+# makes it worth carrying.
+#
+# `power` here is still the rating the projections and the model are built
+# from. Nothing below changes a prediction; it changes the order of a table.
+RANK_WEIGHTS = {
+    "exp_wins": 0.30,       # where the season is projected to end up
+    "pythagorean": 0.20,    # points scored and allowed, which ignores who won
+    "power": 0.20,          # neutral-field strength, the rating itself
+    "sb_prob": 0.15,        # what twenty thousand seasons think of them
+    "wins_p10": 0.15,       # the floor of the 80% range: a team's bad case
+}
+
+
+def _z(values: dict[str, float | None]) -> dict[str, float]:
+    """Standard scores, with a missing value reading as league average.
+
+    Standardising is what lets four quantities on four scales -- wins, a
+    percentage, a rating in points, a probability -- be weighed against each
+    other at all. Without it the term measured in wins would decide everything
+    and the probabilities would be rounding error.
+    """
+    live = [v for v in values.values() if v is not None]
+    if len(live) < 2:
+        return {t: 0.0 for t in values}
+    mean = sum(live) / len(live)
+    variance = sum((v - mean) ** 2 for v in live) / len(live)
+    sd = variance ** 0.5
+    if sd <= 0:
+        return {t: 0.0 for t in values}
+    return {t: 0.0 if v is None else (v - mean) / sd for t, v in values.items()}
+
+
+def ranking_scores(ratings: dict, projections: dict) -> dict[str, float]:
+    """One number per team, higher is better, from RANK_WEIGHTS."""
+    teams = sorted(set(ratings) | set(projections))
+
+    def field(source: dict, name: str) -> dict[str, float | None]:
+        out: dict[str, float | None] = {}
+        for team in teams:
+            row = source.get(team)
+            value = row.get(name) if isinstance(row, dict) else None
+            try:
+                out[team] = None if value is None else float(value)
+            except (TypeError, ValueError):
+                out[team] = None
+        return out
+
+    parts = {
+        "exp_wins": _z(field(projections, "exp_wins")),
+        "wins_p10": _z(field(projections, "wins_p10")),
+        "sb_prob": _z(field(projections, "sb_prob")),
+        "pythagorean": _z(field(ratings, "pythagorean")),
+        "power": _z(field(ratings, "power")),
+    }
+    return {team: sum(RANK_WEIGHTS[k] * parts[k][team] for k in RANK_WEIGHTS)
+            for team in teams}
+
+
 def team_rank_order(season: int, ratings: dict | None = None,
                     projections: dict | None = None) -> list[str]:
-    """Our teams, best first — the one ordering the whole app calls "our rank".
+    """Our teams, best first -- the one ordering the whole app calls "our rank".
 
-    **By rating.** It was by projected finish, which put two tables on the
-    Teams page under two different rules: the ranking at the top and its own
-    week-by-week history underneath disagreed about who was second, and the
-    only explanation was a line of small print. A history can only be ordered
-    by the rating -- projected finish needs twenty thousand simulations of a
-    schedule that has since been played -- so the rating is what both use.
-
-    It is also the more honest reading of the words. A power ranking is a
-    statement about how good a team is; projected wins is a statement about how
-    good a team is *and* who it still has to play, which is a different
-    question and has its own column.
-
-    Callers that have already fetched the two tables pass them in rather than
-    paying for them again.
+    See RANK_WEIGHTS for what decides it. The abbreviation is the final
+    tie-break, and it is there on purpose: two teams that score identically
+    have to land in the same order on every render, or the table quietly
+    reshuffles itself between refreshes and the top of the league looks
+    unstable for no reason a reader can see.
     """
     if ratings is None:
         ratings = latest_team_rows(season, "team_ratings")
     if projections is None:
         projections = latest_team_rows(season, "season_projections")
-    ratings = {t: r["power"] if isinstance(r, dict) else r for t, r in ratings.items()}
-    projections = {t: p["exp_wins"] if isinstance(p, dict) else p
-                   for t, p in projections.items()}
-    teams = sorted(set(ratings) | set(projections))
-    # Rating first, projected wins as the tie-break: two teams can be rated the
-    # same and face very different schedules from here.
-    teams.sort(key=lambda t: (
-        ratings.get(t) is None and projections.get(t) is None,
-        -(ratings[t] if ratings.get(t) is not None else -99),
-        -(projections.get(t) or 0),
-    ))
-    return teams
+    scores = ranking_scores(ratings, projections)
+    return sorted(scores, key=lambda t: (-scores[t], t))
 
 
 def game_cards(season: int, week: int) -> list[dict]:

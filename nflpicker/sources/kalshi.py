@@ -31,9 +31,35 @@ VENUE = KALSHI
 # are tried rather than hard-coding one.
 NFL_SERIES = ["KXNFLGAME", "NFLGAME", "KXNFL"]
 
-# Market tickers look like KXNFLGAME-25SEP21DENKC-KC: the trailing segment is
-# the team whose Yes side wins.
+# Market tickers look like KXNFLGAME-26SEP17DETBUF-BUF. Two things are in
+# there and both are worth having: the trailing segment is the team whose Yes
+# side pays, and the middle segment carries the date and *both* teams.
 _TICKER_TEAM = re.compile(r"-([A-Z]{2,4})$")
+_TICKER_MATCHUP = re.compile(r"-\d{2}[A-Z]{3}\d{2}([A-Z]{4,8})(?:-|$)")
+
+
+def split_matchup(code: str) -> tuple[str, str] | None:
+    """The two teams in a ticker's middle segment, e.g. DETBUF -> (DET, BUF).
+
+    Ambiguous in general -- LACLV is LAC+LV or LA+CLV -- so every split is
+    tried and one is only accepted when both halves are teams we know and the
+    split is unique. Guessing between two readings of the same string would
+    quietly quote the wrong game.
+    """
+    found = []
+    for cut in (2, 3, 4):
+        left, right = code[:cut], code[cut:]
+        if not (2 <= len(right) <= 4):
+            continue
+        a, b = try_resolve(left), try_resolve(right)
+        if a and b and a != b:
+            found.append((a, b))
+    return found[0] if len(found) == 1 else None
+
+
+def matchup_from_market(market: dict) -> tuple[str, str] | None:
+    match = _TICKER_MATCHUP.search(str(market.get("ticker") or ""))
+    return split_matchup(match.group(1)) if match else None
 
 
 @dataclass
@@ -90,14 +116,24 @@ def mid_price(market: dict) -> float | None:
 
 
 def team_from_market(market: dict) -> str | None:
-    """Which team this contract pays out on."""
+    """Which team this contract pays out on.
+
+    The ticker is asked first now, and that is the fix for a real failure: the
+    titles are per-*event* on some series, so both contracts in a game carried
+    the same words, both resolved to the same team, and the pair collapsed to
+    one. Thirty-two games came back and none of them survived. The ticker's
+    trailing segment is per-contract and cannot do that.
+    """
+    match = _TICKER_TEAM.search(str(market.get("ticker") or ""))
+    if match:
+        team = try_resolve(match.group(1))
+        if team:
+            return team
     for key in ("yes_sub_title", "subtitle", "title"):
         team = try_resolve(market.get(key))
         if team:
             return team
-    ticker = str(market.get("ticker") or "")
-    match = _TICKER_TEAM.search(ticker)
-    return try_resolve(match.group(1)) if match else None
+    return None
 
 
 def normalise(events: list[dict]) -> list[KalshiQuote]:
@@ -111,14 +147,27 @@ def normalise(events: list[dict]) -> list[KalshiQuote]:
         markets = event.get("markets") or []
         priced: dict[str, float] = {}
         volume = 0.0
+        matchup = None
         for market in markets:
             if str(market.get("status", "open")).lower() not in {"open", "active"}:
                 continue
+            matchup = matchup or matchup_from_market(market)
             team = team_from_market(market)
             price = mid_price(market)
             if team and price is not None:
                 priced[team] = price
                 volume += float(market.get("volume") or 0)
+
+        # One side priced and the other not is not a broken event, it is a
+        # binary contract: the other side is what is left of the dollar. This
+        # is the common shape early in a week, when one contract has a book and
+        # its opposite has not traded, and dropping it lost the whole game.
+        if len(priced) == 1 and matchup:
+            (known,) = priced
+            other = next((t for t in matchup if t != known), None)
+            if other:
+                priced[other] = 1.0 - priced[known]
+
         if len(priced) != 2:
             continue
 

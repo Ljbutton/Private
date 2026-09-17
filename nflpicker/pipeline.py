@@ -30,7 +30,7 @@ from .picks.survivor import plan_survivor
 from .ratings.efficiency import from_epa_frame
 from .ratings.elo import run_elo
 from .ratings.power import build_power_ratings
-from .sim.season import simulate_season
+from .sim.season import anchor_to_market, simulate_season
 from .sources.base import SourceError
 from .util import (
     current_season,
@@ -852,11 +852,27 @@ class Pipeline:
             completed = int((done or {}).get("n") or 0)
             trained_on = int(db.get_meta("train:n_games", 0) or 0)
             new_games = completed - trained_on
-            if trained_on and new_games < self.config.train_min_new_games:
+            # Two ways to earn a refit, because one was not enough. A week's
+            # worth of results is the obvious one. The other is age: an NFL
+            # week lands thirteen games on Sunday and then one on Monday and
+            # one on Thursday, so a threshold that only a Sunday can clear
+            # meant the model never saw a midweek result until the following
+            # Sunday -- a Monday night injury or blowout sat unlearned for six
+            # days. Once the fit is stale, one new result is enough.
+            stale_after = self.config.train_max_age_hours * 3600.0
+            age = seconds_since(db.get_meta("train:at")) if trained_on else None
+            stale = age is not None and age >= stale_after
+            enough = new_games >= self.config.train_min_new_games
+            if trained_on and new_games <= 0:
+                result.record("train", True, "no new results since the last fit")
+                return
+            if trained_on and not enough and not stale:
+                hours = 0 if age is None else int(age // 3600)
                 result.record(
                     "train", True,
-                    f"{new_games} new result(s) since the last fit; "
-                    f"waiting for {self.config.train_min_new_games}")
+                    f"{new_games} new result(s) since the last fit {hours}h ago; "
+                    f"waiting for {self.config.train_min_new_games} "
+                    f"or {self.config.train_max_age_hours}h")
                 return
 
             detail = self._retrain(completed, new_games)
@@ -1435,8 +1451,17 @@ class Pipeline:
 
         # ---- season simulation
         margins = {gid: p.fair_margin for gid, p in by_game.items()}
-        sim = simulate_season(season, games, power, game_margins=margins, n_sims=20000)
         win_totals = db.get_meta("season_win_totals", {}) or {}
+        # Two passes, so the season-long odds are a blend rather than the
+        # model talking to itself. The first is cheap and exists only to ask
+        # where our ratings land each team; the ratings are then pulled part
+        # of the way toward the market's posted win totals, and the real run
+        # replays the season from there. See anchor_to_market.
+        scout = simulate_season(season, games, power, game_margins=margins,
+                                n_sims=2000)
+        power = anchor_to_market(
+            power, {t: s.exp_wins for t, s in scout.teams.items()}, win_totals)
+        sim = simulate_season(season, games, power, game_margins=margins, n_sims=20000)
         db.executemany(
             "INSERT OR REPLACE INTO season_projections"
             "(team, season, captured_at, wins_actual, losses_actual, ties_actual, exp_wins,"

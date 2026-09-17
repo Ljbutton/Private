@@ -106,6 +106,11 @@ class Config:
     train_auto: bool = field(default_factory=lambda: _bool("NFLPICKER_TRAIN_AUTO", True))
     # Roughly a week of games. Retraining on two or three new results spends
     # minutes of CPU to move the weights by nothing.
+    # How stale a fit may get before one new result is reason enough to redo
+    # it. Three days puts the refit on a Wednesday or Thursday, after Monday
+    # night has been played and before the next slate is projected.
+    train_max_age_hours: int = field(
+        default_factory=lambda: _int("NFLPICKER_TRAIN_MAX_AGE_HOURS", 72))
     train_min_new_games: int = field(
         default_factory=lambda: _int("NFLPICKER_TRAIN_MIN_NEW_GAMES", 12))
     # How much worse a fresh model may be before it is rejected. Walk-forward
