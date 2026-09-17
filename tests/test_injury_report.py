@@ -158,3 +158,82 @@ def test_a_second_spell_does_not_inherit_the_first_ones_start(pipeline, temp_env
         "ORDER BY id DESC LIMIT 1")[0]
     assert latest["first_seen"].startswith("2025-12"), (
         "the December spell started in December")
+
+
+def _listed_row(team, player, status="Out"):
+    db.execute(
+        "INSERT INTO injuries(team, player, status, injury, first_seen, updated_at) "
+        "VALUES(?,?,?,'Hamstring','2025-09-01T00:00:00Z','2025-09-01T00:00:00Z')",
+        (team, player, status),
+    )
+
+
+def test_a_team_missing_from_the_response_is_left_alone(pipeline, temp_env,
+                                                        monkeypatch, client):
+    """The feed is grouped by team, so a truncated response drops whole teams.
+
+    A team we did not hear about is one we learned nothing about. Clearing
+    league-wide on a partial response would mark healthy every player on every
+    team that happened to be missing -- which reads as good news rather than as
+    the fault it is.
+    """
+    db.execute("DELETE FROM injuries")
+    _listed_row("KC", "Chiefs Guy")
+    _listed_row("BUF", "Bills Guy")
+
+    from nflpicker.sources import demo
+
+    # A response covering KC only, and saying nobody on KC is hurt any more.
+    monkeypatch.setattr(demo, "generate_injuries", lambda season, per_team=3: [
+        {"team": "KC", "player": "Someone New", "position": "WR", "status": "Out",
+         "detail": "", "injury": "Knee", "return_date": None,
+         "updated_at": "2025-10-01T00:00:00Z"},
+    ])
+    pipeline.refresh_news(RefreshResult())
+
+    names = _listed(client)
+    assert "Chiefs Guy" not in names, "KC was covered, so its absentee cleared"
+    assert "Bills Guy" in names, "BUF was not in the response and must be untouched"
+
+
+def test_an_implausible_sweep_is_refused(pipeline, temp_env, monkeypatch, client):
+    """A covered team whose group came back empty through a fault upstream is
+    the case team scoping cannot catch. Recoveries are gradual, so a response
+    retiring most of the standing report at once is far likelier to be broken
+    than true."""
+    db.execute("DELETE FROM injuries")
+    for i in range(14):
+        _listed_row("KC", f"Player {i}")
+
+    from nflpicker.sources import demo
+
+    monkeypatch.setattr(demo, "generate_injuries", lambda season, per_team=3: [
+        {"team": "KC", "player": "Player 0", "position": "WR", "status": "Out",
+         "detail": "", "injury": "Knee", "return_date": None,
+         "updated_at": "2025-10-01T00:00:00Z"},
+    ])
+    pipeline.refresh_news(RefreshResult())
+
+    still = _listed(client, "KC")
+    assert len(still) == 14, (
+        f"13 of 14 is not a Tuesday; expected none cleared, got {len(still)} left")
+
+
+def test_a_small_report_still_clears_normally(pipeline, temp_env, monkeypatch, client):
+    """The proportional guard needs a floor. With three players listed, clearing
+    two is 67% and entirely ordinary -- without a floor the guard would fire
+    hardest on exactly the small early-season reports where every clearing is
+    legitimate."""
+    db.execute("DELETE FROM injuries")
+    for i in range(3):
+        _listed_row("KC", f"Player {i}")
+
+    from nflpicker.sources import demo
+
+    monkeypatch.setattr(demo, "generate_injuries", lambda season, per_team=3: [
+        {"team": "KC", "player": "Player 0", "position": "WR", "status": "Out",
+         "detail": "", "injury": "Knee", "return_date": None,
+         "updated_at": "2025-10-01T00:00:00Z"},
+    ])
+    pipeline.refresh_news(RefreshResult())
+    assert len(_listed(client, "KC")) == 1

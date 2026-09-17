@@ -53,6 +53,17 @@ GAME_COLUMNS = [
 
 log = logging.getLogger("nflpicker.pipeline")
 
+# The most of the standing injury report one refresh may retire. A smell test
+# rather than a tuned number: real recoveries trickle in a few at a time across
+# a week, so one response clearing more than half the league's listed players
+# is describing a fault upstream, not a Tuesday.
+CLEAR_LIMIT = 0.5
+# ...but only once there is enough of a report for a proportion to mean
+# anything. With three players listed, clearing two is 67% and entirely
+# ordinary; without this floor the guard fires hardest on exactly the small,
+# early-season reports where every clearing is legitimate.
+CLEAR_LIMIT_FLOOR = 10
+
 # The season training starts from, matching the CLI's default. Earlier seasons
 # exist but predate the play-by-play detail most features are built on.
 TRAIN_SINCE_SEASON = 2002
@@ -640,6 +651,7 @@ class Pipeline:
 
                 items = generate_news(self.season())
                 injuries = generate_injuries(self.season())
+                covered = None
             else:
                 from .sources.espn import EspnSource
                 from .sources.news_rss import NewsSource
@@ -647,6 +659,7 @@ class Pipeline:
                 espn = EspnSource()
                 items = NewsSource().fetch() + espn.news()
                 injuries = espn.injuries()
+                covered = getattr(espn, "covered_teams", None)
 
             tagged = tag_items(items)
             stamp = now_iso()
@@ -733,15 +746,44 @@ class Pipeline:
                 # week 12, and the report filled up with players who had been
                 # fine for a month.
                 #
-                # Absence is only meaningful in a list that arrived intact, so
-                # this runs on a non-empty fetch. A feed that returns nothing,
-                # or half of itself, must not be read as the whole league
-                # recovering at once.
+                # Absence only means recovery inside a part of the list that
+                # actually arrived, so clearing is scoped to the teams this
+                # response covered. The feed is grouped by team, which is what
+                # makes that scoping exact rather than a guess: a truncated
+                # response drops whole teams, and a team we did not hear about
+                # is one we learned nothing about. Clearing league-wide on a
+                # partial response would mark healthy every player on every
+                # team that happened to be missing.
+                #
+                # No covered set (the demo source, an older adapter) falls back
+                # to the teams present in the rows. That is the weaker rule --
+                # it cannot see a covered team whose players have all recovered
+                # -- but it errs towards leaving a player listed, which is the
+                # safe direction: a stale row is visible and correctable, a
+                # wrongly cleared one looks like good news.
+                scope = covered if covered else {i["team"] for i in injuries}
                 listed = {(i["team"], i["player"]) for i in injuries}
-                cleared = [
+                candidates = [
                     key for key, was in current.items()
-                    if key not in listed and is_notable_injury(was["status"])
+                    if key not in listed and key[0] in scope
+                    and is_notable_injury(was["status"])
                 ]
+                # A backstop for the case team scoping cannot catch: a covered
+                # team whose group came back empty through a fault upstream.
+                # Recoveries are gradual, so a response that retires most of
+                # the standing report at once is far more likely to be broken
+                # than true.
+                standing = sum(1 for was in current.values()
+                               if is_notable_injury(was["status"]))
+                if (standing >= CLEAR_LIMIT_FLOOR
+                        and len(candidates) > standing * CLEAR_LIMIT):
+                    log.warning(
+                        "injury feed would clear %d of %d listed players; "
+                        "treating it as incomplete and clearing none",
+                        len(candidates), standing)
+                    cleared = []
+                else:
+                    cleared = candidates
                 for team, player in cleared:
                     rows.append([team, player, None, "Active", None, None, None,
                                  None, stamp])
@@ -1273,6 +1315,19 @@ class Pipeline:
         with contextlib.suppress(Exception):
             self.store_power_snapshot(season, week, power, completed)
 
+        # And the weeks before this one, which an install made mid-season has
+        # never seen. Reconstructed from the games that had finished before
+        # each of them, so the history is complete from the first launch rather
+        # than starting at whatever week someone happened to install in.
+        #
+        # Cheap in the only case that matters: it writes nothing for a week
+        # already held, so the work is done once and every later recompute
+        # finds nothing to do. Suppressed because a ranking history is not
+        # worth failing a recompute over -- the current week's snapshot above
+        # is the part that has to land.
+        with contextlib.suppress(Exception):
+            self.rebuild_power_history(season, completed=completed)
+
         # ---- predictions
         # Features are built over the whole history so rolling form and Elo
         # cross the season boundary, then narrowed to the season on display.
@@ -1552,6 +1607,7 @@ class Pipeline:
         return len(rows)
 
     def rebuild_power_history(self, season: int | None = None, *,
+                              completed: list[dict] | None = None,
                               overwrite: bool = False) -> dict:
         """Reconstruct the weekly rankings for weeks we were not running for.
 
@@ -1568,11 +1624,15 @@ class Pipeline:
         has, twice, this season alone.
         """
         season = season or self.season()
-        completed = db.query(
-            "SELECT * FROM games WHERE status = 'final' AND season <= ? "
-            "ORDER BY season, week, kickoff",
-            (season,),
-        )
+        # recompute() has already loaded exactly this list, and on the common
+        # path -- every week already held -- re-reading the whole game history
+        # is the only work this function would do.
+        if completed is None:
+            completed = db.query(
+                "SELECT * FROM games WHERE status = 'final' AND season <= ? "
+                "ORDER BY season, week, kickoff",
+                (season,),
+            )
         if not completed:
             return {"season": season, "weeks": [], "reason": "no completed games"}
 

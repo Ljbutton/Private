@@ -126,3 +126,60 @@ def test_an_empty_history_is_reported_rather_than_faked(pipeline, temp_env, clie
     db.execute("DELETE FROM power_snapshots")
     body = client.get("/api/power/history?season=1999").json()
     assert body["weeks"] == [] and body["teams"] == [] and body["week"] is None
+
+
+def test_a_past_week_does_not_change_once_it_is_written(four_weeks):
+    """The whole value of a history is that it says what was thought *then*.
+
+    A week's snapshot is a function of the games completed before it, so a
+    later recompute would reconstruct the same numbers -- but only while the
+    rating code stays put. Pinning the row rather than the arithmetic is what
+    survives the next change to the rating, which is exactly when a history
+    quietly rewriting itself would matter and be hardest to notice.
+    """
+    four_weeks.rebuild_power_history(2025)
+    before = {
+        (r["week"], r["team"]): (r["rank"], r["power"], r["captured_at"])
+        for r in db.query(
+            "SELECT week, team, rank, power, captured_at FROM power_snapshots "
+            "WHERE season = 2025 AND week <= 3")
+    }
+
+    # New results arrive, and the rating itself moves under them.
+    for week in (5, 6):
+        _game(f"late{week}", 2025, week, "KC", "DEN", 45, 3)
+        _game(f"lateb{week}", 2025, week, "BUF", "NYJ", 40, 6)
+    import nflpicker.ratings.power as power_mod
+
+    original = power_mod.PYTHAGOREAN_POINTS
+    try:
+        power_mod.PYTHAGOREAN_POINTS = original * 3
+        four_weeks.rebuild_power_history(2025)
+    finally:
+        power_mod.PYTHAGOREAN_POINTS = original
+
+    after = {
+        (r["week"], r["team"]): (r["rank"], r["power"], r["captured_at"])
+        for r in db.query(
+            "SELECT week, team, rank, power, captured_at FROM power_snapshots "
+            "WHERE season = 2025 AND week <= 3")
+    }
+    assert after == before, "weeks 1-3 are history and must not move"
+
+
+def test_recompute_fills_the_weeks_before_it_on_its_own(pipeline, temp_env):
+    """Installed in week 10, you should still be able to look at week 3.
+
+    The first recompute reconstructs every earlier week rather than starting
+    the history at whatever week the app happened to be installed in.
+    """
+    db.execute("DELETE FROM games")
+    db.execute("DELETE FROM power_snapshots")
+    for week in range(1, 6):
+        _game(f"g{week}", 2025, week, "KC", "DEN", 30, 10)
+    assert not db.query("SELECT 1 FROM power_snapshots LIMIT 1")
+
+    pipeline.recompute()
+    weeks = sorted(r["week"] for r in db.query(
+        "SELECT DISTINCT week FROM power_snapshots WHERE season = 2025"))
+    assert weeks[:5] == [1, 2, 3, 4, 5], f"got {weeks}"

@@ -1244,3 +1244,15 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    band of empty space to its left, which reads as a broken table rather than
    an aligned one. */
 .slate td.team { text-align: left; }
+
+/* The selected team in the weekly ranking, whose trend is drawn above it.
+   Marked with the same accent the week buttons use, so "this row is what the
+   chart is showing" reads the same way as "this is the week on screen". */
+.slate tbody tr.on {
+  background: color-mix(in srgb, var(--series-1) 12%, transparent);
+}
+.track-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 2px 0 4px;
+}
+.track-name { font-weight: 650; }

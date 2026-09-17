@@ -4,7 +4,8 @@ import {
   signed, statusClass, when,
 } from "./format.js";
 
-const state = { season: null, week: null, weeks: [], tab: "home", meta: null, busy: false };
+const state = { season: null, week: null, weeks: [], tab: "home", meta: null,
+  busy: false, trackTeam: null };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -982,7 +983,8 @@ async function renderPowerHistory(week) {
       move > 0 ? "▲" : "▼"}${Math.abs(move)}</span>`;
   };
 
-  const rows = data.teams.map((t) => `<tr>
+  const rows = data.teams.map((t) => `<tr data-team="${esc(t.team)}"
+      class="${t.team === state.trackTeam ? "on" : ""}" style="cursor:pointer">
     <td class="team">${t.rank}. ${esc(t.team)}
       <span class="muted">${esc(t.name)}</span></td>
     <td>${arrow(t.move)}</td>
@@ -995,6 +997,7 @@ async function renderPowerHistory(week) {
   const rebuilt = Object.values(data.sources).filter((v) => v === "rebuilt").length;
   host.innerHTML = `
     <div class="week-picker">${picker}</div>
+    <div id="rank-track"></div>
     <div class="table-scroll tall"><table class="slate">
       <thead><tr><th>Team</th>
         <th title="Places moved since week ${data.compared_to ?? "–"}">Move</th>
@@ -1013,6 +1016,60 @@ async function renderPowerHistory(week) {
 
   $$(".week-pick", host).forEach((b) => b.addEventListener(
     "click", () => renderPowerHistory(Number(b.dataset.week))));
+
+  // A row selects that team's trend. One week of a ranking says where a team
+  // is; the point of keeping every week is seeing where it has been going, and
+  // that is a shape rather than a number.
+  $$("tbody tr", host).forEach((tr) => tr.addEventListener("click", () => {
+    state.trackTeam = tr.dataset.team;
+    $$("tbody tr", host).forEach((r) => r.classList.toggle(
+      "on", r.dataset.team === state.trackTeam));
+    renderRankTrack();
+  }));
+  if (!state.trackTeam && data.teams.length) state.trackTeam = data.teams[0].team;
+  renderRankTrack();
+}
+
+/* One team's rank across every week, as a line.
+
+   Plotted as *negative* rank so that first place sits at the top. The obvious
+   alternative -- an inverted y domain -- silently breaks the shared chart's
+   tick generator, which takes a logarithm of the span and gets NaN when the
+   span runs backwards; the axis then falls back to two unlabelled extremes.
+   Negating instead keeps the domain ascending, so ticks land on whole ranks,
+   and the formatter flips the sign back for anything a reader sees. */
+async function renderRankTrack() {
+  const host = $("#rank-track");
+  if (!host || !state.trackTeam) return;
+  const data = await api(
+    `/api/power/track?season=${state.season}&team=${encodeURIComponent(state.trackTeam)}`);
+  const points = (data.weeks || []).map((w) => ({ x: w.week, y: -w.rank }));
+  if (points.length < 2) {
+    host.innerHTML = `<div class="empty">One week of history for
+      ${esc(data.name)} — a trend needs two.</div>`;
+    return;
+  }
+
+  host.innerHTML = `<div class="track-head">
+      <span class="track-name">${esc(data.name)}</span>
+      <span class="muted">best #${data.best} · worst #${data.worst}
+        · ${points.length} weeks</span>
+    </div><div id="rank-plot" style="height:190px"></div>`;
+
+  lineChart($("#rank-plot"), [{
+    name: data.name, short: esc(data.team), points,
+  }], {
+    height: 190,
+    ariaLabel: `${data.name} power ranking by week`,
+    // Ranks are whole numbers; a tick at "#7.5" is not a place a team can
+    // finish. Anything the padding pushes outside 1-32 is left unlabelled
+    // rather than printed as a rank that cannot exist.
+    yFormat: (v) => {
+      const r = Math.round(-v);
+      return r >= 1 && r <= 32 ? `#${r}` : "";
+    },
+    xFormat: (v) => `Wk ${Math.round(v)}`,
+  });
 }
 
 // ------------------------------------------------------------------- picks

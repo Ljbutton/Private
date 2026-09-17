@@ -252,6 +252,15 @@ class EspnSource:
         return rows
 
     def injuries(self) -> list[dict]:
+        """The league injury report, grouped by team upstream.
+
+        ``covered_teams`` is recorded alongside the rows because the two are
+        not recoverable from each other: a team with nobody hurt produces no
+        rows and is indistinguishable, from the rows alone, from a team the
+        response left out. The caller needs that distinction to decide whose
+        absence from the list means "recovered" -- see refresh_news.
+        """
+        self.covered_teams: set[str] = set()
         try:
             payload = self.http.get_json(f"{WEB}/injuries", cache_ttl=900.0)
         except SourceError:
@@ -259,6 +268,8 @@ class EspnSource:
         rows: list[dict] = []
         for group in payload.get("injuries") or []:
             team = try_resolve(group.get("displayName") or group.get("abbreviation"))
+            if team:
+                self.covered_teams.add(team)
             for item in group.get("injuries") or []:
                 athlete = item.get("athlete") or {}
                 name = athlete.get("displayName") or item.get("displayName")

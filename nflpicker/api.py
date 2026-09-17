@@ -325,6 +325,37 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             )},
         }
 
+    @app.get("/api/power/track")
+    def power_track(team: str, season: int | None = None) -> dict:
+        """One team's rank across every week we hold, for the trend line.
+
+        Served per team rather than as the whole 32x18 matrix on the weekly
+        endpoint: that response is re-fetched every time the reader clicks a
+        different week, and carrying every team's whole season in it to draw
+        one line would multiply it by thirty-two for no gain.
+        """
+        season = season or pipeline.season()
+        abbr = team.upper()
+        rows = db.query(
+            "SELECT week, rank, power, wins, losses, ties, source "
+            "FROM power_snapshots WHERE season = ? AND team = ? ORDER BY week",
+            (season, abbr),
+        )
+        entry = TEAMS.get(abbr)
+        best = min((r["rank"] for r in rows), default=None)
+        worst = max((r["rank"] for r in rows), default=None)
+        return {
+            "season": season,
+            "team": abbr,
+            "name": entry.full_name if entry else abbr,
+            "color": entry.color if entry else None,
+            "weeks": rows,
+            # The two numbers a trend line is read for, so the reader does not
+            # have to squint at the peaks to find them.
+            "best": best,
+            "worst": worst,
+        }
+
     @app.post("/api/power/rebuild")
     def power_rebuild(season: int | None = None) -> dict:
         """Fill in the weeks the app was not running for, from stored games."""
