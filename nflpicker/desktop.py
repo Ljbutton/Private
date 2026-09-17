@@ -311,12 +311,26 @@ class _WindowBridge:
     tab, where the DOM API is the one that works.
     """
 
-    window = None
+    def _window(self):
+        """The live window, looked up rather than held.
+
+        Deliberately not stored on this object. pywebview builds the JavaScript
+        API by walking ``dir()`` over this instance and recursing into whatever
+        it finds, so a ``window`` attribute here would hand the page every
+        public method of pywebview's Window -- destroy, load_url, the lot --
+        under ``window.pywebview.api``. The page has no business with any of
+        them, and a bridge should expose exactly what it means to expose.
+        """
+        import webview
+
+        windows = getattr(webview, "windows", None) or []
+        return windows[0] if windows else None
 
     def toggle_fullscreen(self) -> bool:
-        if self.window is None:
+        window = self._window()
+        if window is None:
             return False
-        self.window.toggle_fullscreen()
+        window.toggle_fullscreen()
         # pywebview does not report the state back, so it is tracked here.
         # A value the page can trust beats one it has to infer from a DOM
         # property that stays false the whole time in this environment.
@@ -357,7 +371,6 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
         min_size=(900, 640), confirm_close=False,
         js_api=bridge,
     )
-    bridge.window = window
     started = time.monotonic()
     try:
         webview.start(debug=debug)

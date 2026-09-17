@@ -490,20 +490,36 @@ def test_the_window_bridge_toggles_the_real_window():
         def toggle_fullscreen(self):
             self.toggles += 1
 
+    window = FakeWindow()
     bridge = _WindowBridge()
-    bridge.window = FakeWindow()
+    bridge._window = lambda: window
 
     assert bridge.toggle_fullscreen() is True
     assert bridge.toggle_fullscreen() is False, "the bridge reports the new state"
-    assert bridge.window.toggles == 2
+    assert window.toggles == 2
 
 
-def test_the_bridge_is_harmless_before_a_window_exists():
-    """create_window returns after the bridge is built, so there is a moment
-    with no window attached; a click then must not raise into the webview."""
+def test_the_bridge_is_harmless_before_a_window_exists(monkeypatch):
+    """The bridge is built before create_window returns, so there is a moment
+    with no window at all; a click then must not raise into the webview."""
+    import webview
+
     from nflpicker.desktop import _WindowBridge
 
+    monkeypatch.setattr(webview, "windows", [], raising=False)
     assert _WindowBridge().toggle_fullscreen() is False
+
+
+def test_the_bridge_exposes_nothing_but_its_own_methods():
+    """pywebview builds the page's API by walking dir() over this object and
+    recursing into what it finds. Holding the window as an attribute handed the
+    page every public method of pywebview's Window -- destroy, load_url, the
+    lot -- under window.pywebview.api. A bridge should expose exactly what it
+    means to expose."""
+    from nflpicker.desktop import _WindowBridge
+
+    public = [n for n in dir(_WindowBridge()) if not n.startswith("_")]
+    assert public == ["toggle_fullscreen"], f"also exposed: {public}"
 
 
 def test_a_refused_window_records_why(monkeypatch):
