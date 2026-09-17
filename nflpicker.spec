@@ -130,16 +130,25 @@ common = dict(
     disable_windowed_traceback=False,
 )
 
-if MACOS:
-    # One directory, not one file. A .app is already a folder the user drags
-    # around as a single icon, so onefile buys nothing there and costs a great
-    # deal: a onefile build unpacks its entire payload to a temporary directory
-    # on *every* launch, and this payload is scipy, scikit-learn, pandas and
-    # pyarrow. That is a quarter of a gigabyte of extraction between the
-    # double-click and the window, every time, which reads as a hung app.
-    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
-    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="TheEdge")
+# One directory, not one file, on both platforms.
+#
+# A onefile build unpacks its entire payload to a temporary directory on
+# *every* launch, and this payload is scipy, scikit-learn, pandas and pyarrow.
+# That is a quarter of a gigabyte of extraction between the double-click and
+# the window, every time, which reads as a hung app -- and the behaviour
+# itself, an executable writing a large payload somewhere and running it, is
+# what heuristic antivirus is built to notice. An unsigned build starts from a
+# position of suspicion already.
+#
+# macOS never had the choice: a .app is a folder the system displays as one
+# icon, so onefile bought nothing there and cost all of the above. Windows has
+# no equivalent disguise, which is the only reason the two differed -- one
+# folder to keep together, in exchange for a launch that does not stall and a
+# shape antivirus recognises as ordinary installed software.
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="TheEdge")
 
+if MACOS:
     # macOS wants an .app bundle, not a bare Unix executable. Double-clicking a
     # bare binary in Finder opens it in Terminal, which is not an application.
     app = BUNDLE(
@@ -160,7 +169,3 @@ if MACOS:
             "LSMinimumSystemVersion": "11.0",
         },
     )
-else:
-    # Windows gets a single .exe, which is the whole point there: one file to
-    # download and double-click, with no folder to keep it next to.
-    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], **common)

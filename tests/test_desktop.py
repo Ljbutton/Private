@@ -470,3 +470,37 @@ def test_the_exit_path_survives_a_broken_import(monkeypatch):
 
     entry.leave(1)
     assert called["code"] == 1
+
+
+def test_the_window_bridge_toggles_the_real_window():
+    """Full screen has to be the window's own business.
+
+    The page used to call document.documentElement.requestFullscreen(), which
+    is correct in a browser and inert inside a webview: the HTML Fullscreen API
+    asks the host to resize, WebView2 forwards that to the application, and
+    pywebview does not implement it. The promise rejected, the page's catch
+    swallowed it, and the button did nothing.
+    """
+    from nflpicker.desktop import _WindowBridge
+
+    class FakeWindow:
+        def __init__(self):
+            self.toggles = 0
+
+        def toggle_fullscreen(self):
+            self.toggles += 1
+
+    bridge = _WindowBridge()
+    bridge.window = FakeWindow()
+
+    assert bridge.toggle_fullscreen() is True
+    assert bridge.toggle_fullscreen() is False, "the bridge reports the new state"
+    assert bridge.window.toggles == 2
+
+
+def test_the_bridge_is_harmless_before_a_window_exists():
+    """create_window returns after the bridge is built, so there is a moment
+    with no window attached; a click then must not raise into the webview."""
+    from nflpicker.desktop import _WindowBridge
+
+    assert _WindowBridge().toggle_fullscreen() is False

@@ -60,3 +60,61 @@ def test_quotes_convert_to_a_storable_moneyline_row():
     assert row["book"] == "kalshi"
     assert row["market"] == "moneyline"
     assert row["home_price"] is not None and row["away_price"] is not None
+
+
+def test_every_series_is_tried_and_merged(monkeypatch):
+    """A stale series answering with leftovers used to end the search.
+
+    fetch_events returned on the first non-empty result, so if an old ticker
+    still had three settled events attached, the live series was never asked
+    and the board showed three games out of sixteen -- or none, once the old
+    ones aged out.
+    """
+    from nflpicker.sources.kalshi import NFL_SERIES, KalshiSource
+
+    asked: list[str] = []
+
+    def fake_get(self, path, params):
+        asked.append(params["series_ticker"])
+        return {"events": [{"event_ticker": f"E-{params['series_ticker']}",
+                            "markets": []}]}
+
+    monkeypatch.setattr(KalshiSource, "_get", fake_get)
+    events = KalshiSource().fetch_events()
+    assert len(events) == len(NFL_SERIES), "every series contributes"
+    assert asked == list(NFL_SERIES)
+
+
+def test_a_series_with_no_open_events_is_retried_unfiltered(monkeypatch):
+    """A series whose events are present but not yet "open" answers the
+    filtered question with nothing and the unfiltered one with everything."""
+    from nflpicker.sources.kalshi import KalshiSource
+
+    seen: list[str | None] = []
+
+    def fake_get(self, path, params):
+        seen.append(params.get("status"))
+        if params.get("status") == "open":
+            return {"events": []}
+        return {"events": [{"event_ticker": "E1", "markets": []}]}
+
+    monkeypatch.setattr(KalshiSource, "_get", fake_get)
+    assert KalshiSource().fetch_events()
+    assert "open" in seen and None in seen
+
+
+def test_the_probe_reports_what_each_ticker_returned(monkeypatch):
+    """The diagnosis the self-test prints: which ticker was asked, how much
+    came back, and a sample market ticker to check the shape against."""
+    from nflpicker.sources.kalshi import KalshiSource
+
+    def fake_get(self, path, params):
+        return {"events": [{"event_ticker": "E1", "markets": [
+            {"ticker": "KXNFLGAME-25SEP21DENKC-KC"}]}]}
+
+    monkeypatch.setattr(KalshiSource, "_get", fake_get)
+    attempts = KalshiSource().probe()
+    assert attempts[0]["events"] == 1
+    assert attempts[0]["markets"] == 1
+    assert attempts[0]["sample"] == "KXNFLGAME-25SEP21DENKC-KC"
+    assert attempts[0]["error"] is None

@@ -258,6 +258,36 @@ def _open_in_browser(url: str, server: ServerThread) -> int:
     return 0
 
 
+class _WindowBridge:
+    """The handful of things the page cannot do for itself inside a webview.
+
+    Full screen is the whole reason this exists. The page asked for it with
+    ``document.documentElement.requestFullscreen()``, which is the right call
+    in a browser and simply does not work here: the HTML Fullscreen API asks
+    the *host* to take the window full screen, and an embedded webview has no
+    standing to do that -- WebView2 hands the request to the application, and
+    pywebview does not implement it. The promise rejected, the page's catch
+    swallowed it, and the button did nothing at all.
+
+    Toggling the real window works because it is the window's own business.
+    Exposed through pywebview's bridge, so the page can call it when it is
+    running inside the app and fall back to the DOM API when it is a browser
+    tab, where the DOM API is the one that works.
+    """
+
+    window = None
+
+    def toggle_fullscreen(self) -> bool:
+        if self.window is None:
+            return False
+        self.window.toggle_fullscreen()
+        # pywebview does not report the state back, so it is tracked here.
+        # A value the page can trust beats one it has to infer from a DOM
+        # property that stays false the whole time in this environment.
+        self._full = not getattr(self, "_full", False)
+        return self._full
+
+
 def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
     """Start the server and open it in a native window."""
     get_config().ensure_dirs()
@@ -285,10 +315,13 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
     import webview
 
     log.info("opening a native window via %s", _backend_name())
+    bridge = _WindowBridge()
     window = webview.create_window(
         WINDOW_TITLE, url, width=width, height=height,
         min_size=(900, 640), confirm_close=False,
+        js_api=bridge,
     )
+    bridge.window = window
     started = time.monotonic()
     try:
         webview.start(debug=debug)

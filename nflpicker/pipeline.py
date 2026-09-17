@@ -36,6 +36,7 @@ from .util import (
     current_season,
     estimate_week,
     now_iso,
+    seconds_since,
     to_utc,
 )
 
@@ -85,6 +86,18 @@ class RefreshResult:
             "stages": self.stages,
             "ok": all(s["ok"] for s in self.stages.values()) if self.stages else False,
         }
+
+
+def _ago(seconds: float) -> str:
+    """A duration a person reads at a glance: "4m", "2h", "3d"."""
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{int(seconds)}s"
+    if seconds < 5400:
+        return f"{round(seconds / 60)}m"
+    if seconds < 172800:
+        return f"{round(seconds / 3600)}h"
+    return f"{round(seconds / 86400)}d"
 
 
 class Pipeline:
@@ -1856,15 +1869,40 @@ class Pipeline:
         ]
 
     # ------------------------------------------------------------ full refresh
-    def refresh(self, stages: list[str] | None = None, *, force_odds: bool = False) -> RefreshResult:
+    def last_success(self, stage: str) -> float | None:
+        """Seconds since this stage last completed successfully, if ever."""
+        row = db.query_one(
+            "SELECT ts FROM fetch_log WHERE source = ? AND ok = 1 "
+            "ORDER BY id DESC LIMIT 1",
+            (stage,),
+        )
+        if not row or not row["ts"]:
+            return None
+        return seconds_since(row["ts"])
+
+    def refresh(self, stages: list[str] | None = None, *,
+                force_odds: bool = False) -> RefreshResult:
         """Run the requested stages in registry order.
 
         Stages are driven from :mod:`nflpicker.stages` rather than a list
         written out here, so adding a source does not mean remembering to edit
         this method, the scheduler, and the default list in two places.
+
+        **Naming stages forces them; asking for everything does not.** A
+        refresh with no stage list means "catch up on whatever is due", and a
+        stage polled more recently than its own interval is skipped.
+
+        This used to re-run every stage on every call, which made the two
+        things a refresh is asked for most expensive. Each press of the refresh
+        button, and each launch of the app, spent three Odds API credits on a
+        line that had not moved -- enough presses in an afternoon to exhaust a
+        day's budget on nothing -- and re-downloaded the nflverse play-by-play
+        release, which is most of why a refresh took as long as it did. Both
+        already had intervals; nothing consulted them outside the scheduler.
         """
         from .stages import STAGES, stage_names
 
+        explicit = bool(stages)
         wanted = set(stages) if stages else set(stage_names(self.config))
         result = RefreshResult()
 
@@ -1875,6 +1913,23 @@ class Pipeline:
             if method is None:
                 result.record(stage.name, False, "no handler registered")
                 continue
+
+            if not explicit and not stage.always:
+                age = self.last_success(stage.name)
+                interval = stage.interval(self.config)
+                if age is not None and age < interval:
+                    # Recorded as a success, because it is one: the stored data
+                    # is current by this stage's own definition of current.
+                    # Reporting it as a failure would train the reader to
+                    # ignore the one strip that tells them a source is broken.
+                    result.record(
+                        stage.name, True,
+                        f"already current — fetched {_ago(age)} ago, "
+                        f"next due in {_ago(interval - age)}",
+                        skipped=True,
+                    )
+                    continue
+
             try:
                 if stage.name == "odds":
                     method(result, force=force_odds)

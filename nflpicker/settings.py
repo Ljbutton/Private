@@ -428,6 +428,31 @@ def test_prediction_markets() -> dict:
                         else "reachable, but it is quoting no NFL games right now"),
         })
 
+    # When a venue answers with nothing, say where the games were lost rather
+    # than only that there were none. The venue quoting nothing and us asking
+    # the wrong question look identical from here and need opposite fixes --
+    # and a series ticker Kalshi has renamed is the likelier of the two, so
+    # the diagnosis is worth the extra request.
+    kalshi = next((r for r in results if r["venue"] == "Kalshi"), None)
+    if kalshi and kalshi["ok"] and not kalshi["n"]:
+        with contextlib.suppress(Exception):
+            kalshi["attempts"] = [
+                {k: v for k, v in a.items() if k != "rows"}
+                for a in KalshiSource().probe()
+            ]
+            found = [a for a in kalshi["attempts"] if a["events"]]
+            if found:
+                seen = sum(a["events"] for a in found)
+                kalshi["message"] = (
+                    f"{seen} events came back but none survived pairing — "
+                    f"the ticker shape has probably changed "
+                    f"(sample: {found[0].get('sample') or 'none'})")
+            else:
+                asked = ", ".join(a["series"] for a in kalshi["attempts"])
+                kalshi["message"] = (
+                    f"no events under any known series ticker ({asked}) — "
+                    "Kalshi has likely renamed the NFL series again")
+
     quoting = [r for r in results if r["ok"] and r["n"]]
     answered = [r for r in results if r["ok"]]
     failed = [r for r in results if not r["ok"]]

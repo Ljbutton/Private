@@ -644,9 +644,6 @@ async function renderHome() {
       <div class="gcard-top">
         <span class="gstate">${gameStamp(g)}</span>
         ${movedBadge}
-        <span class="gtotals" title="Projected total points — blind, blend, book">${
-          blindTotal === null ? "–" : blindTotal}<i>/</i>${
-          ourTotal === null ? "–" : ourTotal}<i>/</i>${num(bookTotal, 1)}</span>
         <span class="gopen" title="Open this game">&rsaquo;</span>
       </div>
       <div class="gcard-grid">
@@ -657,6 +654,18 @@ async function renderHome() {
         <div class="ghead pmkt" title="Prediction markets — Kalshi and Polymarket contract prices">Mkt</div>
         ${teamRow("away")}
         ${teamRow("home")}
+        <!-- The projected total, as its own row under the two teams rather
+             than squeezed into the corner of the top strip. It belongs in the
+             grid: each figure then sits under the column it came from, so
+             "which of these three is the book's" is answered by position
+             instead of by remembering the order in a tooltip. -->
+        <div class="gtot-label" title="Projected total points for the game">Total</div>
+        <div class="gtot" title="Blind model's projected total">${
+          blindTotal === null ? "–" : blindTotal}</div>
+        <div class="gtot" title="Our blend's projected total">${
+          ourTotal === null ? "–" : ourTotal}</div>
+        <div class="gtot" title="Sportsbook total">${num(bookTotal, 1)}</div>
+        <div class="gtot"></div>
       </div>
     </article>`;
   };
@@ -1544,10 +1553,20 @@ async function renderSettings() {
       const r = await api("/api/settings/test-prediction-markets", { method: "POST" });
       out.textContent = r.summary;
       out.className = r.ok ? "pos" : "neg";
+      /* The per-series attempts are shown when a venue answers with nothing.
+         "Quoting no NFL games" and "we asked under a ticker they renamed" are
+         the same sentence from outside and need opposite fixes, so the ticker
+         asked and the count returned go on screen rather than into a log. */
       venues.innerHTML = (r.venues || []).map((v) => `<div class="backup-row">
         <span class="nm">${v.ok ? "✓" : "✕"} ${esc(v.venue)}</span>
         <span class="muted">${esc(v.message)}</span>
-      </div>`).join("");
+      </div>${(v.attempts || []).map((a) => `<div class="backup-row probe">
+        <span class="nm">${esc(a.series)}</span>
+        <span class="muted">${a.error
+          ? esc(a.error)
+          : `${a.events} events · ${a.markets} markets${
+              a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`}</span>
+      </div>`).join("")}`).join("");
     } catch (err) {
       out.textContent = String(err);
       out.className = "neg";
@@ -1896,15 +1915,34 @@ function initTheme() {
 }
 
 /* Full screen. The window has no browser chrome to hide, so this is the only
-   way to give the board the whole display -- which is what it is for. */
+   way to give the board the whole display -- which is what it is for.
+
+   Two routes, because the obvious one does not work in the packaged app.
+   `requestFullscreen()` asks the *host* to take the window full screen, and an
+   embedded webview has no standing to do that: WebView2 passes the request to
+   the application and pywebview does not implement it, so the promise rejected,
+   the catch below swallowed it, and the button did nothing. In the app the
+   window toggles itself through the bridge; in a browser tab the DOM API is
+   the one that works, so it stays as the fallback. */
 function initFullscreen() {
   const button = $("#fullscreen");
   if (!button) return;
-  const sync = () => button.classList.toggle("on", !!document.fullscreenElement);
+  let native = false;   // what the bridge last told us, when there is one
+  const bridge = () => window.pywebview?.api?.toggle_fullscreen;
+  const sync = () => button.classList.toggle(
+    "on", bridge() ? native : !!document.fullscreenElement);
   button.addEventListener("click", async () => {
     try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-      else await document.documentElement.requestFullscreen();
+      const toggle = bridge();
+      if (toggle) {
+        // The DOM never reports fullscreen in this environment, so the bridge
+        // returns the new state rather than leaving it to be inferred.
+        native = await toggle();
+      } else if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
     } catch { /* refused by the platform; the button simply does nothing */ }
     sync();
   });

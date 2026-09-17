@@ -59,6 +59,19 @@ def iso(value: Any) -> str | None:
     return parsed.replace(microsecond=0).isoformat() if parsed else None
 
 
+def seconds_since(value: Any) -> float | None:
+    """Seconds between a stored timestamp and now, or None if unparseable.
+
+    Never negative: a timestamp from the future -- a clock adjustment, a row
+    written by a machine an hour ahead -- would otherwise read as "due in the
+    past" and make a scheduled thing run every time it was asked.
+    """
+    when = to_utc(value)
+    if when is None:
+        return None
+    return max(0.0, (now() - when).total_seconds())
+
+
 def hours_between(a: Any, b: Any) -> float | None:
     da, db_ = to_utc(a), to_utc(b)
     if not da or not db_:

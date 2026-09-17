@@ -479,24 +479,43 @@ than failing.
 
 ### Getting the executable
 
-**Without installing anything:** the *Build desktop app* workflow builds on real
-Windows and macOS runners and attaches the result to the run. Actions tab →
-*Build desktop app* → download the artifact for your platform.
+**Without installing anything:** every build is published to the
+[**Latest build**](../../releases/tag/latest) release — that is the link to
+use. Release assets come off GitHub's CDN; the same file fetched from the
+Actions artifact store crawls at around 100 KB/s, which turns a hundred-megabyte
+download into most of an hour. The artifacts are still attached to each run,
+but only because that is what the run's own page shows.
 
-- **Windows** — `TheEdge-windows-full` unzips to one `.exe`.
-- **macOS** — two artifacts, one per architecture. Take
-  `TheEdge-macos-arm-full` on any Mac with Apple silicon (M1 and later) and
-  `TheEdge-macos-intel-full` on an Intel Mac. `uname -m` says which you have:
-  `arm64` or `x86_64`. The wrong one does not warn, it simply refuses to open.
+The `latest` tag moves with every build, so the link never goes stale. The
+release notes say which platforms that particular run rebuilt: a push builds
+Windows only, and the Mac builds are started by hand from the Actions tab, so
+assets are replaced one at a time rather than all together.
 
-  There are two layers to unwrap, because a GitHub artifact is always a zip and
-  a zip carries neither the executable bit nor a code signature — an `.app`
-  unzipped straight from one would not launch. So the artifact is a zip
-  *containing* a `.tar.gz`, and the tar is what preserves both:
+- **Windows** — `TheEdge-windows.zip` unzips to a **folder**. Run `TheEdge.exe`
+  *inside* it; the program needs the files beside it and will not start if you
+  move the exe out on its own. Right-click it once and pin it to the taskbar and
+  you never open the folder again.
+
+  It is a folder rather than a single file deliberately. A one-file build
+  unpacks its whole payload — scipy, scikit-learn, pandas and pyarrow, a
+  quarter of a gigabyte — to a temporary directory on *every* launch, which
+  stalls the app before the window appears; and an executable that writes a
+  large payload somewhere and runs it is the behaviour heuristic antivirus
+  exists to notice. macOS never had the choice, because a `.app` is already a
+  folder the system shows as one icon.
+- **macOS** — two files, one per architecture. Take `TheEdge-macos-arm.tar.gz`
+  on any Mac with Apple silicon (M1 and later) and `TheEdge-macos-intel.tar.gz`
+  on an Intel Mac. `uname -m` says which you have: `arm64` or `x86_64`. The
+  wrong one does not warn, it simply refuses to open.
+
+  It is a tarball rather than a zip because a zip carries neither the executable
+  bit nor a code signature — an `.app` unzipped from one would not launch. The
+  tar preserves both. (Downloading from the Actions tab instead adds a second
+  layer, since an artifact is always a zip; `unzip -o TheEdge-macos-arm-full.zip`
+  first in that case.)
 
   ```bash
   cd ~/Downloads                           # where the browser put it
-  unzip -o TheEdge-macos-arm-full.zip      # skip if Safari already expanded it
   tar -xzf TheEdge-macos-arm.tar.gz
   xattr -dr com.apple.quarantine TheEdge.app   # it was downloaded, so Gatekeeper
   open TheEdge.app
@@ -546,8 +565,8 @@ make exe                 # full build
 make exe PROFILE=lite    # smaller, no training
 ```
 
-This produces one self-contained file — no Python install needed on the target
-machine. Measured on Linux: **≈138 MB** for the full profile.
+This produces a self-contained folder under `dist/` — no Python install needed
+on the target machine. Measured on Linux: **≈138 MB** for the full profile.
 
 Two things to know:
 
@@ -560,11 +579,12 @@ Two things to know:
 
 - **Windows will not trust it, and that is expected.** The build is unsigned, so
   SmartScreen shows "Windows protected your PC" on first run — *More info* →
-  *Run anyway*. Defender may also quarantine it. Code signing needs a
-  certificate (a few hundred dollars a year), which is not worth it for
-  something only you run. UPX compression is deliberately off in the spec for
-  the same reason: packed executables are a known false-positive trigger, and an
-  unsigned build starts from a position of suspicion already.
+  *Run anyway*. Code signing needs a certificate (a few hundred dollars a year),
+  which is not worth it for something only you run. Two packaging choices lean
+  against that starting position rather than into it: UPX compression is off,
+  because packed executables are a known false-positive trigger, and the build
+  is one folder rather than one file, because a self-extracting executable is
+  the shape antivirus heuristics are looking for.
 
 Windows needs the Microsoft Edge WebView2 runtime, which ships with Windows 11
 and most Windows 10 installs.

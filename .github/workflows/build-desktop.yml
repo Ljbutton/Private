@@ -39,8 +39,10 @@ on:
       - "pyproject.toml"
       - ".github/workflows/build-desktop.yml"
 
+# Releases are how the builds are published (see the release job): creating
+# one and uploading its assets needs write access to the repository contents.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -139,7 +141,7 @@ jobs:
         run: |
           set -e
           if [ "${{ matrix.target }}" = "windows" ]; then
-            BIN="dist/TheEdge.exe"
+            BIN="dist/TheEdge/TheEdge.exe"
           else
             BIN="dist/TheEdge.app/Contents/MacOS/TheEdge"
           fi
@@ -161,7 +163,7 @@ jobs:
         run: |
           $env:NFLPICKER_DEMO = "1"
           $env:NFLPICKER_DATA_DIR = "$PWD\nostdout-data"
-          $p = Start-Process -FilePath dist/TheEdge.exe `
+          $p = Start-Process -FilePath dist/TheEdge/TheEdge.exe `
                  -ArgumentList "--selftest" -Wait -PassThru
           $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
           if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
@@ -185,11 +187,26 @@ jobs:
           shasum -a 256 TheEdge-${{ matrix.target }}.tar.gz
           du -sh TheEdge-${{ matrix.target }}.tar.gz
 
+      # Windows is a folder now, so it is zipped here rather than handed to
+      # upload-artifact file by file. Zipping it ourselves also means the
+      # release asset and the artifact are the same object: one download that
+      # unpacks to one folder, instead of a zip of a zip.
+      - name: Package for Windows
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/TheEdge/TheEdge.exe)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 50
+            throw "no dist/TheEdge/TheEdge.exe"
+          }
+          Compress-Archive -Path dist/TheEdge -DestinationPath TheEdge-windows.zip
+          "{0:N0} MB" -f ((Get-Item TheEdge-windows.zip).Length / 1MB)
+
       - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
         with:
           name: TheEdge-windows-${{ inputs.profile || 'full' }}
-          path: dist/TheEdge.exe
+          path: TheEdge-windows.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -200,3 +217,80 @@ jobs:
           path: TheEdge-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 30
+
+  # Publishing the builds as a release, rather than leaving them as workflow
+  # artifacts.
+  #
+  # An artifact is only downloadable through the Actions API, which is not a
+  # CDN and does not behave like one: the same file that comes off a release at
+  # link speed crawls out of the artifact store at around 100 KB/s, so a
+  # hundred-megabyte build took the better part of half an hour to fetch.
+  # Release assets are served from the CDN. The artifacts are still uploaded
+  # above, because they are what the build's own page shows and they expire on
+  # their own; the release is what a person actually downloads from.
+  #
+  # One rolling prerelease rather than a tag per build: the point is a link
+  # that is always the newest build, and a version number on a branch that is
+  # rebuilt several times a day would be noise. `prerelease` is honest about
+  # what it is -- the head of a working branch, not a version anyone promised.
+  release:
+    needs: build
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: downloaded
+          merge-multiple: true
+
+      - name: Show what will be published
+        id: assets
+        run: |
+          ls -lh downloaded
+          # Which platforms *this* run rebuilt. A push builds Windows only, so
+          # without this the release body would date every asset to the newest
+          # commit while the Mac ones still came from whenever a macOS build
+          # was last asked for -- assets are replaced per file, not wiped.
+          {
+            echo "built<<EOF"
+            for f in downloaded/*; do echo "- \`$(basename "$f")\`"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          # Moved to whatever was built last, so the tag keeps pointing at the
+          # commit the assets actually came from rather than wherever it was
+          # first created.
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          # Each build replaces the previous assets under the same tag, so the
+          # link in the README never goes stale and there is only ever one
+          # "latest" to be confused by.
+          files: downloaded/*
+          body: |
+            **Rebuilt in this run**, from `${{ github.ref_name }}` at commit
+            ${{ github.sha }}:
+
+            ${{ steps.assets.outputs.built }}
+
+            Anything not listed there is still the file from the last run that
+            built it — assets are replaced one at a time, not wiped. A push
+            builds Windows only; the Mac builds are started by hand.
+
+            | File | For |
+            |---|---|
+            | `TheEdge-windows.zip` | Windows. Unzip, then run `TheEdge.exe` **inside** the folder. |
+            | `TheEdge-macos-arm.tar.gz` | Macs with Apple silicon (M1 and later) |
+            | `TheEdge-macos-intel.tar.gz` | Intel Macs |
+
+            `uname -m` says which Mac you have: `arm64` or `x86_64`.
+
+            Windows will warn on first run because the build is unsigned —
+            *More info* → *Run anyway*. On macOS, extract from Terminal rather
+            than Finder and see the README for the Gatekeeper step.
+
+            This tag moves with every build, so the links above are always the
+            newest one.

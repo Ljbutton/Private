@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 ASSETS = Path("assets")
+SPEC = Path("nflpicker.spec")
 
 
 def test_both_icon_formats_are_present():
@@ -42,12 +43,38 @@ def test_the_ico_carries_the_small_sizes_windows_asks_for():
 
 def test_the_spec_picks_the_icon_by_platform():
     """The bug was one icon constant used on both platforms."""
-    spec = Path("nflpicker.spec").read_text()
+    spec = SPEC.read_text()
     assert "icon.icns" in spec and "icon.ico" in spec
     assert "MACOS" in spec.split("def _icon")[1].split("ICON = _icon()")[0]
 
 
 @pytest.mark.parametrize("path", ["nflpicker/web", "data/models"])
 def test_the_spec_ships_what_the_app_reads_at_runtime(path):
-    spec = Path("nflpicker.spec").read_text()
+    spec = SPEC.read_text()
     assert path in spec, f"{path} is not packaged"
+
+
+def test_both_platforms_build_one_folder():
+    """A onefile Windows build extracted a quarter of a gigabyte to a temp
+    directory on every launch -- a stall before the window, and the exact
+    behavioural signature heuristic antivirus is built to notice. macOS never
+    had the choice, because a .app is already a folder; Windows did, and the
+    choice was wrong.
+
+    Pinned as a test because the symptom of a regression is "the app feels
+    slow to start", which nobody files as a packaging bug.
+    """
+    spec = SPEC.read_text(encoding="utf-8")
+    assert "COLLECT(" in spec
+    # The onefile form passes binaries and datas straight into EXE. The
+    # one-folder form does not, and sets exclude_binaries instead.
+    assert "exclude_binaries=True" in spec
+    assert "EXE(pyz, a.scripts, a.binaries, a.datas" not in spec, (
+        "that is the onefile signature")
+
+
+def test_the_spec_has_one_exe_and_one_collect():
+    """Not a per-platform branch that could drift back apart."""
+    spec = SPEC.read_text(encoding="utf-8")
+    assert spec.count("exe = EXE(") == 1
+    assert spec.count("coll = COLLECT(") == 1

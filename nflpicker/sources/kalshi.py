@@ -153,32 +153,73 @@ class KalshiSource:
                 last = exc
         raise SourceError(f"Kalshi unavailable: {last}")
 
+    def probe(self, *, limit: int = 200) -> list[dict]:
+        """What each series ticker actually returned, attempt by attempt.
+
+        Exists because "reachable, quoting no NFL games" and "we asked the
+        wrong question" are the same answer from outside, need opposite fixes,
+        and the second is the likelier one: Kalshi has renamed this series
+        before, and a rename is indistinguishable from a quiet Tuesday unless
+        someone records which ticker was asked and what came back.
+        """
+        attempts: list[dict] = []
+        for series in NFL_SERIES:
+            # Without the status filter as well, because a series that is
+            # present but whose events are not yet "open" returns an empty list
+            # to the filtered question and a full one to the unfiltered.
+            for status in ("open", None):
+                params = {"series_ticker": series, "with_nested_markets": "true",
+                          "limit": limit}
+                if status:
+                    params["status"] = status
+                label = f"{series}[{status or 'any'}]"
+                try:
+                    payload = self._get("/events", params)
+                except SourceError as exc:
+                    attempts.append({"series": label, "error": str(exc)[:160],
+                                     "events": 0, "markets": 0})
+                    continue
+                events = payload.get("events") if isinstance(payload, dict) else payload
+                events = events or []
+                attempts.append({
+                    "series": label,
+                    "error": None,
+                    "events": len(events),
+                    "markets": sum(len(e.get("markets") or []) for e in events),
+                    "sample": next(
+                        (m.get("ticker") for e in events
+                         for m in (e.get("markets") or []) if m.get("ticker")),
+                        None),
+                    "rows": events,
+                })
+                if events:
+                    break   # this series answered; no need for the other status
+        return attempts
+
     def fetch_events(self, *, limit: int = 200) -> list[dict]:
         """Open NFL game events, with their markets nested.
 
-        Each series ticker is tried in turn because Kalshi has renamed them
-        before, and one series being gone must not cost us the others. But if
-        *every* attempt errored, that is a failure and has to say so: returning
-        an empty list made an unreachable host look exactly like an empty
-        board, which are opposite problems -- one is "your network", the other
-        is "it is Tuesday".
+        Every series ticker is tried, and the results merged, because Kalshi
+        has renamed them before and one series being gone must not cost us the
+        others. Merged rather than first-wins: a stale series answering with
+        three leftovers used to stop the search before the live one was asked.
+
+        If *every* attempt errored, that is a failure and has to say so.
+        Returning an empty list made an unreachable host look exactly like an
+        empty board, which are opposite problems -- one is "your network", the
+        other is "it is Tuesday".
         """
-        failures: list[str] = []
-        for series in NFL_SERIES:
-            try:
-                payload = self._get(
-                    "/events",
-                    {"series_ticker": series, "status": "open",
-                     "with_nested_markets": "true", "limit": limit},
-                )
-            except SourceError as exc:
-                failures.append(f"{series}: {exc}")
-                continue
-            events = payload.get("events") if isinstance(payload, dict) else payload
-            if events:
-                return events
-        if len(failures) == len(NFL_SERIES):
-            raise SourceError("; ".join(failures)[:300])
+        attempts = self.probe(limit=limit)
+        merged: dict[str, dict] = {}
+        for attempt in attempts:
+            for event in attempt.get("rows") or []:
+                key = str(event.get("event_ticker") or event.get("ticker") or id(event))
+                merged.setdefault(key, event)
+        if merged:
+            return list(merged.values())
+        if attempts and all(a["error"] for a in attempts):
+            raise SourceError(
+                "; ".join(f"{a['series']}: {a['error']}" for a in attempts)[:300])
         return []
 
     def fetch(self) -> list[KalshiQuote]:

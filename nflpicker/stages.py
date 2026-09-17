@@ -40,6 +40,10 @@ class Stage:
     scheduled: bool = True
     # Stages that feed the model and therefore precede a recompute.
     feeds_model: bool = False
+    # Runs on every refresh regardless of when it last ran. For local work
+    # only: a stage that costs a network call, or money, has an interval for
+    # a reason and must not set this.
+    always: bool = False
 
     def method_name(self) -> str:
         return f"refresh_{self.name}"
@@ -89,12 +93,16 @@ STAGES: tuple[Stage, ...] = (
         enabled=lambda cfg: cfg.train_auto and not cfg.demo,
     ),
     # Not a source: the analytical pass that turns everything above into
-    # ratings, projections and picks. It never polls on its own.
+    # ratings, projections and picks. It never polls on its own, and it is
+    # never skipped for being early -- it is local arithmetic over whatever
+    # the stages above just stored, and the whole reason a refresh was asked
+    # for is to see its output.
     Stage(
         name="recompute",
         description="Ratings, projections, picks and grading",
         interval=lambda cfg: cfg.refresh_scores,
         scheduled=False,
+        always=True,
     ),
 )
 
