@@ -444,10 +444,9 @@ jobs:
           # first created.
           target_commitish: ${{ github.sha }}
           prerelease: true
-          # Each build replaces the previous assets under the same tag, so the
-          # link in the README never goes stale and there is only ever one
-          # "latest" to be confused by.
-          files: downloaded/*
+          # No files here on purpose. This step owns the release -- its tag,
+          # its name and its body -- and the step below owns the assets. See
+          # there for why.
           body: |
             **Rebuilt in this run**, from `${{ github.ref_name }}` at commit
             ${{ github.sha }}:
@@ -487,3 +486,44 @@ jobs:
 
             This tag moves with every build, so the links above are always the
             newest one.
+
+      # The assets, one at a time, with retries.
+      #
+      # softprops/action-gh-release uploads them concurrently, and three files
+      # of 75-90 MB going up at once failed with a bare "Error saving asset" on
+      # three builds out of three -- once leaving the release with *no* assets
+      # at all, because it deletes the old ones first and then fell over
+      # partway through replacing them. The last of those failures is what made
+      # the shape clear: two files finished and the third did not.
+      #
+      # `gh release upload --clobber` replaces one file per call, so a failure
+      # costs that file and not the release, and a retry is a retry of one
+      # upload rather than of all of them.
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          failed=""
+          for file in downloaded/*; do
+            name=$(basename "$file")
+            for attempt in 1 2 3; do
+              if gh release upload latest "$file" --clobber --repo "$GITHUB_REPOSITORY"; then
+                echo "uploaded $name"
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::$name failed three times"
+                failed="$failed $name"
+              else
+                echo "$name failed (attempt $attempt), retrying"
+                sleep $((attempt * 10))
+              fi
+            done
+          done
+          # Reported rather than ignored: a release that is quietly missing the
+          # file somebody came for is worse than a red build.
+          if [ -n "$failed" ]; then
+            echo "these assets did not upload:$failed"
+            exit 1
+          fi
