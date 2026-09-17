@@ -140,12 +140,17 @@ def _tar_with(tmp_path: Path, names: dict[str, bytes]) -> Path:
 
 
 def test_a_tarball_unpacks_and_the_binary_is_found(tmp_path):
-    archive = _tar_with(tmp_path, {"bin/ollama": b"#!/bin/sh\n", "lib/ollama/x.so": b"x"})
+    """The binary is named for the platform the app is running on, not the
+    platform the test was written on: Ollama's Windows archive carries
+    ollama.exe and its macOS one carries ollama, and the lookup asks for
+    whichever this machine would have downloaded."""
+    exe = localmodel._exe("ollama")
+    archive = _tar_with(tmp_path, {f"bin/{exe}": b"#!/bin/sh\n", "lib/ollama/x.so": b"x"})
     root = localmodel.runtime_dir()
     root.mkdir(parents=True)
     localmodel._unpack(archive, root)
     found = localmodel.managed_binary()
-    assert found is not None and found.name == "ollama"
+    assert found is not None and found.name == exe
 
 
 def test_an_archive_cannot_write_outside_its_directory(tmp_path):
