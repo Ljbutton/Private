@@ -1,4 +1,4 @@
-import { barChart, calibrationChart, lineChart, sparkline } from "./charts.js";
+import { barChart, calibrationChart, condense, lineChart, sparkline } from "./charts.js";
 import {
   ago, american, esc, greetingFor, kickoffShort, liveLabel, num, pct,
   signed, statusClass, when,
@@ -755,7 +755,9 @@ async function openGame(gameId) {
 
     <div class="panel" style="background:var(--surface-sunken)">
       <header><h2>Spread movement</h2>
-        <span class="hint">consensus against our number; thin grey lines are individual books</span></header>
+        <span class="hint">consensus against our number · the band is how far our
+          line moved inside each step, since it is recomputed far more often than
+          the market moves · thin grey lines are individual books</span></header>
       <div id="chart-spread" style="height:230px"></div>
       <div class="legend" style="margin-top:8px">
         <span class="key"><i style="background:var(--series-2)"></i>Market consensus</span>
@@ -831,24 +833,43 @@ async function openGame(gameId) {
   // is "some book", and the story is consensus versus our number.
   const bookSeries = Object.entries(d.books.spread || {}).map(([book, pts]) => ({
     name: book, color: "var(--text-muted)", muted: true, label: false,
-    points: pts.map((p) => ({ x: p.captured_at, y: p.value })),
+    // Condensed too, but with no band: these are already background context at
+    // 30% opacity, and a band behind each of eight books is a grey wash.
+    points: condense(pts.map((p) => ({ x: p.captured_at, y: p.value }))).points,
   }));
   const consensusPts = (d.movement.spread.points || []).map((p) => ({ x: p.captured_at, y: p.value }));
-  const modelPts = history.map((h) => ({
+
+  /* The two lines are sampled on completely different clocks, and that is why
+     the model's used to read as a solid block of sawtooth.
+
+     The market changes when a book moves its number -- a handful of times in a
+     week, each one real -- so its series is a step function and every vertex
+     means something. The model is written on every recompute, which is a timer,
+     so two days produce hundreds of points whose *spacing* carries no
+     information at all. Half a point of wobble between consecutive runs then
+     fills the plot edge to edge and buries the trend underneath it.
+
+     So the model series is condensed to roughly one point per few pixels,
+     plotted at each bin's median, with the range it covered drawn as a faint
+     band behind it. The market is left alone: binning a step function would
+     round off the corners, which are the only part of it worth seeing. */
+  const modelSpread = condense(history.map((h) => ({
     x: h.captured_at,
     y: h.margin_home === null ? null : -h.margin_home,   // model's implied home line
-  }));
+  })));
   lineChart($("#chart-spread"), [
     ...bookSeries,
     { name: "Consensus", short: "market", color: "var(--series-2)", points: consensusPts },
-    { name: "Our line", short: "model", color: "var(--series-1)", points: modelPts },
+    { name: "Our line", short: "model", color: "var(--series-1)",
+      points: modelSpread.points, band: modelSpread.band },
   ], { height: 230, yFormat: (v) => signed(v, 1), ariaLabel: "spread movement over time" });
 
+  const modelTotal = condense(history.map((h) => ({ x: h.captured_at, y: h.total_points })));
   lineChart($("#chart-total"), [
     { name: "Market total", short: "market", color: "var(--series-2)",
       points: (d.movement.total.points || []).map((p) => ({ x: p.captured_at, y: p.value })) },
     { name: "Our total", short: "model", color: "var(--series-1)",
-      points: history.map((h) => ({ x: h.captured_at, y: h.total_points })) },
+      points: modelTotal.points, band: modelTotal.band },
   ], { height: 200, ariaLabel: "total movement over time" });
 }
 
