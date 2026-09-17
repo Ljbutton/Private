@@ -200,7 +200,11 @@ function renderHero(meta) {
 // Picks is no longer folded: both contests are meant to be answered in one
 // look, and a collapsed Survivor panel is the opposite of putting them on one
 // page.
-const FOLDING_TABS = new Set(["teams", "performance"]);
+// Teams no longer folds at all: its two panels are the page. Performance still
+// does, but only the closing-line value at the bottom -- the season table and
+// the by-team table are marked data-nofold, because folding the thing a page
+// exists to show is how a page ends up looking empty.
+const FOLDING_TABS = new Set(["performance"]);
 
 function foldPanels(root) {
   if (!FOLDING_TABS.has(state.tab)) return;
@@ -366,8 +370,9 @@ async function renderPerformance(ticket) {
       <td class="who">${esc(label)}${borrowed
         ? `<span class="rec" title="games from before the model existed, shown with the sportsbook's pick">${borrowed} inherited</span>`
         : ""}
-        <div class="who-sub">${esc((d.descriptions || {})[key] || "")}</div>
-        ${note ? `<div class="who-note">${esc(note)}</div>` : ""}</td>
+        ${note ? `<button class="why" type="button" title="${esc(note)}"
+          aria-label="${esc(note)}">?</button>` : ""}
+        <div class="who-sub">${esc((d.descriptions || {})[key] || "")}</div></td>
       ${cell(all)}${cell(common)}
     </tr>`;
   };
@@ -409,7 +414,7 @@ async function renderPerformance(ticket) {
       >${esc(label)}<span class="sort-arrow">${on ? (sort.dir === "desc" ? "▾" : "▴") : "⇅"}</span></th>`;
   };
 
-  root.innerHTML = `<div class="panel">
+  root.innerHTML = `<div class="panel" data-nofold>
     <header><h2>Season ${d.season}</h2>
       <span class="hint">Straight-up winners · "same games" scores only games every
         picker had a view on</span></header>
@@ -418,10 +423,8 @@ async function renderPerformance(ticket) {
         <th class="num">Same games</th></tr></thead>
       <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
     </table></div>
-  </div>
 
-  <div class="panel">
-    <header><h2>Week by week</h2><span class="hint">correct out of picked</span></header>
+    <h3 class="sub-head">Week by week<span class="hint"> · correct out of picked</span></h3>
     <div class="table-scroll"><table class="slate">
       <thead><tr><th>Week</th>${pickers.map((p) =>
         `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
@@ -437,7 +440,7 @@ async function renderPerformance(ticket) {
     </table></div>
   </div>
 
-  <div class="panel">
+  <div class="panel" data-nofold>
     <header><h2>By team</h2>
       <span class="hint">how often each picker called that team's games right ·
         click a column to sort by it</span></header>
@@ -1109,10 +1112,12 @@ async function renderPicks(ticket) {
         : (a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`)}</span>
   </div>`).join("");
 
+  root.classList.add("fit-screen");
   root.innerHTML = `
   <div class="grid-2 pick-split">
   <div class="panel">
     <header><h2>ESPN pick'em</h2>
+      <span class="hint" title="Confidence points are assigned highest-to-most-likely, which maximises expected score. Leverage mode deliberately gives some of that up to differentiate from a field that picks close to the market — the right trade only when finishing first is what pays.">most confident first</span>
       <div class="controls" style="margin-left:auto">
         <select id="pickem-mode">
           <option value="ev">Maximise expected points</option>
@@ -1127,10 +1132,6 @@ async function renderPicks(ticket) {
         <div class="sub">of ${board.max_points ?? 0} possible</div></div>
     </div>
     <div class="pickem-list">${pickRows || '<div class="empty">No games to pick.</div>'}</div>
-    <p class="note">Confidence points are assigned highest-to-most-likely, which maximises
-      expected score. Leverage mode deliberately gives some of that up to differentiate
-      from a field that picks close to the market — the right trade only when finishing
-      first is what pays.</p>
   </div>
 
   <div class="pick-col">
@@ -1171,15 +1172,11 @@ async function renderPicks(ticket) {
   ${survivor.recommendation ? `
   <div class="panel survivor-run">
     <header><h2>The rest of the run</h2>
-      <span class="hint">every week from here</span></header>
+      <span class="hint" title="The recommendation is not always this week's safest team. Spending a strong team now can cost more later than it gains today, so the optimiser solves the whole remaining path — which is why the cost of switching, shown beside this week's options, is measured over this run rather than over Sunday.">every week from here · scroll ↓</span></header>
     <div class="table-scroll"><table class="slate">
       <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
         <th class="num">Win prob</th></tr></thead>
       <tbody>${path}</tbody></table></div>
-    <p class="note">The recommendation is not always this week's safest team. Spending a strong
-      team now can cost more later than it gains today, so the optimiser solves the whole
-      remaining path — which is why the cost of switching, shown beside this week's options
-      above, is measured over this run rather than over Sunday.</p>
   </div>` : ""}
   </div>
   </div>`;
@@ -1347,9 +1344,43 @@ async function renderSettings(ticket) {
       placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" />`;
   };
 
-  root.innerHTML = `${(data.groups || []).map((g) => `<div class="panel">
-    <header><h2>${esc(g.name)}</h2></header>
+  const saveBar = (where) => `<div class="save-bar ${where}">
+    <button class="btn primary" data-save>Save settings</button>
+    <span class="save-result muted"></span>
+    <span class="muted tiny">Written to <code>${esc(data.path)}</code> · takes
+      effect on the next refresh, no restart</span>
+  </div>`;
+
+  /* Each group collapses, and two sit side by side. Open, stacked and full
+     width, this was a very long page to scroll past to reach the one box you
+     came for -- and the save button was stranded in the middle of it, which is
+     the one place a save button should never be. It is at both ends now. */
+  /* The theme, where someone looking for a setting would look for it. The
+     header toggle stays: one is for flipping it, the other is for finding it.
+     It is not a stored setting like the rest -- the browser remembers the
+     choice -- so it saves itself on change rather than waiting for the bar. */
+  const themeRow = `<div class="setting">
+    <div class="set-head"><label for="set-theme">Appearance</label>
+      <span class="set-state on">saved here</span></div>
+    <select id="set-theme">
+      <option value="dark">Dark</option>
+      <option value="light">Light</option>
+    </select>
+    <div class="set-help">The same switch as the one in the corner of every
+      page, kept here because this is where a setting is looked for.</div>
+  </div>`;
+
+  root.innerHTML = `${saveBar("top")}
+  <div class="settings-grid">
+  ${(data.groups || []).map((g, i) => `<details class="panel set-group"${
+    i < 2 ? " open" : ""}>
+    <summary><h2>${esc(g.name)}</h2>
+      <span class="hint">${g.settings.length} setting${
+        g.settings.length === 1 ? "" : "s"}</span>
+      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 6l6 6-6 6"/></svg></summary>
     <div class="settings">
+      ${g.name === "General" ? themeRow : ""}
       ${g.settings.map((s) => `<div class="setting">
         <div class="set-head">
           <label for="set-${esc(s.key)}">${esc(s.label)}</label>
@@ -1367,18 +1398,12 @@ async function renderSettings(ticket) {
              <span id="odds-result" class="muted"></span></div>` : ""}
       </div>`).join("")}
     </div>
-  </div>`).join("")}
-
-  <div class="panel">
-    <div class="controls">
-      <button class="btn primary" id="save-settings">Save settings</button>
-      <span id="save-result" class="muted"></span>
-    </div>
-    <p class="note">Written to <code>${esc(data.path)}</code>. Saved settings take
-      effect on the next refresh — no restart. A secret is never sent back to this
-      page, so an empty box means "leave it alone", not "clear it"; to remove a key,
-      type a space and save.</p>
+  </details>`).join("")}
   </div>
+  ${saveBar("bottom")}
+  <p class="note">A secret is never sent back to this page, so an empty box
+    means "leave it alone", not "clear it"; to remove a key, type a space and
+    save.</p>
 
   <div class="panel">
     <header><h2>Prediction markets</h2>
@@ -1499,32 +1524,44 @@ async function renderSettings(ticket) {
     }
   });
 
-  $("#save-settings").addEventListener("click", async (ev) => {
-    const values = {};
-    $$("[data-key]", root).forEach((el) => {
-      if (el.type === "checkbox") values[el.dataset.key] = el.checked ? "true" : "false";
-      // An untouched secret box is empty, and sending that would clear a key
-      // the page was never shown. Absent means "leave it".
-      else if (el.value !== "") values[el.dataset.key] = el.value;
-      else if (el.type !== "password") values[el.dataset.key] = "";
-    });
-    ev.target.disabled = true;
-    const out = $("#save-result");
-    try {
-      const r = await api("/api/settings", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values }),
+  const themeSelect = $("#set-theme");
+  if (themeSelect) {
+    themeSelect.value = document.documentElement.getAttribute("data-theme") || "dark";
+    themeSelect.addEventListener("change", () => setTheme(themeSelect.value));
+  }
+
+  // Both bars save the same thing. A collapsed group still has its inputs in
+  // the document, so a setting you cannot currently see is still saved rather
+  // than silently dropped.
+  $$("[data-save]", root).forEach((button) => {
+    button.addEventListener("click", async () => {
+      const values = {};
+      $$("[data-key]", root).forEach((el) => {
+        if (el.type === "checkbox") values[el.dataset.key] = el.checked ? "true" : "false";
+        // An untouched secret box is empty, and sending that would clear a key
+        // the page was never shown. Absent means "leave it".
+        else if (el.value !== "") values[el.dataset.key] = el.value;
+        else if (el.type !== "password") values[el.dataset.key] = "";
       });
-      out.textContent = `Saved ${r.saved.length} setting${r.saved.length === 1 ? "" : "s"}.`;
-      out.className = "pos";
-      await loadState();
-      await renderSettings();
-    } catch (err) {
-      out.textContent = String(err);
-      out.className = "neg";
-    } finally {
-      ev.target.disabled = false;
-    }
+      $$("[data-save]", root).forEach((b) => { b.disabled = true; });
+      const outs = $$(".save-result", root);
+      const say = (text, cls) => outs.forEach((o) => {
+        o.textContent = text; o.className = `save-result ${cls}`;
+      });
+      try {
+        const r = await api("/api/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values }),
+        });
+        say(`Saved ${r.saved.length} setting${r.saved.length === 1 ? "" : "s"}.`, "pos");
+        await loadState();
+        await renderSettings();
+      } catch (err) {
+        say(String(err), "neg");
+      } finally {
+        $$("[data-save]", root).forEach((b) => { b.disabled = false; });
+      }
+    });
   });
 }
 
@@ -1817,6 +1854,9 @@ let renderTicket = 0;
 async function render() {
   const ticket = ++renderTicket;
   const view = VIEWS[state.tab] || renderHome;
+  // Only Picks asks for the viewport's height; every other page is as tall as
+  // it needs to be. Cleared here so a class one view sets cannot outlive it.
+  $("#view").classList.remove("fit-screen");
   // The hero reports which season and week are on screen, so it has to follow
   // the selectors rather than only the last state load.
   if (state.meta) renderHero(state.meta);
@@ -1914,6 +1954,15 @@ function initRouting() {
   });
 }
 
+/* Set the theme and remember it. Pulled out of the toggle's handler because
+   there are two ways to change it now -- the corner button and the Settings
+   page -- and both have to do exactly the same thing. */
+function setTheme(next) {
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("theedge-theme", next); } catch { /* not fatal */ }
+  render();
+}
+
 function initTheme() {
   // Dark unless told otherwise. A stored choice still wins in both directions,
   // so someone who picked light keeps light; only the unset case changes.
@@ -1925,10 +1974,7 @@ function initTheme() {
     const current = document.documentElement.getAttribute("data-theme");
     const isDark = current === "dark" ||
       (!current && matchMedia("(prefers-color-scheme: dark)").matches);
-    const next = isDark ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    try { localStorage.setItem("theedge-theme", next); } catch { /* not fatal */ }
-    render();
+    setTheme(isDark ? "light" : "dark");
   });
 }
 

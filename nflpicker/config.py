@@ -109,6 +109,12 @@ class Config:
     # How stale a fit may get before one new result is reason enough to redo
     # it. Three days puts the refit on a Wednesday or Thursday, after Monday
     # night has been played and before the next slate is projected.
+    # The last week the survivor plan covers. Seventeen because that is where
+    # most pools settle and because week eighteen rests starters, which is the
+    # week a projection is worth least -- but an eighteen-week pool exists, and
+    # planning one week short of the end loses it.
+    survivor_last_week: int = field(
+        default_factory=lambda: _int("NFLPICKER_SURVIVOR_LAST_WEEK", 17))
     train_max_age_hours: int = field(
         default_factory=lambda: _int("NFLPICKER_TRAIN_MAX_AGE_HOURS", 72))
     train_min_new_games: int = field(

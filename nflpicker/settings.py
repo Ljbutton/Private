@@ -153,6 +153,19 @@ SETTINGS: tuple[Setting, ...] = (
         needed_for="The Assistant tab.",
     ),
     Setting(
+        key="NFLPICKER_SURVIVOR_LAST_WEEK",
+        label="Survivor runs through week",
+        kind="number",
+        group="General",
+        placeholder="17",
+        help="Most pools settle in week 17, and week 18 rests starters — the "
+             "week a projection is worth least. Set it to 18 if your pool "
+             "runs that far.",
+        needed_for="How far ahead the survivor path is planned, and how many "
+                   "weeks show in the rest of the run.",
+        default="17",
+    ),
+    Setting(
         key="NFLPICKER_TRAIN_MAX_AGE_HOURS",
         label="Refit at the latest after",
         kind="number",

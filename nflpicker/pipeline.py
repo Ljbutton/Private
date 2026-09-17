@@ -1569,7 +1569,9 @@ class Pipeline:
                 "home_win_prob": prediction.home_win_prob, "kickoff": g["kickoff"],
             })
         used = db.get_meta("survivor_used_teams", []) or []
-        survivor = plan_survivor(season, week, by_week, used_teams=used).to_dict()
+        survivor = plan_survivor(
+            season, week, by_week, used_teams=used,
+            through_week=self.config.survivor_last_week).to_dict()
 
         comparisons = self._prediction_market_view(week, upcoming, consensus, by_game)
 
