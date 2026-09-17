@@ -51,20 +51,22 @@ RELEASES = "https://api.github.com/repos/ollama/ollama/releases/latest"
 
 # Matched against asset names in order, so a self-contained archive is always
 # preferred over an installer: an installer needs a window, a click and
-# somewhere system-wide to write.
-ASSETS: dict[str, tuple[str, ...]] = {
-    "darwin": ("ollama-darwin.tgz", "ollama-darwin.zip", "ollama-darwin"),
-    "windows": ("ollama-windows-amd64.zip",),
-    "linux": ("ollama-linux-amd64.tgz",),
+# somewhere system-wide to write. Keyed by (system, architecture), because a
+# build for the wrong architecture does not warn -- it simply will not run.
+ASSETS: dict[tuple[str, str], tuple[str, ...]] = {
+    # macOS builds are universal, so the architecture does not pick between
+    # them; both keys are here so the lookup never has to special-case it.
+    ("darwin", "amd64"): ("ollama-darwin.tgz", "ollama-darwin.zip", "ollama-darwin"),
+    ("darwin", "arm64"): ("ollama-darwin.tgz", "ollama-darwin.zip", "ollama-darwin"),
+    ("windows", "amd64"): ("ollama-windows-amd64.zip",),
+    ("windows", "arm64"): ("ollama-windows-arm64.zip",),
+    ("linux", "amd64"): ("ollama-linux-amd64.tgz",),
+    ("linux", "arm64"): ("ollama-linux-arm64.tgz",),
 }
 
-# Used only when the release list cannot be reached. These are the addresses
-# the install documentation gives, which is the best guess available offline.
-FALLBACK = {
-    "darwin": "https://ollama.com/download/Ollama-darwin.zip",
-    "windows": "https://ollama.com/download/ollama-windows-amd64.zip",
-    "linux": "https://ollama.com/download/ollama-linux-amd64.tgz",
-}
+# Used only when the release list cannot be reached, which is a guess at a name
+# rather than a fact about one -- hence the order above being tried first.
+FALLBACK_HOST = "https://ollama.com/download"
 
 # Offered in the setup panel. The box is editable, because a tag that has been
 # retired should cost the user five seconds rather than the whole feature.
@@ -316,25 +318,37 @@ def _fetch_release() -> dict[str, str]:
             for a in (response.json().get("assets") or [])}
 
 
+def _platform() -> tuple[str, str]:
+    """(system, architecture) in the words the release assets are named in."""
+    system = {"win32": "windows", "darwin": "darwin"}.get(sys.platform, "linux")
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in {"arm64", "aarch64"} else "amd64"
+    return system, arch
+
+
 def _asset_url() -> tuple[str, str]:
-    """(url, filename) for this platform, from the release list where possible."""
-    key = {"win32": "windows", "darwin": "darwin"}.get(sys.platform, "linux")
-    if key == "windows" and platform.machine().lower() not in {"amd64", "x86_64"}:
-        raise SetupError("Only 64-bit Intel and AMD Windows is supported here.")
+    """(url, filename) for this machine, from the release list where possible."""
+    system, arch = _platform()
+    wanted = ASSETS.get((system, arch)) or ASSETS[(system, "amd64")]
     try:
         assets = _fetch_release()
     except Exception:                                          # noqa: BLE001
         assets = {}
-    for name in ASSETS[key]:
+    for name in wanted:
         if name in assets:
             return assets[name], name
     # Named exactly or not at all is too strict for a list that renames things,
-    # and one plausible asset for this platform beats a dead button.
+    # and one plausible asset for this machine beats a dead button. An asset
+    # for the other architecture is not plausible: it would download happily
+    # and then refuse to run, which is the worst of both.
     for name, url in sorted(assets.items()):
-        if key in name.lower() and not name.endswith((".sig", ".sha256", ".txt")):
+        lower = name.lower()
+        other = "amd64" if arch == "arm64" else "arm64"
+        if (system in lower and other not in lower
+                and not lower.endswith((".sig", ".sha256", ".txt"))):
             return url, name
-    url = FALLBACK[key]
-    return url, url.rsplit("/", 1)[-1]
+    name = wanted[0]
+    return f"{FALLBACK_HOST}/{name}", name
 
 
 def install_runtime() -> Path:

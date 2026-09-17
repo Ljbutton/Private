@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -32,10 +31,21 @@ def _own_directory(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ assets
 
+def _on(monkeypatch, system: str, arch: str = "amd64") -> None:
+    """Pretend to be a machine.
+
+    Both halves, always. Setting `sys.platform` alone left the runner's real
+    CPU underneath, which is how a test written on an Intel machine passed
+    there and failed on GitHub's Apple silicon: it claimed to be Windows on an
+    arm64 processor, which is a real combination and not the one under test.
+    """
+    monkeypatch.setattr(localmodel, "_platform", lambda: (system, arch))
+
+
 def test_the_release_list_decides_the_url(monkeypatch):
     """Asset names change — ollama-darwin became ollama-darwin.tgz — so the
     list is asked rather than a URL remembered."""
-    monkeypatch.setattr(sys, "platform", "darwin")
+    _on(monkeypatch, "darwin", "arm64")
     monkeypatch.setattr(localmodel, "_fetch_release", lambda: {
         "ollama-darwin.tgz": "https://example.test/ollama-darwin.tgz",
         "OllamaSetup.exe": "https://example.test/OllamaSetup.exe",
@@ -48,7 +58,7 @@ def test_the_release_list_decides_the_url(monkeypatch):
 def test_an_archive_beats_an_installer(monkeypatch):
     """An installer needs a window and somewhere system-wide to write. The
     self-contained archive needs neither, so it wins when both are offered."""
-    monkeypatch.setattr(sys, "platform", "win32")
+    _on(monkeypatch, "windows")
     monkeypatch.setattr(localmodel, "_fetch_release", lambda: {
         "OllamaSetup.exe": "https://example.test/OllamaSetup.exe",
         "ollama-windows-amd64.zip": "https://example.test/win.zip",
@@ -57,26 +67,64 @@ def test_an_archive_beats_an_installer(monkeypatch):
     assert name == "ollama-windows-amd64.zip"
 
 
+def test_the_architecture_decides_which_build(monkeypatch):
+    """A build for the wrong architecture does not warn. It downloads happily
+    and then refuses to run, which is the worst of both."""
+    _on(monkeypatch, "windows", "arm64")
+    monkeypatch.setattr(localmodel, "_fetch_release", lambda: {
+        "ollama-windows-amd64.zip": "https://example.test/x64.zip",
+        "ollama-windows-arm64.zip": "https://example.test/arm.zip",
+    })
+    url, _ = localmodel._asset_url()
+    assert url == "https://example.test/arm.zip"
+
+
+@pytest.mark.parametrize(("machine", "expected"), [
+    ("AMD64", "amd64"), ("x86_64", "amd64"),
+    ("arm64", "arm64"), ("aarch64", "arm64"), ("ARM64", "arm64"),
+])
+def test_the_machine_name_maps_to_an_asset_name(monkeypatch, machine, expected):
+    """Every platform spells its own CPU differently and none of them spell it
+    the way the release assets do."""
+    import platform as platform_module
+
+    monkeypatch.setattr(platform_module, "machine", lambda: machine)
+    assert localmodel._platform()[1] == expected
+
+
 def test_an_unreachable_release_list_falls_back(monkeypatch):
     def boom():
         raise OSError("no network")
 
-    monkeypatch.setattr(sys, "platform", "darwin")
+    _on(monkeypatch, "darwin", "arm64")
     monkeypatch.setattr(localmodel, "_fetch_release", boom)
-    url, _ = localmodel._asset_url()
-    assert url == localmodel.FALLBACK["darwin"]
+    url, name = localmodel._asset_url()
+    assert name == "ollama-darwin.tgz"
+    assert url.startswith(localmodel.FALLBACK_HOST)
 
 
 def test_a_renamed_asset_is_still_found(monkeypatch):
     """Nothing matches by name, but exactly one asset is for this platform.
     Guessing it beats failing, because the alternative is a dead button."""
-    monkeypatch.setattr(sys, "platform", "darwin")
+    _on(monkeypatch, "darwin", "arm64")
     monkeypatch.setattr(localmodel, "_fetch_release", lambda: {
-        "ollama-darwin-arm64-v2.tgz": "https://example.test/new.tgz",
+        "ollama-darwin-v2.tgz": "https://example.test/new.tgz",
         "ollama-linux-amd64.tgz": "https://example.test/linux.tgz",
     })
     url, _ = localmodel._asset_url()
     assert url == "https://example.test/new.tgz"
+
+
+def test_the_guess_never_picks_the_other_architecture(monkeypatch):
+    """The last-resort match is a guess, and a guess that lands on a binary
+    for the other CPU is worse than no guess at all."""
+    _on(monkeypatch, "linux", "arm64")
+    monkeypatch.setattr(localmodel, "_fetch_release", lambda: {
+        "ollama-linux-amd64-rebuilt.tgz": "https://example.test/x64.tgz",
+    })
+    url, name = localmodel._asset_url()
+    assert name == "ollama-linux-arm64.tgz"
+    assert url.startswith(localmodel.FALLBACK_HOST)
 
 
 # --------------------------------------------------------------- unpacking
