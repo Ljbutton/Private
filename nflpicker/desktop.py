@@ -169,6 +169,10 @@ class ServerThread:
             self._thread.join(timeout=10)
 
 
+# Why the last available() call returned False, for the fallback to report.
+_UNAVAILABLE_BECAUSE: str | None = None
+
+
 def available() -> bool:
     """Is a usable webview *renderer* present?
 
@@ -198,35 +202,67 @@ def available() -> bool:
     ):
         return False
 
+    global _UNAVAILABLE_BECAUSE
+
     try:
         from importlib import import_module
 
         guilib = import_module("webview.guilib")
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _UNAVAILABLE_BECAUSE = f"webview.guilib did not import: {exc!r}"
         return False
     try:
         # Raises WebViewException when no backend can be imported. On macOS it
         # also calls setup_app(), which must happen on the main thread -- run()
         # is the only caller and holds it.
         guilib.initialize()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Kept, rather than swallowed. Falling back to a browser tab is the one
+        # outcome packaging this app was meant to avoid, and for two releases
+        # the only thing recorded about it was that it had happened -- "no
+        # webview runtime found" is a guess, not a diagnosis, and it was wrong
+        # at least once already (the backend was present; a package attribute
+        # was shadowing the submodule).
+        _UNAVAILABLE_BECAUSE = f"{type(exc).__name__}: {exc}"
         return False
+    _UNAVAILABLE_BECAUSE = None
     return True
+
+
+def unavailable_because() -> str | None:
+    """Why the last :func:`available` call said no, if it did."""
+    return _UNAVAILABLE_BECAUSE
 
 
 def _open_in_browser(url: str, server: ServerThread) -> int:
     """Fallback when no native window is possible."""
     import webbrowser
 
+    why = unavailable_because() or "no reason recorded"
     hint = (
-        f"No webview runtime found, so the dashboard is at {url}\n"
-        "  Windows: install the Microsoft Edge WebView2 runtime\n"
+        f"The Edge could not open its own window, so the dashboard is at {url}\n"
+        f"  Reason: {why}\n"
+        "  Windows: install the Microsoft Edge WebView2 runtime, and make sure\n"
+        "           TheEdge.exe is being run from inside its folder --\n"
+        "           the _internal folder beside it is not optional\n"
         "  Linux:   install PyGObject and WebKitGTK "
         "(python3-gi gir1.2-webkit2-4.1)\n"
         "  macOS:   no extra install needed"
     )
-    log.warning("no webview runtime; falling back to the browser at %s", url)
+    log.warning("no native window (%s); falling back to the browser at %s", why, url)
     print(hint, flush=True)
+    # Said out loud, not only written to a log file. A browser tab opening
+    # instead of the app looks like a choice the app made rather than a failure
+    # it hit, so nobody goes looking for a reason -- which is exactly how this
+    # went two releases without anyone knowing why it happened.
+    _alert(
+        WINDOW_TITLE,
+        "The Edge could not open its own window and has opened your browser "
+        f"instead.\n\nReason: {why}\n\nOn Windows this is usually the WebView2 "
+        "runtime missing, or TheEdge.exe being run outside its folder — the "
+        "_internal folder next to it is required.\n\n"
+        f"The dashboard is at {url}",
+    )
 
     opened = False
     try:

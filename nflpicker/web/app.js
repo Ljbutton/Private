@@ -872,10 +872,10 @@ async function renderTeams() {
   // columns of dashes read as a bug, so drop them when nothing has one.
   const hasWinTotals = data.teams.some(
     (t) => t.win_total_line !== null && t.win_total_line !== undefined);
-  /* Where the projection disagrees with the table. A team rated well above
-     its record is one the model thinks has been unlucky -- that gap is the
-     single most useful column here, and it is what a ranking sorted by record
-     can never show. */
+  /* Where the rating disagrees with the table. A team rated well above its
+     record is one the model thinks has been unlucky -- that gap is the single
+     most useful column here, and it is what a ranking sorted by record can
+     never show. */
   const drift = (t) => {
     if (!t.record_rank || !t.rank) return "";
     const d = t.record_rank - t.rank;
@@ -904,12 +904,11 @@ async function renderTeams() {
   root.innerHTML = `
   <div class="panel">
     <header><h2>Power rankings</h2>
-      <span class="hint">sorted by projected wins from 20,000 simulations of the
-        rest of the schedule · ▲▼ is how far a team sits from where its record
-        alone would put it</span></header>
+      <span class="hint">by rating — how good a team is on a neutral field ·
+        ▲▼ against where its record alone would put it</span></header>
     <div class="table-scroll"><table id="teams-now">
       <thead><tr><th>Team</th><th>Record</th>
-        <th title="Expected wins from 20,000 simulations of the remaining schedule — what the ranking is sorted by">Proj. wins</th>
+        <th title="Expected wins from 20,000 simulations of the remaining schedule. Not the sort order: this folds in who a team still has to play, which the rating deliberately does not.">Proj. wins</th>
         <th title="Win expectation implied by points scored and allowed. Point differential predicts the rest of the season better than the record does.">Pythag</th>
         <th title="Points better than an average team on a neutral field">Rating</th>
         <th>80% range</th>${hasWinTotals ? "<th>Win total</th><th>Over</th>" : ""}
@@ -927,8 +926,8 @@ async function renderTeams() {
   </div>
   <div class="panel">
     <header><h2>Week by week</h2>
-      <span class="hint">where every team ranked going into each week, and how
-        far it moved</span></header>
+      <span class="hint">the same ranking as above, as it stood going into each
+        earlier week · click a team for its whole season</span></header>
     <div id="power-history"></div>
   </div>`;
 
@@ -1016,8 +1015,7 @@ async function renderPowerHistory(week) {
       </tr></thead>
       <tbody>${rows}</tbody></table></div>
     <p class="note">Going into week ${data.week}${data.compared_to
-      ? `, movement against week ${data.compared_to}` : ""}. Ranked by rating,
-      not projected finish, so every week is measured the same way.${rebuilt
+      ? `, movement against week ${data.compared_to}` : ""}.${rebuilt
       ? ` <span class="reb">*</span> marks ${rebuilt} week${rebuilt === 1 ? "" : "s"}
         reconstructed from stored games rather than recorded at the time —
         what today's rating says about that week, which is not quite the same
@@ -1100,10 +1098,26 @@ async function renderPicks() {
   const path = (survivor.path || []).map((s) => `<tr>
     <td class="team">Week ${s.week}</td><td>${esc(s.team)}</td>
     <td class="muted">vs ${esc(s.opponent)}</td><td>${pct(s.win_prob, 1)}</td></tr>`).join("");
-  const alts = (survivor.alternatives || []).map((a) => `<tr>
-    <td class="team">${esc(a.team)}</td><td class="muted">vs ${esc(a.opponent)}</td>
-    <td>${pct(a.win_prob, 1)}</td><td>${pct(a.path_survival, 1)}</td>
-    <td>${a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`}</td></tr>`).join("");
+  /* This week's options as one list, the recommendation included and marked,
+     rather than a pick in one panel and a table of "alternatives" in another.
+     Deviating is not a separate subject from choosing -- it is the same choice
+     -- and splitting them meant reading the cost of a switch two panels away
+     from the thing it would replace. */
+  const rec = survivor.recommendation;
+  const altRows = [
+    ...(rec ? [{
+      team: rec.team, opponent: rec.opponent, win_prob: rec.win_prob,
+      path_survival: survivor.survival_prob, cost: 0, picked: true,
+    }] : []),
+    ...(survivor.alternatives || []).filter((a) => !rec || a.team !== rec.team),
+  ].map((a) => `<div class="alt-row${a.picked ? " picked" : ""}">
+    <span class="alt-team">${teamMark(a.team)}<strong>${esc(a.team)}</strong>
+      <span class="muted">vs ${esc(a.opponent)}</span></span>
+    <span class="alt-win">${pct(a.win_prob, 1)}</span>
+    <span class="alt-cost ${a.picked ? "muted" : (a.cost > 0 ? "neg" : "pos")}">${
+      a.picked ? "the pick"
+        : (a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`)}</span>
+  </div>`).join("");
 
   root.innerHTML = `
   <div class="grid-2 pick-split">
@@ -1147,6 +1161,12 @@ async function renderPicks() {
           <div class="sub">through week ${survivor.through_week
             || ((survivor.week || 0) + (survivor.horizon || 1) - 1)}</div></div>
       </div>
+      <div class="alt-block">
+        <h3>This week's options<span class="hint">win chance, then what taking
+          that team instead costs across the whole remaining path</span></h3>
+        <div class="alt-list">${altRows
+          || '<div class="empty">No alternatives.</div>'}</div>
+      </div>
       <div class="used-block">
         <h3>Teams you have already used<span class="hint">click a mark to use or
           release it — the plan replans itself</span></h3>
@@ -1165,23 +1185,15 @@ async function renderPicks() {
   ${survivor.recommendation ? `
   <div class="panel">
     <header><h2>The rest of the run</h2>
-      <span class="hint">the whole remaining path, and what this week's alternatives
-        cost across it</span></header>
-    <div class="grid-2">
-      <div><h3 class="sub-head">Planned path</h3>
-        <div class="table-scroll"><table class="slate">
-          <thead><tr><th>Week</th><th>Team</th><th>Opponent</th><th class="num">Win prob</th></tr></thead>
-          <tbody>${path}</tbody></table></div></div>
-      <div><h3 class="sub-head">If you deviate this week</h3>
-        <div class="table-scroll"><table class="slate">
-          <thead><tr><th>Team</th><th>Opp</th><th class="num">Win prob</th>
-            <th class="num">Path</th><th class="num">Cost</th></tr></thead>
-          <tbody>${alts || '<tr><td colspan="5" class="muted">No alternatives.</td></tr>'}</tbody>
-        </table></div></div>
-    </div>
+      <span class="hint">every week from here, and who the plan spends on it</span></header>
+    <div class="table-scroll"><table class="slate">
+      <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
+        <th class="num">Win prob</th></tr></thead>
+      <tbody>${path}</tbody></table></div>
     <p class="note">The recommendation is not always this week's safest team. Spending a strong
       team now can cost more later than it gains today, so the optimiser solves the whole
-      remaining path — the cost column is what deviating actually costs over that path.</p>
+      remaining path — which is why the cost of switching, shown beside this week's options
+      above, is measured over this run rather than over Sunday.</p>
   </div>` : ""}`;
 
   const modeSelect = $("#pickem-mode");

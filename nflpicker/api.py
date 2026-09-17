@@ -848,11 +848,20 @@ def team_rank_order(season: int, ratings: dict | None = None,
                     projections: dict | None = None) -> list[str]:
     """Our teams, best first — the one ordering the whole app calls "our rank".
 
-    It exists because there were briefly two. The Teams page ranks by projected
-    finish while the ranking comparison ranked by rating, so the "ours" column
-    beside the consensus disagreed with the rank printed two panels away, and
-    nothing on either screen said why. Callers that have already fetched the two
-    tables pass them in rather than paying for them again.
+    **By rating.** It was by projected finish, which put two tables on the
+    Teams page under two different rules: the ranking at the top and its own
+    week-by-week history underneath disagreed about who was second, and the
+    only explanation was a line of small print. A history can only be ordered
+    by the rating -- projected finish needs twenty thousand simulations of a
+    schedule that has since been played -- so the rating is what both use.
+
+    It is also the more honest reading of the words. A power ranking is a
+    statement about how good a team is; projected wins is a statement about how
+    good a team is *and* who it still has to play, which is a different
+    question and has its own column.
+
+    Callers that have already fetched the two tables pass them in rather than
+    paying for them again.
     """
     if ratings is None:
         ratings = latest_team_rows(season, "team_ratings")
@@ -862,12 +871,12 @@ def team_rank_order(season: int, ratings: dict | None = None,
     projections = {t: p["exp_wins"] if isinstance(p, dict) else p
                    for t, p in projections.items()}
     teams = sorted(set(ratings) | set(projections))
-    # Projected wins first, rating as the tie-break: two teams can project to
-    # the same total off very different strength.
+    # Rating first, projected wins as the tie-break: two teams can be rated the
+    # same and face very different schedules from here.
     teams.sort(key=lambda t: (
-        projections.get(t) is None and ratings.get(t) is None,
-        -(projections[t] if projections.get(t) is not None else -99),
-        -(ratings.get(t) or 0),
+        ratings.get(t) is None and projections.get(t) is None,
+        -(ratings[t] if ratings.get(t) is not None else -99),
+        -(projections.get(t) or 0),
     ))
     return teams
 

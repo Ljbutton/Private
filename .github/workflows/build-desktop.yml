@@ -202,6 +202,40 @@ jobs:
           Compress-Archive -Path dist/TheEdge -DestinationPath TheEdge-windows.zip
           "{0:N0} MB" -f ((Get-Item TheEdge-windows.zip).Length / 1MB)
 
+      # The smoke tests above run dist/TheEdge/TheEdge.exe, which is the build
+      # and not the download. Everything between them -- the zip, and whatever
+      # it does or does not preserve -- shipped untested, and a build whose
+      # webview backend is intact in dist/ can still fall back to a browser
+      # tab once it has been through an archive. So this unpacks the artifact
+      # somewhere else entirely and runs *that*, which is the copy a person
+      # ends up with.
+      - name: Smoke test the zip we actually ship
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $out = "$PWD\shipped"
+          Expand-Archive -Path TheEdge-windows.zip -DestinationPath $out -Force
+          $exe = "$out\TheEdge\TheEdge.exe"
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem -Recurse $out | Select-Object -First 40
+            throw "the zip does not unpack to TheEdge\TheEdge.exe"
+          }
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\shipped-data"
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          if ($p.ExitCode -ne 0) {
+            throw "the shipped zip failed its selftest (exit $($p.ExitCode))"
+          }
+          # The selftest passes as long as the server answers; a browser
+          # fallback is a pass by that measure and a failure by every other.
+          # The whole point of shipping an app rather than a link is the window.
+          if (-not (Select-String -Path $log -Pattern "usable=True" -Quiet)) {
+            throw "the shipped build cannot open its own window — it would fall back to a browser"
+          }
+          Write-Host "ok: the shipped zip opens its own window"
+
       - uses: actions/upload-artifact@v7
         if: matrix.target == 'windows'
         with:

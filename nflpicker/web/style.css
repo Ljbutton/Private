@@ -1277,3 +1277,31 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   opacity: .78;
 }
 .backup-row.probe .nm { font-family: var(--mono); font-weight: 500; }
+
+/* ------------------------------------------- survivor: this week's options */
+/* The recommendation and its alternatives as one list. They used to be a tile
+   in one panel and a five-column table in another, so the cost of switching
+   was read two panels away from the thing it would replace -- and the pick
+   itself never appeared in the table it was being compared against. */
+.alt-block { margin-top: 14px; }
+.alt-block h3 {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 13px; font-weight: 650; margin: 0 0 8px;
+}
+.alt-list { display: flex; flex-direction: column; gap: 2px; }
+.alt-row {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 1fr auto auto;
+  padding: 5px 8px; border-radius: var(--radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+.alt-row.picked {
+  background: color-mix(in srgb, var(--series-1) 13%, transparent);
+}
+.alt-team { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.alt-team img, .alt-team svg { width: 18px; height: 18px; flex: none; }
+.alt-team .muted { font-size: 12px; white-space: nowrap; }
+.alt-win { font-size: 13px; color: var(--text-secondary); }
+.alt-cost { font-size: 12px; font-weight: 600; min-width: 54px; text-align: right; }
+.alt-cost.pos { color: var(--good); }
+.alt-cost.neg { color: var(--critical); }

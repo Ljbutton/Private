@@ -504,3 +504,39 @@ def test_the_bridge_is_harmless_before_a_window_exists():
     from nflpicker.desktop import _WindowBridge
 
     assert _WindowBridge().toggle_fullscreen() is False
+
+
+def test_a_refused_window_records_why(monkeypatch):
+    """Falling back to a browser tab is the one outcome packaging this app was
+    meant to avoid, and for two releases the only thing recorded about it was
+    that it had happened. "No webview runtime found" is a guess, not a
+    diagnosis -- and it was wrong at least once already, when the backend was
+    present and a package attribute was shadowing the submodule."""
+    import nflpicker.desktop as desktop
+
+    def explode(name):
+        raise RuntimeError("no backend for you")
+
+    monkeypatch.setattr("importlib.import_module", explode)
+    monkeypatch.setattr(desktop.sys, "platform", "win32")
+
+    assert desktop.available() is False
+    why = desktop.unavailable_because()
+    assert why and "no backend for you" in why
+
+
+def test_a_working_window_clears_the_reason(monkeypatch):
+    """Otherwise a stale reason from an earlier probe would be reported against
+    a launch that succeeded."""
+    import nflpicker.desktop as desktop
+
+    class FakeGuilib:
+        @staticmethod
+        def initialize():
+            return None
+
+    monkeypatch.setattr(desktop.sys, "platform", "win32")
+    monkeypatch.setattr("importlib.import_module", lambda name: FakeGuilib)
+
+    assert desktop.available() is True
+    assert desktop.unavailable_because() is None

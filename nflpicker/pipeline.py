@@ -1581,14 +1581,13 @@ class Pipeline:
                              *, source: str = "live") -> int:
         """Freeze one week's power ranking.
 
-        Ordered by the power rating itself, not by projected finish. The Teams
-        page ranks by where a team is projected to *end up*, which is the more
-        useful thing to look at once -- but it comes out of 20,000 simulations
-        of the remaining schedule, and rerunning those for a week that has
-        already happened would be both expensive and a different number than
-        the one that was on screen. A history whose ordering rule changes
-        between weeks cannot be read for movement, which is the entire point of
-        keeping one.
+        Ordered by the power rating, which is what the Teams page ranks by too.
+        It has to be: a history can only use the rating, because projected
+        finish comes out of 20,000 simulations of a schedule that has since
+        been played. The two used to differ, which put two tables on one page
+        disagreeing about who was second with only a line of small print to
+        explain it; the ranking above now follows this one rather than the
+        other way round.
 
         A live row is never overwritten by a rebuilt one. The reverse is fine:
         a reconstruction is a stand-in until the real thing exists.
