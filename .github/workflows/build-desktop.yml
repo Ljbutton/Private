@@ -339,6 +339,13 @@ jobs:
             Set-Content -Path $_.FullName -Stream Zone.Identifier -Value @(
               "[ZoneTransfer]", "ZoneId=3")
           }
+          # ...except the exe itself, which is cleared so it can be started at
+          # all. Windows will not launch a tagged executable unattended, and
+          # that is a different failure from the one under test: the person who
+          # hit this *did* start the app -- they clicked through the warning --
+          # and what broke afterwards was a tagged DLL the app tried to load.
+          # Leaving every other file tagged is exactly that state.
+          Unblock-File -Path "$out\TheEdge\TheEdge.exe"
           $env:NFLPICKER_DEMO = "1"
           $env:NFLPICKER_DATA_DIR = "$PWD\marked-data"
           $p = Start-Process -FilePath "$out\TheEdge\TheEdge.exe" `
@@ -346,8 +353,16 @@ jobs:
           $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
           if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
 
-          $blocked = -not (Select-String -Path $log -Pattern "usable=True" -Quiet)
-          Write-Host "tagged copy opens its own window: $(-not $blocked)"
+          $opened = Select-String -Path $log -Pattern "usable=True" -Quiet
+          Write-Host "RESULT tagged copy opens its own window: $opened"
+          if ($opened) {
+            # Not fatal, because it would mean the explanation is incomplete
+            # rather than that the product regressed -- and blocking the
+            # release on my own theory being tidy would be the wrong trade.
+            Write-Warning ("Tagged DLLs did not stop the native window here. " +
+              "The zone tag may not be the whole story, even though " +
+              "Unblock-File fixed it on the machine that hit it.")
+          }
 
           # Then the documented fix, which must work -- it is what the README
           # and the app's own dialog tell people to run.
