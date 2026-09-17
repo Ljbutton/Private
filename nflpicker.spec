@@ -26,6 +26,11 @@ hidden = [
     # falls back to a browser tab -- which is the one thing packaging it was
     # meant to avoid.
     "webview",
+    # Imported inside functions so that a launch nobody asks the assistant
+    # about never pays for it. That also puts it one level deeper than the
+    # import graph is worth trusting for a module the Assistant tab cannot
+    # work without.
+    "nflpicker.localmodel",
 ]
 if MACOS:
     # The Cocoa backend reaches the system frameworks through pyobjc, which

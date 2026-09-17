@@ -71,10 +71,15 @@ def test_ask_refuses_before_sending_anything(clean_env, monkeypatch):
 
 # ------------------------------------------------------------ what it tells you
 
-def test_no_endpoint_explains_how_to_get_one(clean_env):
+def test_no_endpoint_offers_to_set_one_up(clean_env):
+    """This used to tell the user to go and install Ollama, run a command and
+    paste an address back. The app does that itself now, so what the page needs
+    from here is permission to show the button -- and a message that does not
+    send a paying customer to a terminal."""
     state = assistant.status()
     assert state["reason"] == "no_endpoint"
-    assert "ollama" in state["message"].lower()
+    assert state["setup_offered"] is True
+    assert "ollama pull" not in state["message"].lower()
 
 
 def test_an_endpoint_without_a_model_says_which_half_is_missing(clean_env):

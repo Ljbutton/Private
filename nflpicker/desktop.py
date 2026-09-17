@@ -473,4 +473,12 @@ def leave(code: int) -> None:
         db.close_all()
     except Exception:  # noqa: BLE001, S110
         pass
+    try:
+        # os._exit skips atexit, so a model server this app started would
+        # outlive the window that started it.
+        from . import localmodel
+
+        localmodel.stop()
+    except Exception:  # noqa: BLE001, S110
+        pass
     os._exit(code)

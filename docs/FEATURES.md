@@ -155,9 +155,17 @@ once there are genuine out-of-sample results.
 ### The assistant
 
 A chat panel that can read everything above — this week's slate, a team's
-season, the model's record — and answers from it. It runs against a model on
-your own machine (Ollama or llama.cpp): nothing is sent to any cloud service,
-and the app talks to that address and no other. Multiple conversations, kept.
+season, the model's record — and answers from it. Multiple conversations, kept.
+
+**It sets itself up.** One button downloads a model server and a model, with a
+progress bar and byte counts, and starts them. Nothing to install by hand, no
+terminal, no address to copy. Everything lands in the app's own folder on its
+own port, so a machine that already runs Ollama keeps its models, its settings
+and its port — and deleting The Edge takes the whole thing with it.
+
+**It runs on your machine, and that is enforced rather than promised.** The app
+refuses any endpoint that is not loopback, so a conversation cannot leave the
+computer even if someone edits the setting.
 
 ### The app itself
 
@@ -182,7 +190,7 @@ and the app talks to that address and no other. Multiple conversations, kept.
 |---|---|
 | **To run at all** | Nothing. Schedules, scores, news and the app's own projections work out of the box. |
 | **For book-by-book lines** | A free key from the-odds-api.com — 500 requests a month, which the app budgets itself to fit. Without it you get one consensus line from ESPN. |
-| **For the assistant** | A local model server (Ollama, llama.cpp). Optional; the rest of the app is unaffected. |
+| **For the assistant** | One button, and 1–3 GB of disk for the model it downloads. Optional; the rest of the app is unaffected, and nothing is downloaded unless you ask. |
 | **For the trained model** | Ships trained. Retraining locally downloads about 430 MB of history and takes a few minutes. |
 
 ---

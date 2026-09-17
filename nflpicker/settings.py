@@ -135,19 +135,20 @@ SETTINGS: tuple[Setting, ...] = (
         key="NFLPICKER_LLM_URL",
         label="Local model endpoint",
         group="Assistant",
-        placeholder="http://127.0.0.1:11434/v1",
-        help="Any server that speaks the OpenAI chat API. Ollama serves this "
-             "at /v1 on port 11434; llama.cpp's llama-server does too.",
+        placeholder="set for you by the Assistant tab",
+        help="Any server that speaks the OpenAI chat API. The Assistant tab "
+             "can install and run one for you and fill this in; these two "
+             "boxes are for pointing at a server you already run instead.",
         needed_for="The Assistant tab. Nothing leaves your machine — the app "
-                   "talks to this address and no other.",
-        link="https://ollama.com/download",
+                   "talks to this address and no other, and refuses any "
+                   "address that is not on this computer.",
     ),
     Setting(
         key="NFLPICKER_LLM_MODEL",
         label="Model name",
         group="Assistant",
         placeholder="qwen3.5:4b",
-        help="Whichever model you have pulled. A 4B model is enough for "
+        help="Whichever model that server has. A 4B model is enough for "
              "questions about this data and runs on a laptop.",
         needed_for="The Assistant tab.",
     ),

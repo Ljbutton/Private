@@ -903,8 +903,23 @@ td.team { font-weight: 600; }
    line disagreements on top, so the two things actually being played were
    below the fold. */
 .pick-split { align-items: start; }
-.pick-split > .panel { margin-bottom: 0; }
+.pick-split > .panel, .pick-col > .panel { margin-bottom: 0; }
 .grid-2.pick-split { margin-bottom: 18px; }
+/* Survivor is two things stacked -- this week's choice, then what that choice
+   costs over the rest of the season -- so they share a column rather than the
+   run spanning the page underneath both contests. Full width left the right
+   column half empty and the page a screen longer than it needed to be. */
+.pick-col { display: grid; gap: 16px; min-width: 0; }
+/* Sixteen weeks against sixteen games in the column beside it: the run scrolls
+   so it does not decide how tall the page is. The header stays put, because a
+   column of bare percentages is unreadable once "Win prob" has scrolled away. */
+.survivor-run .table-scroll {
+  max-height: 340px; overflow-y: auto;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
+}
+.survivor-run thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--surface);
+}
 .survivor-now .tiles { margin-bottom: 12px; }
 .sub-head { font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .1em; color: var(--text-muted); margin-bottom: 7px; }
@@ -1147,6 +1162,52 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   background: var(--surface-sunken); padding: 1px 5px; border-radius: 4px;
   font-family: var(--mono); font-size: 12px;
 }
+/* Setting the assistant up. A download of a gigabyte or three is the longest
+   thing this app ever asks anyone to wait for, so it gets a real bar with real
+   byte counts rather than a spinner: the difference between "it is working"
+   and "it is 40% through 3 GB" is whether someone closes the window. */
+.setup-pane { max-width: 68ch; margin: 0 auto; display: grid; gap: 12px; }
+.model-choices { display: grid; gap: 8px; }
+.model-choice {
+  display: flex; gap: 10px; align-items: start; cursor: pointer;
+  padding: 11px 13px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--surface-sunken);
+}
+.model-choice:hover { border-color: var(--series-1); }
+.model-choice input { margin-top: 3px; accent-color: var(--series-1); }
+.model-note {
+  display: block; color: var(--text-muted); font-size: 12px; margin-top: 3px;
+  line-height: 1.45;
+}
+.setup-progress { display: grid; gap: 7px; }
+.bar {
+  height: 8px; border-radius: 999px; overflow: hidden;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+}
+.bar-fill {
+  height: 100%; background: var(--series-1); border-radius: 999px;
+  transition: width .3s linear;
+}
+/* Ollama reports no total while it is resolving a manifest, and a bar that
+   sits at zero for twenty seconds reads as a hang. */
+.bar-fill.indeterminate {
+  background: linear-gradient(90deg, transparent, var(--series-1), transparent);
+  animation: bar-sweep 1.4s linear infinite;
+}
+@keyframes bar-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar-fill.indeterminate { animation: none; opacity: .5; }
+}
+.setup-status {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.setup-actions { align-items: center; gap: 12px; flex-wrap: wrap; }
+.note.warn { color: var(--warning); }
+
 .panel.chat { display: flex; flex-direction: column; }
 .chat-log {
   display: flex; flex-direction: column; gap: 10px;

@@ -1197,6 +1197,7 @@ async function renderPicks() {
       first is what pays.</p>
   </div>
 
+  <div class="pick-col">
   <div class="panel survivor-now">
     <header><h2>Survivor</h2>
       <span class="hint">${survivor.horizon ? `planned ${survivor.horizon} weeks ahead` : ""}</span></header>
@@ -1230,12 +1231,11 @@ async function renderPicks() {
       </div>
     ` : `<div class="empty">${esc(survivor.note || "No survivor plan available.")}</div>`}
   </div>
-  </div>
 
   ${survivor.recommendation ? `
-  <div class="panel">
+  <div class="panel survivor-run">
     <header><h2>The rest of the run</h2>
-      <span class="hint">every week from here, and who the plan spends on it</span></header>
+      <span class="hint">every week from here</span></header>
     <div class="table-scroll"><table class="slate">
       <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
         <th class="num">Win prob</th></tr></thead>
@@ -1244,7 +1244,9 @@ async function renderPicks() {
       team now can cost more later than it gains today, so the optimiser solves the whole
       remaining path — which is why the cost of switching, shown beside this week's options
       above, is measured over this run rather than over Sunday.</p>
-  </div>` : ""}`;
+  </div>` : ""}
+  </div>
+  </div>`;
 
   const modeSelect = $("#pickem-mode");
   modeSelect.value = state.pickemMode || "ev";
@@ -1615,29 +1617,110 @@ async function loadChats() {
   chat.loaded = true;
 }
 
+/* Setting the assistant up, rather than explaining how to.
+
+   What used to be here was three numbered steps: install Ollama, run a
+   command, paste an address into Settings. Every one of them is a place to
+   give up, and the last two are a terminal -- which is the thing a desktop
+   app exists to avoid. Now it is a button, and the work happens where the
+   user can watch it.
+
+   The server is installed into this app's own directory on its own port, so
+   an Ollama the user already runs keeps its models and its settings. */
+let setupPoll = null;
+
+function bytes(n) {
+  if (!n) return "";
+  const mb = n / 1e6;
+  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+}
+
+async function renderAssistantSetup(status) {
+  const root = $("#view");
+  const setup = await api("/api/assistant/setup").catch(() => null);
+  const job = setup?.progress || {};
+  const offered = status.setup_offered !== false && setup;
+
+  const choices = (setup?.choices || []).map((c) => `<label class="model-choice">
+    <input type="radio" name="setup-model" value="${esc(c.name)}"
+      ${c.name === (setup.default_model) ? "checked" : ""} />
+    <span><b>${esc(c.name)}</b> <span class="muted">· ${esc(c.size)}</span>
+      <span class="model-note">${esc(c.note)}</span></span>
+  </label>`).join("");
+
+  const bar = job.running || job.phase === "done" || job.phase === "error" ? `
+    <div class="setup-progress">
+      <div class="bar"><div class="bar-fill${job.percent === null ? " indeterminate" : ""}"
+        style="width:${job.percent === null ? 100 : job.percent}%"></div></div>
+      <div class="setup-status">
+        <span>${esc(job.message || "")}</span>
+        <span class="muted">${job.total
+          ? `${bytes(job.done)} of ${bytes(job.total)}` : ""}</span>
+      </div>
+      ${job.error ? `<p class="note warn">${esc(job.error)}</p>` : ""}
+    </div>` : "";
+
+  root.innerHTML = `<div class="panel">
+    <header><h2>Assistant</h2><span class="hint">${
+      job.running ? "setting up" : "not set up yet"}</span></header>
+    <div class="setup-pane">
+      <p>${esc(status.message)}</p>
+      <p class="note">The assistant runs a model on this machine and talks to it
+        over loopback only — an endpoint anywhere else is refused, so nothing you
+        ask it can leave the computer. It sees this week's board, the model's
+        measured record and the scoreboard, and nothing else.</p>
+      ${offered ? `
+        <div class="model-choices"${job.running ? " hidden" : ""}>${choices}</div>
+        ${bar}
+        <div class="controls setup-actions">
+          <button class="btn primary" id="setup-go" ${job.running ? "disabled" : ""}>
+            ${job.running ? "Setting up…"
+              : (job.error ? "Try again" : "Set up the assistant")}</button>
+          <span class="muted tiny">Downloads a model server and a model into
+            ${esc(setup.directory)}. Nothing is installed anywhere else, and
+            deleting The Edge takes it with it.</span>
+        </div>
+      ` : `<p class="note">Change it on the <b>Settings</b> page.</p>`}
+    </div>
+  </div>`;
+
+  if (!offered) return;
+
+  $("#setup-go")?.addEventListener("click", async () => {
+    const chosen = $('input[name="setup-model"]:checked')?.value;
+    await api("/api/assistant/setup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: chosen }),
+    }).catch(() => null);
+    await renderAssistantSetup(status);
+  });
+
+  // Poll while it runs. Cleared on the way out of the tab, because a timer
+  // that outlives its page is a timer that rewrites somebody else's.
+  clearInterval(setupPoll);
+  if (job.running) {
+    setupPoll = setInterval(async () => {
+      if (state.tab !== "assistant") { clearInterval(setupPoll); return; }
+      const now = await api("/api/assistant/setup").catch(() => null);
+      if (!now) return;
+      if (now.progress?.phase === "done") {
+        clearInterval(setupPoll);
+        chat.loaded = false;
+        await renderAssistant();
+        return;
+      }
+      await renderAssistantSetup(status);
+    }, 1200);
+  }
+}
+
 async function renderAssistant() {
   const root = $("#view");
   const status = await api("/api/assistant/status").catch((e) => ({
     ready: false, message: String(e) }));
 
   if (!status.ready) {
-    root.innerHTML = `<div class="panel">
-      <header><h2>Assistant</h2><span class="hint">not configured</span></header>
-      <div class="empty" style="text-align:left;max-width:64ch;margin:0 auto">
-        <p>${esc(status.message)}</p>
-        <p class="note" style="margin-top:14px">The assistant runs a model on this
-          machine and talks to it over loopback only — an endpoint anywhere else is
-          refused, so nothing you ask it can leave the computer. It sees this week's
-          board, the model's measured record and the scoreboard, and nothing else.</p>
-        <ol class="setup">
-          <li>Install <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a>.</li>
-          <li>Run <code>ollama pull qwen3.5:4b</code> once. About 2.5&nbsp;GB; a 4B
-            model is plenty for reading a page of numbers and runs on a laptop.</li>
-          <li>On <b>Settings</b>, set the endpoint to <code>http://127.0.0.1:11434/v1</code>
-            and the model to <code>qwen3.5:4b</code>.</li>
-        </ol>
-      </div>
-    </div>`;
+    await renderAssistantSetup(status);
     return;
   }
 

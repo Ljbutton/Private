@@ -10,7 +10,12 @@ numbers you already trust and answering questions about them.
 must resolve to loopback, and a configured address that does not is refused
 with an explanation rather than quietly dialled. The app speaks the OpenAI chat
 API, which both Ollama and llama.cpp's `llama-server` expose, so the model is
-the user's choice and no weights ship with this program.
+the user's choice.
+
+No weights ship inside this program -- it would be a gigabyte of download for
+a tab a buyer may never open -- but the app can fetch and run them itself; see
+``localmodel``. A user who already runs their own model server keeps it: this
+only ever installs into its own directory, on its own port.
 """
 
 from __future__ import annotations
@@ -73,21 +78,28 @@ def _is_loopback(url: str) -> bool:
 
 def status() -> dict:
     """Is the assistant usable, and if not, what is missing."""
+    from . import localmodel
+
     url, model = _endpoint(), _model_name()
+    # A server this app installed does not need to be running all the time --
+    # it is started when the tab is opened and left to Ollama's own idle
+    # unload after that. Doing it here rather than at launch keeps a feature
+    # nobody is using out of the machine's memory.
+    if url.startswith(localmodel.ENDPOINT.rstrip("/")) and not localmodel.serving(1.0):
+        localmodel.start(wait=25.0)
     if not url:
-        return {"ready": False, "reason": "no_endpoint",
-                "message": "No local model endpoint is configured. Install Ollama, "
-                           "run `ollama pull qwen3.5:4b`, then set the endpoint to "
-                           "http://127.0.0.1:11434/v1 on the Settings page."}
+        return {"ready": False, "reason": "no_endpoint", "setup_offered": True,
+                "message": "The assistant needs a model on this machine, and "
+                           "there is not one yet. Setting it up is one button."}
     if not _is_loopback(url):
         return {"ready": False, "reason": "not_local",
                 "message": f"{url} is not on this machine. The assistant only talks "
                            "to a local model, so this address is refused — change it "
                            "to a 127.0.0.1 address on the Settings page."}
     if not model:
-        return {"ready": False, "reason": "no_model",
-                "message": "No model name is set. Put the name you pulled "
-                           "(for example qwen3.5:4b) on the Settings page."}
+        return {"ready": False, "reason": "no_model", "setup_offered": True,
+                "message": "A model server is configured but no model is "
+                           "chosen. Pick one below, or name one on Settings."}
 
     try:
         import httpx
@@ -97,11 +109,13 @@ def status() -> dict:
         names = [m.get("id") for m in (response.json().get("data") or [])]
     except Exception as exc:                                  # noqa: BLE001
         return {"ready": False, "reason": "unreachable",
+                "setup_offered": localmodel.binary() is None,
                 "message": f"Nothing is answering at {url} ({exc}). Is the model "
                            "server running?"}
 
     if names and model not in names:
         return {"ready": False, "reason": "model_missing", "models": names,
+                "setup_offered": True,
                 "message": f"{model} is not loaded there. Available: "
                            f"{', '.join(str(n) for n in names[:8])}."}
     return {"ready": True, "endpoint": url, "model": model, "models": names}

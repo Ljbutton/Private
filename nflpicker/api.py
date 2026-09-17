@@ -41,6 +41,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             await scheduler.start()
         yield
         await scheduler.stop()
+        # A model server this app started is this app's to shut down. One left
+        # running after the window closes is a gigabyte of somebody's memory
+        # held by a program they think they quit.
+        with contextlib.suppress(Exception):
+            from . import localmodel
+
+            localmodel.stop()
 
     app = FastAPI(title="The Edge", version="0.1.0", lifespan=lifespan)
     app.state.pipeline = pipeline
@@ -479,6 +486,23 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         from . import assistant
 
         return assistant.status()
+
+    # Installing and running the model server, from the app rather than from a
+    # terminal the buyer was never going to open.
+    @app.get("/api/assistant/setup")
+    def assistant_setup_state() -> dict:
+        from . import localmodel
+
+        return localmodel.state()
+
+    @app.post("/api/assistant/setup")
+    def assistant_setup_start(payload: dict | None = None) -> dict:
+        """Start the download. Returns immediately: this takes minutes, and a
+        request that holds a connection open for minutes is a request that
+        times out somewhere between here and the page."""
+        from . import localmodel
+
+        return localmodel.begin((payload or {}).get("model"))
 
     @app.get("/api/assistant/chats")
     def assistant_chats() -> dict:
