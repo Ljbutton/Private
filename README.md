@@ -102,7 +102,7 @@ make train                                        # full training, a few minutes
 .venv/bin/python -m nflpicker.cli train --no-epa  # skip play-by-play
 ```
 
-This downloads every NFL game since 1999 with its historical closing line, plus
+This downloads every NFL game since 2002 with its historical closing line, plus
 play-by-play for every training season (~430 MB, and it fetches in well under a
 minute), builds features, runs walk-forward validation and saves the models to
 `data/models/`.
