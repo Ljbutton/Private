@@ -5,7 +5,7 @@ derived from the logo, so when the logo changes this regenerates it instead of
 someone hand-editing a .ico in a program they do not have.
 
 The sidebar's clock keeps the real time. This one cannot, so it is frozen at
-ten to two -- see ICON_HOUR below.
+the pose the mark held before it could tell the time -- see ICON_HOUR below.
 
 Drawn at 1024 and downsampled, because thin strokes alias badly if each size
 is drawn at its own scale.
@@ -19,18 +19,18 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 BG = (14, 16, 19, 255)        # near-black tile, legible on light and dark taskbars
-RIM = (90, 97, 104, 255)      # the dial: the market, the part that never moves
-HOUR = (214, 221, 228, 255)   # the short hand
-MINUTE = (46, 230, 160, 255)  # the long hand: the edge
+FLAT = (90, 97, 104, 255)     # the market's line, and the dial around it
+RISE = (46, 230, 160, 255)    # the edge
 SIZES = (256, 128, 64, 48, 32, 24, 16)
 MASTER = 1024
 
-# Ten to two. The pose is the one every watch is photographed in, for the
-# reason it is worth copying: both hands above the centre, neither hiding the
-# other, and the gap between them wide enough to read at 16 pixels. It is also
-# the arrangement the app asks for -- long hand left, short hand right.
-ICON_HOUR = 1
-ICON_MINUTE = 50
+# Twenty-three minutes to four. The mark used to be a fixed shape -- a long
+# stroke climbing from the market's line and a short one falling away from the
+# peak -- and this is the nearest a real time gets to it: long hand down to
+# the left, landing on the line, short hand out to the right. The sidebar's
+# clock keeps the actual time; this one cannot, so it holds that pose.
+ICON_HOUR = 3
+ICON_MINUTE = 37
 
 
 def _stroke(d: ImageDraw.ImageDraw, points, fill, width: float) -> None:
@@ -47,43 +47,43 @@ def _stroke(d: ImageDraw.ImageDraw, points, fill, width: float) -> None:
 
 
 def draw(size: int = MASTER) -> Image.Image:
+    """The mark, in a dial, on the market's line.
+
+    Laid out in fractions of the tile rather than on the SVG's 28-unit grid.
+    The grid was fine when the mark was a free-standing polyline; once the
+    strokes have to fit inside a dial they are much shorter, and a stroke
+    width inherited from the old layout makes them read as blobs. Fractions
+    keep the length-to-width ratio the original strokes had, which is about
+    five to one and is most of why the mark looks like a mark.
+    """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    u = size / 28.0                                  # the SVG's 28-unit grid
-
     d.rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * 0.23), fill=BG)
 
-    # Inset from the tile edge. A mark that runs to the corners reads as
-    # cropped once Windows rounds the thumbnail.
-    def pt(x, y):
-        return (size * 0.18 + x * u * 0.64, size * 0.20 + y * u * 0.64)
+    centre = (0.5 * size, 0.43 * size)
+    r = 0.375 * size
+    # The dial. A ring, not a filled face: the tile is the face.
+    d.ellipse([centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r],
+              outline=FLAT, width=max(1, round(0.042 * size)))
+    # The market's flat line, where it always was -- under everything else.
+    _stroke(d, [(0.075 * size, 0.885 * size), (0.925 * size, 0.885 * size)],
+            FLAT, 0.044 * size)
 
     def hand(degrees: float, length: float):
-        """The far end of a hand, `length` grid units from the centre at
-        `degrees` clockwise from twelve."""
         a = math.radians(degrees)
-        return pt(14 + length * math.sin(a), 14 - length * math.cos(a))
-
-    centre = pt(14, 14)
-    r = 11.6 * u * 0.64
-    # The dial. Drawn as a ring rather than a filled disc so the tile shows
-    # through: a filled face would need a second colour and buys nothing.
-    d.ellipse([centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r],
-              outline=RIM, width=int(round(1.8 * u)))
+        return (centre[0] + length * size * math.sin(a),
+                centre[1] - length * size * math.cos(a))
 
     minute_angle = ICON_MINUTE * 6
     hour_angle = ((ICON_HOUR % 12) + ICON_MINUTE / 60) * 30
-    # Short and heavy, long and light -- the convention that tells the two
-    # hands apart without a number anywhere on the dial.
-    _stroke(d, [centre, hand(hour_angle, 6.2)], HOUR, 3.0 * u)
-    _stroke(d, [centre, hand(minute_angle, 9.1)], MINUTE, 2.6 * u)
+    _stroke(d, [centre, hand(hour_angle, 0.235)], RISE, 0.072 * size)
+    _stroke(d, [centre, hand(minute_angle, 0.315)], RISE, 0.060 * size)
 
-    # Just big enough to look like a pinned centre rather than a join. Any
-    # larger and it merges with the hand it shares a colour with, which at 16px
-    # turns the middle of the dial into one green blob.
-    pip = 1.7 * u * 0.64 + 0.35 * u
-    d.ellipse([centre[0] - pip, centre[1] - pip, centre[0] + pip, centre[1] + pip],
-              fill=MINUTE)
+    # The dot that always joined the two strokes, ringed in tile colour so it
+    # reads as a pivot rather than as a thickening where they meet.
+    dot = 0.052 * size
+    d.ellipse([centre[0] - dot, centre[1] - dot, centre[0] + dot, centre[1] + dot],
+              fill=RISE, outline=BG, width=max(1, round(0.016 * size)))
     return img
 
 

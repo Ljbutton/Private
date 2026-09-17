@@ -1,4 +1,4 @@
-import { barChart, calibrationChart, condense, lineChart, sparkline } from "./charts.js";
+import { barChart, condense, lineChart, sparkline } from "./charts.js";
 import {
   advanceHand, ago, american, clockAngles, esc, greetingLine, kickoffShort,
   liveLabel, num, pct,
@@ -321,10 +321,16 @@ function clvBlock(clv) {
   </div>`;
 }
 
-// -------------------------------------------------------------- scoreboard
+// ------------------------------------------------------------- performance
 /* Who is actually picking these best. Straight-up winners only: every source
-   here names a favourite, so it is the one question all of them can be asked. */
-async function renderScoreboard() {
+   here names a favourite, so it is the one question all of them can be asked.
+
+   This was the Scoreboard tab, and there was a separate Performance tab
+   grading the model against the spread. Two pages answering "is this any
+   good" is one page too many, and of the two this is the one that answers it
+   in the terms a pool player thinks in: you, the model, the book, side by
+   side, on games everybody called. */
+async function renderPerformance() {
   const root = $("#view");
   const d = await api(`/api/scoreboard?season=${state.season}`);
   const pickers = d.pickers || [];
@@ -1183,10 +1189,6 @@ async function renderPicks() {
       <div class="tile"><div class="label">Expected points</div>
         <div class="value">${num(board.expected_points, 1)}</div>
         <div class="sub">of ${board.max_points ?? 0} possible</div></div>
-      <div class="tile"><div class="label">Versus the field</div>
-        <div class="value ${(board.expected_points - board.field_expected_points) >= 0 ? "pos" : "neg"}">
-          ${signed(board.expected_points - board.field_expected_points, 2)}</div>
-        <div class="sub">points, under our own probabilities</div></div>
     </div>
     <div class="pickem-list">${pickRows || '<div class="empty">No games to pick.</div>'}</div>
     <p class="note">Confidence points are assigned highest-to-most-likely, which maximises
@@ -1368,123 +1370,6 @@ async function renderNews() {
       renderNews();
     });
   });
-}
-
-// ------------------------------------------------------------- performance
-async function renderPerformance() {
-  const root = $("#view");
-  const r = await api("/api/performance");
-  if (!r.n_games) {
-    root.innerHTML = `<div class="panel"><div class="empty">${esc(r.note ||
-      "No graded games yet. Results appear once games this app predicted have finished.")}</div></div>`;
-    return;
-  }
-  const acc = r.accuracy || {};
-  const beatsMarket = acc.margin_mae !== null && acc.market_margin_mae !== null
-    && acc.margin_mae < acc.market_margin_mae;
-
-  // When most graded games were backfilled through a model that was trained on
-  // them, these figures are in-sample and will flatter the model — often by a
-  // lot. Say so on the numbers themselves, not only in a footnote nobody reads,
-  // and put the walk-forward result beside them as the honest benchmark.
-  const wf = r.walk_forward || null;
-  const inSample = r.n_games > 0 && (r.backfilled || 0) / r.n_games > 0.5;
-  const flag = inSample
-    ? '<span class="badge" style="border-color:var(--warning);color:var(--warning)">in-sample</span>'
-    : "";
-  const tone = (good) => (inSample ? "" : (good ? "pos" : "neg"));
-
-  root.innerHTML = `<div class="panel">
-    <header><h2>How the model is actually doing</h2>
-      <span class="hint">${wf && wf.ats_rate
-        ? "headline figures are walk-forward — trained only on earlier seasons"
-        : `${r.n_games} graded games`}</span></header>
-    <div class="tiles">
-      <div class="tile"><div class="label">Against the spread</div>
-        ${wf && wf.ats_rate
-          ? `<div class="value ${wf.ats_rate > 0.524 ? "pos" : "neg"}">${pct(wf.ats_rate, 1)}</div>
-             <div class="sub"><b>walk-forward</b> · break-even 52.4%<br>
-               <span class="aside">in-sample ${pct(r.ats.rate, 1)} —
-               ${r.ats.wins}-${r.ats.losses}-${r.ats.pushes}</span></div>`
-          : `<div class="value ${tone((r.ats.rate ?? 0) > 0.524)}">${pct(r.ats.rate, 1)} ${flag}</div>
-             <div class="sub">${r.ats.wins}-${r.ats.losses}-${r.ats.pushes} · break-even 52.4%</div>`}
-      </div>
-      <div class="tile"><div class="label">Return on risk ${flag}</div>
-        <div class="value ${tone((r.ats.roi ?? 0) >= 0)}">${pct(r.ats.roi, 1)}</div>
-        <div class="sub">${signed(r.ats.units, 1)} units at −110</div></div>
-      <div class="tile"><div class="label">Closing-line value</div>
-        <div class="value ${(r.clv.spread_avg ?? 0) >= 0 ? "pos" : "neg"}">${
-          r.clv.spread_avg === null ? "–" : signed(r.clv.spread_avg, 2)}</div>
-        <div class="sub">${r.clv.spread_n} bets · points vs close</div></div>
-      <div class="tile"><div class="label">Straight up</div>
-        <div class="value">${pct(r.straight_up.rate, 1)}</div>
-        <div class="sub">${r.straight_up.correct} of ${r.straight_up.n}</div></div>
-      <div class="tile"><div class="label">Brier score</div>
-        <div class="value">${num(r.calibration.brier, 3)}</div>
-        <div class="sub">lower is better · 0.25 = coin flip</div></div>
-      <div class="tile"><div class="label">Margin error</div>
-        ${wf && wf.margin_mae
-          ? `<div class="value ${wf.margin_mae < (wf.market_margin_mae ?? 99) ? "pos" : ""}">${
-               num(wf.margin_mae, 2)}</div>
-             <div class="sub"><b>walk-forward</b> · market ${num(wf.market_margin_mae, 2)}${
-               wf.margin_mae < (wf.market_margin_mae ?? 99) ? " — we're closer" : " — market is closer"}<br>
-               <span class="aside">in-sample ${num(acc.margin_mae, 2)} vs ${
-                 num(acc.market_margin_mae, 2)}</span></div>`
-          : `<div class="value ${inSample ? "" : (beatsMarket ? "pos" : "")}">${
-               num(acc.margin_mae, 2)} ${flag}</div>
-             <div class="sub">market ${num(acc.market_margin_mae, 2)}${
-               beatsMarket ? " — we're closer" : " — market is closer"}</div>`}
-      </div>
-    </div>
-    ${inSample ? `<p class="note" style="border-left-color:var(--warning)">
-      <strong>These headline figures are in-sample.</strong> ${r.backfilled} of ${r.n_games}
-      graded games were replayed through a model trained on those same seasons, which
-      flatters every one of them. The walk-forward figures shown beneath each tile are
-      the honest measure — they train only on earlier seasons and test on later ones.
-      Once this app has watched real games before kickoff, the top-line numbers become
-      genuine out-of-sample results and this warning goes away.</p>` : ""}
-    ${r.clv.note ? `<p class="note">${esc(r.clv.note)}</p>` : ""}
-    ${!inSample && r.backfill_note ? `<p class="note">${esc(r.backfill_note)}</p>` : ""}
-  </div>
-
-  <div class="grid-2">
-    <div class="panel"><header><h2>Cumulative units</h2>
-      <span class="hint">flat stakes at −110</span></header>
-      <div id="chart-units" style="height:230px"></div></div>
-    <div class="panel"><header><h2>Calibration</h2>
-      <span class="hint">dot size is sample count</span></header>
-      <div id="chart-calib" style="height:240px"></div>
-      <div class="table-scroll" style="margin-top:10px"><table>
-        <thead><tr><th>Confidence</th><th>Predicted</th><th>Observed</th><th>Games</th></tr></thead>
-        <tbody>${(r.calibration.buckets || []).map((b) => `<tr><td class="team">${esc(b.range)}</td>
-          <td>${pct(b.predicted, 1)}</td><td>${pct(b.observed, 1)}</td><td>${b.n}</td></tr>`).join("")}
-        </tbody></table></div>
-    </div>
-  </div>
-
-  <div class="panel"><header><h2>Week by week</h2></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Season</th><th>Week</th><th>ATS</th><th>Straight up</th>
-        <th>CLV</th><th>Cumulative units</th></tr></thead>
-      <tbody>${(r.weekly || []).slice().reverse().map((w) => `<tr>
-        <td class="team">${w.season}</td><td>${w.week}</td>
-        <td>${w.ats_wins}-${w.ats_losses}</td><td>${w.su_correct}/${w.n}</td>
-        <td>${w.clv === null ? "–" : signed(w.clv, 2)}</td>
-        <td>${signed(w.cumulative_units, 1)}</td></tr>`).join("")}</tbody>
-    </table></div></div>`;
-
-  lineChart($("#chart-units"), [{
-    name: "Units", short: "units", color: "var(--series-1)",
-    points: (r.weekly || []).map((w, i) => ({ x: i, y: w.cumulative_units })),
-  }], {
-    height: 230, includeZero: true, zeroLine: true,
-    xFormat: (v) => {
-      const w = (r.weekly || [])[Math.round(v)];
-      return w ? `${w.season} wk ${w.week}` : "";
-    },
-    ariaLabel: "cumulative units over time",
-  });
-  calibrationChart($("#chart-calib"), r.calibration.buckets || [], { height: 240 });
 }
 
 // --------------------------------------------------------------- settings
@@ -1887,7 +1772,7 @@ async function renderAssistant() {
 // -------------------------------------------------------------------- shell
 const VIEWS = { home: renderHome, teams: renderTeams,
   picks: renderPicks, news: renderNews,
-  scoreboard: renderScoreboard, performance: renderPerformance,
+  performance: renderPerformance,
   assistant: renderAssistant, settings: renderSettings };
 
 async function render() {
