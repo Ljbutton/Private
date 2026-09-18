@@ -100,10 +100,14 @@
       </div>
 
       <div class="hero-center">
-        <div class="hero-greet" id="greeting"></div>
         <!-- The dial beside the time it is telling, which is the one place a
              clock face is information rather than decoration. Same mark as the
-             logo, wearing a rim, its two strokes turning on the minute. -->
+             logo, wearing a rim, its two strokes turning on the minute.
+
+             It sits outside the stack rather than in it: the greeting, the
+             time and the date are one column centred on itself, and the dial
+             stands to the left of that column instead of being one more thing
+             the centring has to average. -->
         <div class="hero-time">
           <svg class="dialmark" viewBox="0 0 28 28" aria-hidden="true">
             <circle class="bm-rim" cx="14" cy="14" r="11.5" />
@@ -113,7 +117,8 @@
                   x1="14" y1="14" x2="14" y2="5.2" transform="rotate(222 14 14)" />
             <circle class="bm-dot" cx="14" cy="14" r="1.5" />
           </svg>
-          <div>
+          <div class="hero-stack">
+            <div class="hero-greet" id="greeting"></div>
             <div class="clock" id="clock"></div>
             <div class="clock-date" id="clockdate"></div>
           </div>

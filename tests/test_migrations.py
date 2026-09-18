@@ -150,3 +150,52 @@ def test_a_real_environment_variable_beats_the_file(tmp_path, monkeypatch):
 
     importlib.reload(config_module)
     assert config_module.get_config().odds_api_key == "from-environment"
+
+
+def test_a_listed_column_is_added_even_at_the_current_version(tmp_path):
+    """The version gate must not decide whether columns get added.
+
+    This is the bug that took /api/teams down: a column was added to
+    COLUMN_ADDITIONS and SCHEMA_VERSION was not bumped with it, so every
+    database already stamped at that version returned early from migrate() and
+    never got the column -- and the app then queried a column its own schema
+    declared and the user's database had never had. Remembering to bump a
+    constant is not a migration strategy.
+    """
+    import sqlite3
+
+    from nflpicker import db
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA)
+    # Stamped current, and missing a column the current code selects.
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+                 (str(db.SCHEMA_VERSION),))
+    conn.execute("ALTER TABLE power_snapshots DROP COLUMN projection")
+    conn.commit()
+    assert "projection" not in {
+        r[1] for r in conn.execute("PRAGMA table_info(power_snapshots)")}
+
+    db.migrate(conn, path)
+
+    assert "projection" in {
+        r[1] for r in conn.execute("PRAGMA table_info(power_snapshots)")}
+    conn.close()
+
+
+def test_every_listed_column_exists_after_a_plain_connect(tmp_path, monkeypatch):
+    """Whatever is in the list is in the database, on any database."""
+    import sqlite3
+
+    from nflpicker import db
+
+    path = tmp_path / "fresh.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(db.SCHEMA)
+    db.migrate(conn, path)
+    for table, column, _ in db.COLUMN_ADDITIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        assert not cols or column in cols, f"{table}.{column} is missing"
+    conn.close()

@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -43,7 +43,7 @@ COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = (
     # and how serious. Only "who" and "how serious" were columns; the other two
     # were buried in a 400-character prose comment that had to be read to be
     # understood, which is not what a table is for.
-    # v13: a week's ranking now carries the projection it was ordered by, and
+    # v12: a week's ranking now carries the projection it was ordered by, and
     # the record it was taken with. The order was frozen and everything beside
     # it on the row was live, so week 2's table showed a 2-0 team -- the games
     # played on the Thursday of the week the ranking was supposed to precede.
@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS power_snapshots (
     ties        REAL,
     source      TEXT NOT NULL DEFAULT 'live',
     captured_at TEXT NOT NULL,
+    projection  TEXT,                   -- json of the projection it was ordered by
     UNIQUE(season, week, team)
 );
 CREATE INDEX IF NOT EXISTS idx_power_snap ON power_snapshots(season, week, rank);
@@ -485,18 +486,28 @@ def migrate(conn: sqlite3.Connection, db_path: Path | None = None) -> int:
     that fails loudly.
     """
     was = _stored_version(conn)
-    if was >= SCHEMA_VERSION:
-        return was
-    if was > 0 and db_path is not None:
+    if was < SCHEMA_VERSION and was > 0 and db_path is not None:
         backup = _backup(db_path, was)
         if backup:
             log.info("backed up database to %s before migrating", backup.name)
 
     # Columns added to tables that shipped in an earlier version. Listing them
     # here rather than only in SCHEMA is what makes an upgrade in place work.
+    #
+    # Checked on every connect, not only when the version number has moved.
+    # The version gate was the whole bug the last time this went wrong: a column
+    # was added to the list and SCHEMA_VERSION was not bumped with it, so every
+    # database already at that version skipped the loop and the app queried a
+    # column its own schema declared and the user's database had never had.
+    # Relying on a person to remember a constant is not a migration strategy,
+    # and the loop costs one PRAGMA per table -- against a query that would
+    # otherwise throw, that is free.
     for table, column, decl in COLUMN_ADDITIONS:
         if ensure_column(conn, table, column, decl):
             log.info("added %s.%s", table, column)
+
+    if was >= SCHEMA_VERSION:
+        return was
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
