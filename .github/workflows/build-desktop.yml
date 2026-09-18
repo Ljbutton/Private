@@ -19,6 +19,11 @@ on:
         type: choice
         options: [windows, macos, both]
         default: windows
+      mac_runner:
+        description: "Which Mac builds it — self-hosted is free, and has to be awake"
+        type: choice
+        options: [github, self-hosted]
+        default: github
   push:
     # A manual run is only offered for workflows that already exist on the
     # default branch, so without this there is no way to get a binary out of a
@@ -68,11 +73,35 @@ jobs:
             || '["windows"]') }}
 
     # macos-14 is Apple silicon, which is the only Mac this builds for.
+    #
+    # A GitHub-hosted Mac bills at ten times wall clock, which makes the
+    # shortest job in this workflow the most expensive one in it by some
+    # distance -- two and a half minutes of Mac costs more than eight minutes
+    # of Windows. A Mac you already own costs nothing.
+    #
+    # Selectable rather than switched, because the failure mode of a
+    # self-hosted runner is not a failed build: it is a job that queues
+    # silently until the machine wakes up, which is harder to diagnose than an
+    # error. The default stays on GitHub's runner, and `self-hosted` is one
+    # dropdown away when the Mac is on. The label is set when the runner is
+    # registered; `mac-arm` is the one this expects.
     runs-on: >-
-      ${{ matrix.target == 'windows' && 'windows-latest' || 'macos-14' }}
+      ${{ matrix.target == 'windows' && 'windows-latest'
+          || (inputs.mac_runner == 'self-hosted' && 'mac-arm' || 'macos-14') }}
 
     steps:
       - uses: actions/checkout@v7
+
+      # A GitHub-hosted runner is a fresh machine every time; a self-hosted one
+      # is the same folder it was last time. That is most of why it is fast,
+      # and the one way it can lie to you: PyInstaller's output from the last
+      # run is still sitting there, so a file that has since been deleted from
+      # the project can go on being shipped, and a build that would fail clean
+      # passes. Cheap to rule out, so it is ruled out.
+      - name: Clear the last build
+        if: runner.environment != 'github-hosted'
+        shell: bash
+        run: rm -rf build dist
 
       - uses: actions/setup-python@v7
         with:
