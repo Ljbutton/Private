@@ -1598,3 +1598,26 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .tool-panel .empty { padding: 6px 0; text-align: left; font-size: 12px; }
 .tool-row > .panel { height: 100%; }
 .save-bar.top { margin-bottom: 14px; }
+
+/* ------------------------------------------------- survivor, plan vs picked */
+/* Two runs side by side, week for week. The point of the panel is the pair:
+   a survivor pool is one long bet, and neither run means anything on its own
+   until you can see which of them busts first. */
+.verdict {
+  font-size: 13.5px; font-weight: 600; margin: 2px 0 12px;
+  color: var(--text-primary);
+}
+.track-split { align-items: start; }
+.run-track td { padding: 4px 8px; }
+.run-track .res { width: 20px; text-align: center; font-weight: 800; }
+.run-track tr.r-won .res { color: var(--series-1); }
+.run-track tr.r-lost .res { color: var(--critical); }
+.run-track tr.r-tied .res { color: var(--warning); }
+.run-track tr.r-pending { opacity: .55; }
+/* The week it ended is the one row worth finding at a glance. */
+.run-track tr.r-lost td { background: color-mix(in srgb, var(--critical) 12%, transparent); }
+.run-track .team { color: var(--text-muted); font-variant-numeric: tabular-nums;
+  width: 42px; }
+/* The crest and the abbreviation are one label, so they go on one line. */
+.run-track td:nth-child(2) { display: flex; align-items: center; gap: 7px; }
+.track-split .sub-head .hint { margin-left: 8px; }

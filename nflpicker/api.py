@@ -459,13 +459,49 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
 
     @app.post("/api/survivor/used")
     def set_survivor_used(payload: dict[str, Any]) -> dict:
+        from .picks.survivor import USED_WEEKS_KEY
+
         teams_used = [str(t).upper() for t in (payload.get("teams") or []) if t]
         unknown = [t for t in teams_used if t not in TEAMS]
         if unknown:
             raise HTTPException(status_code=400, detail=f"unknown teams: {unknown}")
+
+        # Which week each team was spent in. The list alone is a set, and a set
+        # cannot be walked against a schedule: "I used KC" does not say whether
+        # that was the week they were favoured by fourteen or the week they
+        # lost. Newly marked teams are stamped with the week on screen; a team
+        # released has its stamp dropped with it.
+        season = pipeline.season()
+        week = int(payload.get("week") or pipeline.current_week(season))
+        stamps = dict(db.get_meta(USED_WEEKS_KEY, {}) or {})
+        for team in teams_used:
+            stamps.setdefault(team, week)
+        for team in list(stamps):
+            if team not in teams_used:
+                stamps.pop(team)
+
         db.set_meta("survivor_used_teams", teams_used)
+        db.set_meta(USED_WEEKS_KEY, stamps)
         pipeline.recompute()
-        return {"teams": teams_used, "ok": True}
+        return {"teams": teams_used, "weeks": stamps, "ok": True}
+
+    @app.get("/api/survivor/tracker")
+    def survivor_tracker(season: int | None = None) -> dict:
+        """The run as first planned against the run actually picked."""
+        from .picks.survivor import ORIGINAL_KEY, USED_WEEKS_KEY, track
+
+        season = season or pipeline.season()
+        original = db.get_meta(f"{ORIGINAL_KEY}:{season}", {}) or {}
+        games = db.query(
+            "SELECT week, home, away, home_score, away_score, status FROM games "
+            "WHERE season = ? AND season_type = 'REG'", (season,),
+        )
+        out = track(original.get("path") or [],
+                    db.get_meta(USED_WEEKS_KEY, {}) or {}, games)
+        out["season"] = season
+        out["saved_at"] = original.get("saved_at")
+        out["from_week"] = original.get("from_week")
+        return out
 
     @app.get("/api/picks/history")
     def pick_history(contest: str = "ats", season: int | None = None) -> dict:

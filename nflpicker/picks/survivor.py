@@ -269,3 +269,104 @@ def future_value(games_by_week: dict[int, list[dict]], team: str, from_week: int
             elif game["away"] == team:
                 best = max(best, 1.0 - float(prob))
     return best
+
+
+# --------------------------------------------------------------- the tracker
+# What the plan said at the start of the season against what actually got
+# picked. A survivor pool is one long bet whose result arrives in instalments,
+# and "was the optimiser right" is not answerable from any single week: the
+# only question that settles it is which of the two runs busts first.
+
+ORIGINAL_KEY = "survivor_original_plan"
+USED_WEEKS_KEY = "survivor_used_weeks"
+
+
+def _outcome(game: dict | None, team: str) -> str:
+    """won, lost, tied, or not played yet."""
+    if not game or game.get("status") != "final":
+        return "pending"
+    home, away = game.get("home"), game.get("away")
+    hs, as_ = game.get("home_score"), game.get("away_score")
+    if hs is None or as_ is None:
+        return "pending"
+    if hs == as_:
+        return "tied"
+    winner = home if hs > as_ else away
+    return "won" if winner == team else "lost"
+
+
+def _played(games: list[dict], week: int, team: str) -> dict | None:
+    for game in games:
+        if int(game["week"]) == int(week) and team in (game["home"], game["away"]):
+            return game
+    return None
+
+
+def _walk(entries: list[dict], games: list[dict]) -> dict:
+    """One run's weeks, and the week it went out on.
+
+    A tie is survival in most pools and elimination in some. It is counted as
+    survival here and labelled, rather than quietly resolved either way: the
+    pool's rules decide, and the reader knows theirs.
+    """
+    rows = []
+    out_week = None
+    for entry in entries:
+        week, team = int(entry["week"]), entry["team"]
+        game = _played(games, week, team)
+        result = _outcome(game, team)
+        opponent = None
+        if game:
+            opponent = game["away"] if game["home"] == team else game["home"]
+        rows.append({
+            "week": week, "team": team, "opponent": opponent, "result": result,
+            "score": (None if not game or game.get("home_score") is None else
+                      f"{game['away']} {int(game['away_score'])}-"
+                      f"{int(game['home_score'])} {game['home']}"),
+        })
+        if result == "lost" and out_week is None:
+            out_week = week
+    survived = [r for r in rows if r["result"] in ("won", "tied")]
+    return {
+        "weeks": rows,
+        "out_week": out_week,
+        "alive": out_week is None,
+        "weeks_survived": len(survived),
+    }
+
+
+def track(original: list[dict], used_weeks: dict, games: list[dict]) -> dict:
+    """The original run and the picked one, side by side.
+
+    `original` is the plan as first made -- entries with a week and a team.
+    `used_weeks` is team -> the week it was actually spent in. Both are walked
+    against the same finished games, so the comparison is between two runs and
+    not between a plan and a scoreboard.
+    """
+    mine_entries = sorted(
+        ({"week": int(w), "team": t} for t, w in (used_weeks or {}).items()),
+        key=lambda e: e["week"])
+    plan = _walk(list(original or []), games)
+    mine = _walk(mine_entries, games)
+
+    if not original:
+        verdict = "No original run saved yet — it is kept the first time a plan is made."
+    elif not mine_entries:
+        verdict = "Nothing picked yet. Mark a team used on Picks and it starts here."
+    elif plan["alive"] and mine["alive"]:
+        verdict = (f"Both still alive after {max(plan['weeks_survived'], mine['weeks_survived'])} "
+                   f"week{'s' if max(plan['weeks_survived'], mine['weeks_survived']) != 1 else ''}.")
+    elif plan["alive"]:
+        verdict = f"You went out in week {mine['out_week']}. The original run is still alive."
+    elif mine["alive"]:
+        verdict = f"The original run went out in week {plan['out_week']}. You are still alive."
+    elif plan["out_week"] == mine["out_week"]:
+        verdict = f"Both went out in week {plan['out_week']}."
+    elif plan["out_week"] < mine["out_week"]:
+        verdict = (f"The original run went out first, in week {plan['out_week']}; "
+                   f"you lasted to week {mine['out_week']}.")
+    else:
+        verdict = (f"You went out first, in week {mine['out_week']}; the original run "
+                   f"lasted to week {plan['out_week']}.")
+
+    return {"original": plan, "mine": mine, "verdict": verdict}

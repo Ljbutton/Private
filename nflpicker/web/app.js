@@ -223,6 +223,11 @@ function foldPanels(root) {
 
     const details = document.createElement("details");
     details.className = panel.className + " fold";
+    // The <details> replaces the panel, so it has to *be* the panel as far as
+    // the rest of the page is concerned. Without this the id went in the bin
+    // and anything that later looked the panel up by it -- a second fetch
+    // filling in a section, say -- silently found nothing.
+    if (panel.id) details.id = panel.id;
     const summary = document.createElement("summary");
     // The first section on a page opens; the rest are a click away. Reopening
     // everything on each refresh would undo the point, so a section the reader
@@ -476,7 +481,56 @@ async function renderPerformance(ticket) {
     </table></div>
   </div>
 
-  ${clvBlock(d.clv)}`;
+  ${clvBlock(d.clv)}
+
+  <div class="panel" id="survivor-track">
+    <header><h2>Survivor: the original run</h2>
+      <span class="hint">the plan as first made, against the teams you
+        actually spent</span></header>
+    <div class="empty">Loading…</div>
+  </div>`;
+
+  /* The plan the optimiser made before any of it had happened, against what
+     was actually picked. Fetched after the page is drawn rather than in the
+     Promise.all above: it is the last thing on the page, it is behind a fold,
+     and the rest of Performance should not wait on it. */
+  api(`/api/survivor/tracker?season=${state.season}`)
+    .then((t) => {
+      const outer = $("#survivor-track", root);
+      if (!outer || stale(ticket)) return;
+      // Folded by the time this arrives, in which case the content belongs
+      // inside the fold rather than after it.
+      const panel = $(".fold-body", outer) || outer;
+      const mark = { won: "✓", lost: "✕", tied: "=", pending: "·" };
+      const runRows = (run) => (run.weeks || []).map((w) => `<tr class="r-${
+        esc(w.result)}">
+        <td class="team">W${w.week}</td>
+        <td>${teamMark(w.team)}<b>${esc(w.team)}</b></td>
+        <td class="res">${mark[w.result] || "·"}</td>
+        <td class="muted">${w.score ? esc(w.score) : (w.opponent
+          ? `vs ${esc(w.opponent)}` : "")}</td>
+      </tr>`).join("");
+      const column = (title, run, note) => `<div>
+        <h3 class="sub-head">${esc(title)}<span class="hint">${esc(note)}</span></h3>
+        ${run.weeks && run.weeks.length
+          ? `<div class="table-scroll"><table class="slate run-track">
+              <tbody>${runRows(run)}</tbody></table></div>`
+          : '<div class="empty">Nothing here yet.</div>'}
+      </div>`;
+      const ran = (run) => run.out_week
+        ? `out in week ${run.out_week}`
+        : `alive · ${run.weeks_survived} survived`;
+      panel.querySelector(".empty, .grid-2")?.remove();
+      panel.insertAdjacentHTML("beforeend", `
+        <p class="verdict">${esc(t.verdict || "")}</p>
+        <div class="grid-2 track-split">
+          ${column("The original plan", t.original || {}, ran(t.original || {}))}
+          ${column("What you picked", t.mine || {}, ran(t.mine || {}))}
+        </div>`);
+      wireLogos(panel);
+    })
+    .catch(() => {});
+
 
   /* Re-sorting is a re-render of this view, not a reload: the payload is
      already here and the server has no opinion about column order. */
@@ -488,7 +542,10 @@ async function renderPerformance(ticket) {
         // A new column starts on its most useful end: best first for a rate,
         // A-Z for the team name.
         : { key, dir: key === "team" ? "asc" : "desc" };
-      renderScoreboard();
+      // render(), not the view function: this page was renamed from
+      // Scoreboard and the old name was left behind here, so every click on a
+      // column heading threw a ReferenceError and sorted nothing.
+      render();
     });
   });
 }

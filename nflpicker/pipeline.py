@@ -1579,6 +1579,27 @@ class Pipeline:
             season, week, by_week, used_teams=used,
             through_week=self.config.survivor_last_week).to_dict()
 
+        # The run as first planned, kept once and never rewritten.
+        #
+        # A survivor pool is one long bet whose result arrives in instalments,
+        # and "was the optimiser right" cannot be answered a week at a time --
+        # spending a strong team early is either the mistake that ends you in
+        # November or the reason you were still alive to make it. The only
+        # settlement is which run busts first, and that needs the plan as it
+        # stood before any of it had happened. Replanning every week and
+        # comparing against the newest plan would be marking your own homework
+        # with the answers in front of you.
+        from .picks.survivor import ORIGINAL_KEY
+
+        if survivor.get("path") and not db.get_meta(f"{ORIGINAL_KEY}:{season}"):
+            db.set_meta(f"{ORIGINAL_KEY}:{season}", {
+                "saved_at": stamp,
+                "from_week": week,
+                "path": [{"week": e["week"], "team": e["team"],
+                          "win_prob": e.get("win_prob")}
+                         for e in survivor["path"]],
+            })
+
         comparisons = self._prediction_market_view(week, upcoming, consensus, by_game)
 
         for contest, payload in (
