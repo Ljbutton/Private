@@ -216,6 +216,26 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         season = pipeline.season()
         ratings = latest_team_rows(season, "team_ratings")
         projections = latest_team_rows(season, "season_projections")
+        # Points for and against, from the games themselves.
+        #
+        # The Pythagorean is stored on the rating row, and on a database that
+        # predates the column -- or any row written before a recompute filled
+        # it in -- that field is null and the card showed a dash where the
+        # number belongs. It is not worth a dash: it is two sums over games we
+        # already hold, so it is computed here when the stored one is missing
+        # rather than waiting for the next full recompute to backfill it.
+        scored: dict[str, list[float]] = {}
+        for game in db.query(
+            "SELECT home, away, home_score, away_score FROM games "
+            "WHERE season = ? AND status = 'final' "
+            "AND home_score IS NOT NULL AND away_score IS NOT NULL",
+            (season,),
+        ):
+            for team, pf, pa in ((game["home"], game["home_score"], game["away_score"]),
+                                 (game["away"], game["away_score"], game["home_score"])):
+                got = scored.setdefault(team, [0.0, 0.0])
+                got[0] += float(pf)
+                got[1] += float(pa)
         rows = []
         for abbr, team in TEAMS.items():
             rating = ratings.get(abbr, {})
@@ -242,7 +262,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                         "ties": projection.get("ties_actual"),
                     },
                     "exp_wins": projection.get("exp_wins"),
-                    "pythagorean": rating.get("pythagorean"),
+                    "pythagorean": _pythagorean(rating, scored.get(abbr)),
                     "wins_p10": projection.get("wins_p10"),
                     "wins_p90": projection.get("wins_p90"),
                     "playoff_prob": projection.get("playoff_prob"),
@@ -258,9 +278,31 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # gone -- see RANK_WEIGHTS. The score is carried on the row so the
         # card can show what put a team where it is.
         scores = ranking_scores(ratings, projections)
-        order = {team: i for i, team in enumerate(
+        # This week's cut if it has been taken, and the live blend until then.
+        #
+        # The ranking is a claim made on a particular day -- Wednesday, by
+        # default -- from what was known then, and it holds for the week. It
+        # used to be recomputed on every refresh, which meant the table quietly
+        # reordered itself several times a day and the Move column compared two
+        # numbers that had both moved since anyone last looked. What the cut
+        # does not freeze is the rest of the row: the projections, the playoff
+        # odds and the records are forecasts and results, and a forecast that
+        # ignored Sunday would just be wrong.
+        cut = {r["team"]: r["rank"] for r in db.query(
+            "SELECT team, rank FROM power_snapshots "
+            "WHERE season = ? AND week = ? AND source = 'live'",
+            (season, pipeline.current_week(season)),
+        )}
+        order = ({t: r for t, r in cut.items()} if cut else
+                 {team: i for i, team in enumerate(
+                     team_rank_order(season, ratings, projections), start=1)})
+        # A team the cut does not name -- it cannot happen mid-season, but a
+        # partial write would put someone at the top by accident -- goes last
+        # in the live order rather than first.
+        fallback = {team: i for i, team in enumerate(
             team_rank_order(season, ratings, projections), start=1)}
-        rows.sort(key=lambda r: order.get(r["team"], 99))
+        rows.sort(key=lambda r: order.get(r["team"],
+                                          99 + fallback.get(r["team"], 99)))
         for row in rows:
             row["rank_score"] = round(scores.get(row["team"], 0.0), 3)
         for i, row in enumerate(rows, start=1):
@@ -294,6 +336,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             return {"season": season, "week": None, "weeks": [],
                     "teams": [], "sources": {}}
         week = week if week in weeks else weeks[-1]
+        # Which weeks were cut while the app was running for them.
+        live_cuts = {
+            r["week"]: True for r in db.query(
+                "SELECT DISTINCT week FROM power_snapshots "
+                "WHERE season = ? AND source = 'live'", (season,),
+            )
+        }
 
         rows = db.query(
             "SELECT team, rank, power, elo, pythagorean, wins, losses, ties,"
@@ -301,10 +350,17 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "WHERE season = ? AND week = ? ORDER BY rank",
             (season, week),
         )
-        # Movement against the previous week we actually hold, which is not
-        # always week-1: a gap in the history would otherwise be reported as a
-        # week of dramatic movement that never happened.
-        earlier = [w for w in weeks if w < week]
+        # Movement against the previous week we actually *ranked*, which is
+        # not always week-1: a gap in the history would otherwise be reported
+        # as a week of dramatic movement that never happened.
+        #
+        # And only against a live cut. A rebuilt week is this code's opinion of
+        # a week nobody was running for, reconstructed afterwards from the
+        # games that had finished by then -- useful for a trend line, and not a
+        # thing a team can have moved against. An app first opened in week two
+        # was showing every team up or down against a week one that had never
+        # been on screen; those arrows described a backfill, not a season.
+        earlier = [w for w in weeks if w < week and live_cuts.get(w)]
         previous = {
             r["team"]: r["rank"] for r in (
                 db.query("SELECT team, rank FROM power_snapshots "
@@ -887,6 +943,23 @@ def latest_team_rows(season: int, table: str, columns: str = "*") -> dict[str, d
 #
 # `power` here is still the rating the projections and the model are built
 # from. Nothing below changes a prediction; it changes the order of a table.
+def _pythagorean(rating: dict, points: list[float] | None) -> float | None:
+    """The stored Pythagorean, or one worked out from the season's scores.
+
+    A team with no finished games has no points either way, and there is no
+    Pythagorean to have: that is the one case this returns nothing for, and the
+    card says so instead of showing a dash that could mean anything.
+    """
+    stored = rating.get("pythagorean")
+    if stored is not None:
+        return stored
+    if not points:
+        return None
+    from .ratings.power import pythagorean_expectation
+
+    return pythagorean_expectation(points[0], points[1])
+
+
 RANK_WEIGHTS = {
     "exp_wins": 0.30,       # where the season is projected to end up
     "pythagorean": 0.20,    # points scored and allowed, which ignores who won

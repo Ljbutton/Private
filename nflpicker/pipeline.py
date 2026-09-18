@@ -13,6 +13,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -1460,16 +1461,21 @@ class Pipeline:
             ],
         )
 
-        # The week's ranking, frozen. Written *here*, after the simulation,
-        # rather than beside the ratings above: the Teams page orders teams by
-        # a blend that includes projected wins and title odds, and a history
-        # ordered by the rating alone would report movement between two tables
-        # that were never using the same rule. While this week is current the
-        # snapshot is refreshed on every recompute; once the week turns over
-        # nothing writes to it again.
-        with contextlib.suppress(Exception):
-            self.store_power_snapshot(season, week, power, completed,
-                                      projections=_projection_rows(sim))
+        # The week's ranking, cut once and then left alone. Written *here*,
+        # after the simulation, rather than beside the ratings above: the Teams
+        # page orders teams by a blend that includes projected wins and title
+        # odds, and a history ordered by the rating alone would report movement
+        # between two tables that were never using the same rule.
+        #
+        # It used to be rewritten on every recompute while its week was
+        # current, which made "the power rankings" a thing that quietly changed
+        # under the reader several times a day. A ranking is a claim made on a
+        # particular day from what was known then; one that keeps being revised
+        # is a live readout with a week number on it.
+        if self.ranking_cut_due(season, week):
+            with contextlib.suppress(Exception):
+                self.store_power_snapshot(season, week, power, completed,
+                                          projections=_projection_rows(sim))
 
         # And the weeks before this one, which an install made mid-season has
         # never seen. Reconstructed from the games that had finished before
@@ -1607,6 +1613,42 @@ class Pipeline:
                 out[loser][1] += 1
         return out
 
+    def ranking_cut_due(self, season: int, week: int, *, now=None) -> bool:
+        """Whether this week's ranking still has to be taken.
+
+        Once a week, on the cut day, and then not again. Two things have to be
+        true: nothing has been cut for this week yet, and the cut day has come
+        round. Wednesday by default -- Monday night is played, the injury
+        reports have started, and nothing is known about the coming Sunday that
+        will not still be true on Saturday.
+
+        Monday and Tuesday are deliberately quiet even though the week number
+        has already turned over. The new week has no ranking yet on those days,
+        which is the honest state of affairs: last week's cut is the most
+        recent claim anyone has made, and inventing a new one from a weekend
+        whose consequences are still being counted would be a worse answer than
+        waiting a day.
+
+        The one exception is a season with no cut at all. An app first opened
+        on a Sunday should not sit there with an empty history until the
+        following Wednesday, so the first cut of a season is taken whenever it
+        is asked for, and the weekly rhythm starts from there.
+        """
+        held = db.query(
+            "SELECT 1 FROM power_snapshots WHERE season = ? AND week = ? "
+            "AND source = 'live' LIMIT 1", (season, week),
+        )
+        if held:
+            return False
+        any_cut = db.query(
+            "SELECT 1 FROM power_snapshots WHERE season = ? AND source = 'live' "
+            "LIMIT 1", (season,),
+        )
+        if not any_cut:
+            return True
+        now = now or datetime.now().astimezone()
+        return now.weekday() >= int(self.config.ranking_cut_weekday)
+
     def store_power_snapshot(self, season: int, week: int, power, completed: list[dict],
                              *, source: str = "live",
                              projections: dict | None = None) -> int:
@@ -1619,8 +1661,12 @@ class Pipeline:
         projected finish comes out of twenty thousand replays of a schedule
         that has since been played. Rebuilt rows are marked as such.
 
-        A live row is never overwritten by a rebuilt one. The reverse is fine:
-        a reconstruction is a stand-in until the real thing exists.
+        A live cut is written once and never rewritten -- not by a rebuild,
+        and not by the next recompute of its own week. That is what makes it a
+        cut rather than a readout: week two's ranking still says in December
+        what it said on the Wednesday it was taken, and the weeks that follow
+        cannot quietly restate it. A rebuilt row is a stand-in and gives way to
+        the real thing.
         """
         existing = {
             r["team"]: r["source"] for r in db.query(
@@ -1628,7 +1674,7 @@ class Pipeline:
                 (season, week),
             )
         }
-        if source == "rebuilt" and any(v == "live" for v in existing.values()):
+        if any(v == "live" for v in existing.values()):
             return 0
 
         records = self._records_through(completed, season)

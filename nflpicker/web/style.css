@@ -954,18 +954,32 @@ td.team { font-weight: 600; }
 /* Survivor is as tall as it is; the run takes whatever is left and scrolls.
    Auto rows gave each panel its content height, so the column overflowed the
    screen it was supposed to fit inside and the page grew a scrollbar again. */
-.pick-col { min-height: 0; grid-template-rows: minmax(0, auto) minmax(0, 1fr); }
+.pick-col {
+  min-height: 0;
+  /* The run is guaranteed 210px and survivor gets what is left. `auto` on the
+     first row with nothing holding the second one open meant survivor took its
+     full content height -- six hundred pixels of it -- and left the run a
+     header and a sliver. Survivor gives way instead: its list of this week's
+     options already scrolls, and the run is the thing being read. */
+  grid-template-rows: minmax(0, auto) minmax(210px, 1fr);
+}
 /* The two lists that can outgrow the screen. Their panels hold the tiles and
    the notes still, so what scrolls is only the part that is a list. */
 .pickem-list, .survivor-run .table-scroll, .alt-list {
   overflow-y: auto; min-height: 0;
 }
 .pickem-list { flex: 1; }
-/* A floor, because the panel above it is as tall as it is: without one the
-   run was squeezed to nothing on a short window and the panel showed a header
-   and no table at all. Below this the column scrolls, which is the honest
-   failure rather than a silent one. */
-.survivor-run .table-scroll { flex: 1; min-height: 120px; }
+/* No floor here, deliberately. There used to be a `min-height: 120px`, and it
+   was the whole bug: the run panel had 116px to work with, its header took
+   most of that, and the table then insisted on 120 anyway -- so it hung 73px
+   below its own panel and thirty past the bottom of the screen. You could
+   scroll it, and the rows you scrolled to were drawn off the display. Week
+   seven was as far as the window went.
+
+   The floor belongs on the row instead (see .pick-col below), where the grid
+   can take the space off the panel above rather than let the table take it off
+   the screen. */
+.survivor-run .table-scroll { flex: 1; min-height: 0; }
 .pick-split > .panel, .pick-col > .panel { margin-bottom: 0; }
 .grid-2.pick-split { margin-bottom: 18px; }
 /* Survivor is two things stacked -- this week's choice, then what that choice
@@ -986,7 +1000,19 @@ td.team { font-weight: 600; }
    it is what someone is reading. */
 .survivor-now { min-height: 0; }
 .used-block { min-height: 0; display: flex; flex-direction: column; }
-.team-picker.used { overflow-y: auto; min-height: 48px; max-height: 76px; }
+/* Sixteen to a row, so thirty-two teams are always exactly two rows and this
+   box never scrolls. It used to be a wrapping flex row inside a 76px window,
+   which put the back half of the alphabet behind a scrollbar -- a scrollbar
+   inside a panel inside a column that was itself scrolling. A team you have
+   to go looking for is a team you will forget you already spent, and the
+   whole point of this row is to see at a glance what is gone. Equal columns
+   mean the crests shrink with the window rather than wrap into a third row. */
+.team-picker.used {
+  display: grid; grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 3px; padding: 4px 0 2px; overflow: visible; max-height: none;
+}
+.team-picker.used .team-pick { padding: 2px; display: grid; place-items: center; }
+.team-picker.used .tbadge { width: 100%; height: auto; aspect-ratio: 1; max-width: 22px; }
 .sub-head { font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .1em; color: var(--text-muted); margin: 18px 0 7px; }
 .sub-head .hint { text-transform: none; letter-spacing: 0; font-weight: 600; }

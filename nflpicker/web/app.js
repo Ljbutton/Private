@@ -259,6 +259,11 @@ function foldPanels(root) {
 const openFolds = new Set();
 const touchedTabs = new Set();
 
+/* Settings opens with every section shut -- four headings you can read at a
+   glance beat two panels of fields you have to scroll past -- and remembers
+   what you opened, so a refresh mid-edit does not fold the box you are in. */
+const openSettings = new Set();
+
 // ------------------------------------------------------------------ alerts
 /* Alerts are per-game and live inside the game's own dialog rather than in a
    strip over the board. They are something you go looking for once a game has
@@ -741,7 +746,7 @@ async function renderHome(ticket) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ game_id: gameId, selection: next }),
       });
-      await renderHome();
+      await render();
     });
   });
 }
@@ -1013,8 +1018,12 @@ async function renderTeams(ticket) {
     return [
       cell("Rating", signed(t.power),
            "Points better than an average team on a neutral field"),
+      /* A dash here could mean "no games yet" or "this field never got
+         written", and those are different answers. The number is worked out
+         from the season's scores server-side when the rating row does not
+         carry it, so a blank now means only the first one. */
       cell("Pythag", t.pythagorean === null || t.pythagorean === undefined
-        ? "–" : pct(t.pythagorean),
+        ? '<span class="muted">no games yet</span>' : pct(t.pythagorean),
            "Win expectation implied by points scored and allowed"),
       cell("80% range", `${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}`,
            "Where four seasons in five finish"),
@@ -1179,7 +1188,7 @@ async function renderPicks(ticket) {
   modeSelect.value = state.pickemMode || "ev";
   modeSelect.addEventListener("change", () => {
     state.pickemMode = modeSelect.value;
-    renderPicks();
+    render();
   });
 
   wireLogos(root);
@@ -1197,7 +1206,7 @@ async function renderPicks(ticket) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ teams: [...used] }),
       });
-      await renderPicks();
+      await render();
     });
   });
 }
@@ -1297,7 +1306,7 @@ async function renderNews(ticket) {
   $$(".team-pick[data-team]", root).forEach((button) => {
     button.addEventListener("click", () => {
       state.injuryTeam = button.dataset.team;
-      renderNews();
+      render();
     });
   });
 }
@@ -1366,8 +1375,8 @@ async function renderSettings(ticket) {
 
   root.innerHTML = `${saveBar("top")}
   <div class="settings-grid">
-  ${(data.groups || []).map((g, i) => `<details class="panel set-group"${
-    i < 2 ? " open" : ""}>
+  ${(data.groups || []).map((g) => `<details class="panel set-group"${
+    openSettings.has(g.name) ? " open" : ""} data-group="${esc(g.name)}">
     <summary><h2>${esc(g.name)}</h2>
       <span class="hint">${g.settings.length} setting${
         g.settings.length === 1 ? "" : "s"}</span>
@@ -1432,6 +1441,16 @@ async function renderSettings(ticket) {
       directory, so copy it somewhere else if you want it to survive losing this
       machine.</p>
   </div>`;
+
+  /* A refresh re-renders this whole page, which used to close every section
+     the reader had opened -- including the one they were halfway through
+     filling in. What is open is remembered for the session instead. */
+  $$("details.set-group", root).forEach((d) => {
+    d.addEventListener("toggle", () => {
+      if (d.open) openSettings.add(d.dataset.group);
+      else openSettings.delete(d.dataset.group);
+    });
+  });
 
   const paintBackups = (rows) => {
     const list = $("#backup-list");
@@ -1549,7 +1568,7 @@ async function renderSettings(ticket) {
         });
         say(`Saved ${r.saved.length} setting${r.saved.length === 1 ? "" : "s"}.`, "pos");
         await loadState();
-        await renderSettings();
+        await render();
       } catch (err) {
         say(String(err), "neg");
       } finally {
@@ -1675,7 +1694,7 @@ async function renderAssistantSetup(status) {
       if (now.progress?.phase === "done") {
         clearInterval(setupPoll);
         chat.loaded = false;
-        await renderAssistant();
+        await render();
         return;
       }
       await renderAssistantSetup(status);
@@ -1756,7 +1775,7 @@ async function renderAssistant(ticket) {
     // dropped click.
     chat.messages = [...chat.messages, { role: "user", content: question }];
     chat.busy = true;
-    await renderAssistant();
+    await render();
     try {
       const r = await api("/api/assistant/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1772,7 +1791,7 @@ async function renderAssistant(ticket) {
       chat.busy = false;
     }
     await loadChats().catch(() => {});
-    await renderAssistant();
+    await render();
     scroll();
   };
 
@@ -1783,14 +1802,14 @@ async function renderAssistant(ticket) {
     });
     chat.id = created.id;
     await loadChats();
-    await renderAssistant();
+    await render();
   });
 
   $$("[data-chat]", root).forEach((b) => b.addEventListener("click", async (e) => {
     if (e.target.closest("[data-rename],[data-delete]")) return;
     chat.id = b.dataset.chat;
     await loadChats();
-    await renderAssistant();
+    await render();
   }));
 
   $$("[data-rename]", root).forEach((b) => b.addEventListener("click", async (e) => {
@@ -1803,7 +1822,7 @@ async function renderAssistant(ticket) {
       body: JSON.stringify({ title }),
     }).catch(() => {});
     await loadChats();
-    await renderAssistant();
+    await render();
   }));
 
   $$("[data-delete]", root).forEach((b) => b.addEventListener("click", async (e) => {
@@ -1813,7 +1832,7 @@ async function renderAssistant(ticket) {
     await api(`/api/assistant/chats/${b.dataset.delete}`, { method: "DELETE" }).catch(() => {});
     if (chat.id === b.dataset.delete) chat.id = null;
     await loadChats();
-    await renderAssistant();
+    await render();
   }));
 
   $("#chat-send").addEventListener("click", () => send($("#chat-q").value));
@@ -1889,7 +1908,15 @@ function markScrollFades(root = document) {
    check in `render` is not enough on its own: a view writes to #view itself,
    partway through, long before it returns. */
 function stale(ticket) {
-  return ticket !== renderTicket;
+  /* No ticket means nobody is racing this render, so let it paint. Twelve
+     handlers used to call their view directly -- the injury picker, every
+     assistant button, the picks controls -- and every one of them fetched,
+     came back holding `undefined`, compared it to the current ticket, decided
+     it had been overtaken and drew nothing. The page only changed when you
+     left the tab and came back, which is the bug that was reported. They all
+     go through render() now; this is so that the next one to forget degrades
+     into painting anyway rather than into doing nothing at all. */
+  return ticket !== undefined && ticket !== renderTicket;
 }
 
 async function loadState() {

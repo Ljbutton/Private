@@ -123,6 +123,15 @@ class Config:
     # a week long can simply be read from the row above.
     survivor_last_week: int = field(
         default_factory=lambda: _int("NFLPICKER_SURVIVOR_LAST_WEEK", 18))
+
+    # Which day the week's power ranking is cut on. Monday is 0, so 2 is
+    # Wednesday: Monday night has been played, the injury reports have started,
+    # and nothing about the coming Sunday is known yet that will not still be
+    # true on Saturday. The ranking is taken once on that day and then left
+    # alone for the week -- a ranking that keeps being revised is a live
+    # readout with a week number on it, and cannot be moved against.
+    ranking_cut_weekday: int = field(
+        default_factory=lambda: _int("NFLPICKER_RANKING_CUT_WEEKDAY", 2))
     # How much worse a fresh model may be before it is rejected. Walk-forward
     # MAE is computed over all history each time, and one week changes the
     # sample by about a third of a percent, so runs are comparable in practice;
