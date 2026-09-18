@@ -23,23 +23,27 @@ Cloudflare's free plan (100k requests/day) is far more than this needs.
 
 ### 1. Whop
 
-1. **Turn on license keys for the product.** Dashboard → your product → add a
-   **Software / License key** experience (Whop generates one key per purchase
-   and shows it to the buyer).
-2. **Copy the product ID** (`prod_…`) from the product's URL or settings.
-3. **Create an API key.** Dashboard → Developer → API keys → *Create*. Give it
-   `member:basic:read`, `member:email:read` and `member:manage`. Copy it.
-   You'll only see it once.
-4. **Copy your store link** (the public product page) for the "Get a
-   subscription" link and the update fallback.
+Already done for **The Edge** (`prod_VwekdA5QArKis`):
+
+- Product created: $19.99/month with a 7-day trial, and a $79 season pass
+  that auto-expires after six months.
+- Whop's **Software** app installed and attached to the product. It issues one
+  license key per purchase and lists Windows and Mac download links from the
+  GitHub `latest` release.
+- The fake "Save 20%" strikethrough price is turned off.
+
+Still to do (it's a secret, so only you should handle it):
+
+- **Create an API key.** Dashboard → Developer → Company API keys →
+  *Create API key*. Give it `member:basic:read`, `member:email:read` and
+  `member:manage`. Copy it. You'll only see it once.
 
 ### 2. Cloudflare
 
 ```bash
 cd license-server
 npx wrangler login
-npx wrangler secret put WHOP_API_KEY        # paste the key from step 1.3
-# edit wrangler.toml: WHOP_PRODUCT_ID, DOWNLOAD_PAGE
+npx wrangler secret put WHOP_API_KEY        # paste the API key from step 1
 npx wrangler deploy
 ```
 
@@ -57,7 +61,7 @@ Repo → Settings → Secrets and variables → Actions → **Variables**:
 | Variable | Value |
 |---|---|
 | `LICENSE_SERVER_URL` | the Worker address from step 2 |
-| `WHOP_STORE_URL` | your Whop product page |
+| `WHOP_STORE_URL` | `https://whop.com/the-edge-ab78/the-edge-fd-e121` |
 
 The next build stamps both into the app. Until they are set, builds run
 unlicensed exactly as before, so nothing breaks in the meantime.
