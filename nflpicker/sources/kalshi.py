@@ -103,16 +103,29 @@ def _cents(value: Any) -> float | None:
 
 
 def mid_price(market: dict) -> float | None:
-    """Mid of the Yes book, falling back to last trade.
+    """Mid of the Yes book, falling back to the No book and then to last trade.
 
     A thin market's last trade can be hours old and several points from
-    anything transactable, so the book is preferred whenever both sides exist.
+    anything transactable, so a book is preferred whenever one exists.
+
+    The No side is read because it is the same book seen from the other end --
+    a No ask of 38c is a Yes bid of 62c -- and on a contract where only one
+    side has been quoted it is the difference between a price and nothing.
     """
     bid = _cents(market.get("yes_bid"))
     ask = _cents(market.get("yes_ask"))
     if bid is not None and ask is not None:
         return (bid + ask) / 2.0
-    return _cents(market.get("last_price")) or bid or ask
+    no_bid = _cents(market.get("no_bid"))
+    no_ask = _cents(market.get("no_ask"))
+    if no_bid is not None and no_ask is not None:
+        return 1.0 - (no_bid + no_ask) / 2.0
+    for implied in (_cents(market.get("last_price")), bid, ask,
+                    None if no_ask is None else 1.0 - no_ask,
+                    None if no_bid is None else 1.0 - no_bid):
+        if implied is not None:
+            return implied
+    return None
 
 
 def team_from_market(market: dict) -> str | None:
@@ -134,6 +147,43 @@ def team_from_market(market: dict) -> str | None:
         if team:
             return team
     return None
+
+
+def pairing_report(events: list[dict]) -> dict:
+    """Why events did not become quotes, counted by cause.
+
+    "Thirty-two events came back and none survived pairing" is a true sentence
+    that names four different bugs. Unpriced contracts, contracts whose team we
+    cannot read, and both contracts resolving to the same team need completely
+    different fixes, and from outside they are the same silence.
+    """
+    counts = {"events": 0, "markets": 0, "paired": 0,
+              "no_price": 0, "no_team": 0, "one_sided": 0, "same_team": 0}
+    for event in events or []:
+        counts["events"] += 1
+        markets = event.get("markets") or []
+        counts["markets"] += len(markets)
+        teams, priced = set(), {}
+        for market in markets:
+            if str(market.get("status", "open")).lower() not in {"open", "active"}:
+                continue
+            team = team_from_market(market)
+            price = mid_price(market)
+            if team is None:
+                counts["no_team"] += 1
+                continue
+            teams.add(team)
+            if price is None:
+                counts["no_price"] += 1
+                continue
+            priced[team] = price
+        if len(priced) >= 2:
+            counts["paired"] += 1
+        elif len(teams) == 1 and len(markets) > 1:
+            counts["same_team"] += 1
+        elif len(priced) == 1:
+            counts["one_sided"] += 1
+    return counts
 
 
 def normalise(events: list[dict]) -> list[KalshiQuote]:
@@ -245,6 +295,67 @@ class KalshiSource:
                     break   # this series answered; no need for the other status
         return attempts
 
+    def fetch_markets(self, series: str, *, limit: int = 1000) -> list[dict]:
+        """A series' contracts from /markets, which is the endpoint that owns
+        their books.
+
+        The events endpoint nests markets, and what it nests is a summary: on
+        this series it came back with sixty-four contracts across thirty-two
+        games and not one price between them, which from outside looked exactly
+        like a venue quoting nothing. /markets returns the same contracts with
+        their bids, asks and last trade, and each one names its event, which is
+        everything the pairing needs.
+        """
+        out: list[dict] = []
+        cursor = None
+        for _ in range(5):
+            params: dict = {"series_ticker": series, "limit": min(limit, 1000),
+                            "status": "open"}
+            if cursor:
+                params["cursor"] = cursor
+            payload = self._get("/markets", params)
+            rows = (payload.get("markets") if isinstance(payload, dict) else payload) or []
+            out.extend(rows)
+            cursor = payload.get("cursor") if isinstance(payload, dict) else None
+            if not cursor or not rows:
+                break
+        return out
+
+    @staticmethod
+    def _has_any_price(events: list[dict]) -> bool:
+        return any(mid_price(m) is not None
+                   for e in events for m in (e.get("markets") or []))
+
+    def fill_prices(self, events: list[dict]) -> list[dict]:
+        """Re-nest markets from /markets when the events' own carry no book.
+
+        Only when *nothing* has a price -- one unpriced contract is a market
+        nobody has quoted yet, which is ordinary, while sixty-four of them is
+        the wrong endpoint. That keeps the extra request off the common path.
+        """
+        if not events or self._has_any_price(events):
+            return events
+        by_event: dict[str, list[dict]] = {}
+        for series in NFL_SERIES:
+            try:
+                rows = self.fetch_markets(series)
+            except SourceError:
+                continue
+            for market in rows:
+                key = str(market.get("event_ticker") or "")
+                if key:
+                    by_event.setdefault(key, []).append(market)
+            if by_event:
+                break
+        if not by_event:
+            return events
+        for event in events:
+            key = str(event.get("event_ticker") or event.get("ticker") or "")
+            found = by_event.get(key)
+            if found:
+                event["markets"] = found
+        return events
+
     def fetch_events(self, *, limit: int = 200) -> list[dict]:
         """Open NFL game events, with their markets nested.
 
@@ -272,4 +383,4 @@ class KalshiSource:
         return []
 
     def fetch(self) -> list[KalshiQuote]:
-        return normalise(self.fetch_events())
+        return normalise(self.fill_prices(self.fetch_events()))

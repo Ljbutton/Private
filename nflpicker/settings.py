@@ -436,6 +436,37 @@ def _prune_backups() -> int:
     return removed
 
 
+def _pairing_message(seen: int, found: list[dict]) -> str:
+    """Why the events that came back produced no quotes.
+
+    "None survived pairing" is a true sentence that names four different bugs,
+    and from outside they are the same silence. The counts say which one: no
+    price on any contract is the wrong endpoint or a board nobody has quoted
+    yet; both contracts resolving to the same team is a ticker whose shape has
+    changed under us; no team at all is an abbreviation we do not know.
+    """
+    from .sources.kalshi import pairing_report
+
+    rows = [e for a in found for e in (a.get("rows") or [])]
+    counts = pairing_report(rows)
+    sample = found[0].get("sample") or "none"
+    if counts["markets"] == 0:
+        return f"{seen} events came back carrying no contracts at all"
+    if counts["no_price"] and not counts["paired"]:
+        return (f"{seen} events, {counts['markets']} contracts, and not one of "
+                f"them has a price — either nobody has quoted this board yet or "
+                f"the book is not in this response (sample: {sample})")
+    if counts["same_team"]:
+        return (f"{counts['same_team']} of {seen} events have both contracts "
+                f"resolving to the same team — the ticker shape has changed "
+                f"(sample: {sample})")
+    if counts["no_team"]:
+        return (f"{counts['no_team']} contracts name a team we do not "
+                f"recognise (sample: {sample})")
+    return (f"{seen} events came back but none survived pairing "
+            f"(sample: {sample})")
+
+
 def test_prediction_markets() -> dict:
     """Ask each venue directly and report what happened, per venue.
 
@@ -481,10 +512,7 @@ def test_prediction_markets() -> dict:
             found = [a for a in kalshi["attempts"] if a["events"]]
             if found:
                 seen = sum(a["events"] for a in found)
-                kalshi["message"] = (
-                    f"{seen} events came back but none survived pairing — "
-                    f"the ticker shape has probably changed "
-                    f"(sample: {found[0].get('sample') or 'none'})")
+                kalshi["message"] = _pairing_message(seen, found)
             else:
                 asked = ", ".join(a["series"] for a in kalshi["attempts"])
                 kalshi["message"] = (

@@ -1,5 +1,7 @@
 """Kalshi market parsing, pinned against the documented response shape."""
 
+import pytest
+
 from nflpicker.sources.kalshi import mid_price, normalise, team_from_market
 
 EVENT = {
@@ -159,3 +161,95 @@ def test_the_probe_reports_what_each_ticker_returned(monkeypatch):
     assert attempts[0]["markets"] == 1
     assert attempts[0]["sample"] == "KXNFLGAME-25SEP21DENKC-KC"
     assert attempts[0]["error"] is None
+
+
+def _market(ticker, **kw):
+    return {"ticker": ticker, "status": "open", **kw}
+
+
+def test_a_contract_with_only_a_no_book_still_has_a_price():
+    """The No side is the same book from the other end.
+
+    A No ask of 40c is a Yes bid of 60c. On a contract where only one side has
+    been quoted, reading it is the difference between a price and nothing --
+    and an event needs two prices to pair.
+    """
+    from nflpicker.sources.kalshi import mid_price
+
+    assert mid_price({"yes_bid": 0, "yes_ask": 100,
+                      "no_bid": 38, "no_ask": 40}) == pytest.approx(0.61)
+
+
+def test_the_report_says_no_price_rather_than_no_pairing():
+    """Four different bugs look identical from outside.
+
+    "Thirty-two events came back and none survived pairing" is true whether
+    the contracts have no book, name a team we cannot read, or both resolve to
+    the same team -- and each needs a different fix.
+    """
+    from nflpicker.sources.kalshi import pairing_report
+
+    events = [{
+        "event_ticker": "KXNFLGAME-26SEP17DETBUF",
+        "markets": [_market("KXNFLGAME-26SEP17DETBUF-BUF", yes_bid=0, yes_ask=100),
+                    _market("KXNFLGAME-26SEP17DETBUF-DET", yes_bid=0, yes_ask=100)],
+    }]
+    counts = pairing_report(events)
+    assert counts == {"events": 1, "markets": 2, "paired": 0, "no_price": 2,
+                      "no_team": 0, "one_sided": 0, "same_team": 0}
+
+
+def test_the_report_names_a_ticker_whose_sides_collapsed():
+    from nflpicker.sources.kalshi import pairing_report
+
+    events = [{
+        "event_ticker": "KXNFLGAME-26SEP17DETBUF",
+        # Both contracts resolving to the same team: the failure the ticker
+        # fix was written for, and the one worth telling apart from an
+        # unquoted board.
+        "markets": [_market("KXNFLGAME-26SEP17DETBUF-BUF", yes_bid=60, yes_ask=62),
+                    _market("KXNFLGAME-26SEP17DETBUF-BUF", yes_bid=38, yes_ask=40)],
+    }]
+    assert pairing_report(events)["same_team"] == 1
+
+
+def test_markets_are_refetched_when_the_events_carry_no_book():
+    """The events endpoint nests a summary, and on this series that summary
+    came back with sixty-four contracts and no prices -- indistinguishable
+    from a venue quoting nothing. /markets owns the books."""
+    from nflpicker.sources.kalshi import KalshiSource, normalise
+
+    source = KalshiSource()
+    events = [{
+        "event_ticker": "KXNFLGAME-26SEP17DETBUF",
+        "markets": [_market("KXNFLGAME-26SEP17DETBUF-BUF"),
+                    _market("KXNFLGAME-26SEP17DETBUF-DET")],
+    }]
+    source.fetch_markets = lambda series, **kw: [
+        _market("KXNFLGAME-26SEP17DETBUF-BUF", event_ticker="KXNFLGAME-26SEP17DETBUF",
+                yes_bid=60, yes_ask=62),
+        _market("KXNFLGAME-26SEP17DETBUF-DET", event_ticker="KXNFLGAME-26SEP17DETBUF",
+                yes_bid=38, yes_ask=40),
+    ]
+
+    quotes = normalise(source.fill_prices(events))
+    assert len(quotes) == 1
+    assert {quotes[0].home, quotes[0].away} == {"BUF", "DET"}
+
+
+def test_a_board_that_already_has_prices_is_not_refetched():
+    """One unpriced contract is a market nobody has quoted yet, which is
+    ordinary. The second request is for the case where nothing has a price."""
+    from nflpicker.sources.kalshi import KalshiSource
+
+    source = KalshiSource()
+
+    def explode(*a, **kw):
+        raise AssertionError("should not have asked /markets")
+
+    source.fetch_markets = explode
+    events = [{
+        "event_ticker": "E",
+        "markets": [_market("E-BUF", yes_bid=60, yes_ask=62), _market("E-DET")],
+    }]
+    assert source.fill_prices(events) is events
