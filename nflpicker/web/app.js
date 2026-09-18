@@ -1254,6 +1254,21 @@ async function renderPicks(ticket) {
   const survivor = data.survivor || {};
 
   const board = pickem[state.pickemMode || "ev"] || pickem.ev || {};
+
+  /* Why this page is empty, when it is.
+     Picks are made for the week that is coming, so a week already played and a
+     week not yet reached both have nothing on them -- and both were showing
+     "— of 0 possible" above "No games to pick", which reads as a broken page
+     rather than as a finished one. The week is in the selector; what it means
+     should be on the page. */
+  const liveWeek = state.meta?.week;
+  const nothing = !(board.picks || []).length && !survivor.recommendation;
+  const why = !nothing || liveWeek === undefined || state.week === liveWeek ? ""
+    : state.week < liveWeek
+      ? `Week ${state.week} has been played. There is nothing left to pick —
+         how it went is on Home and Performance.`
+      : `Week ${state.week} has not come round yet. Picks are made for the
+         current week, which is week ${liveWeek}.`;
   const pickRows = (board.picks || []).map((p) => `<div class="pick-row">
     <span class="conf">${p.confidence}</span>
     <span><strong>${esc(p.pick)}</strong> <span class="muted">over ${esc(p.opponent)}</span>
@@ -1298,14 +1313,15 @@ async function renderPicks(ticket) {
           <option value="leverage">Leverage (large pools)</option>
         </select>
       </div></header>
-    <div class="tiles" style="margin-bottom:12px">
+    ${(board.picks || []).length ? `<div class="tiles" style="margin-bottom:12px">
       <div class="tile"><div class="label">Expected correct</div>
         <div class="value">${num(board.expected_correct, 1)}<span class="sub"> of ${board.n_games ?? 0}</span></div></div>
       <div class="tile"><div class="label">Expected points</div>
         <div class="value">${num(board.expected_points, 1)}</div>
         <div class="sub">of ${board.max_points ?? 0} possible</div></div>
-    </div>
-    <div class="pickem-list">${pickRows || '<div class="empty">No games to pick.</div>'}</div>
+    </div>` : ""}
+    <div class="pickem-list">${pickRows || `<div class="empty">${
+      esc(why).replace(/\s+/g, " ") || "No games to pick."}</div>`}</div>
   </div>
 
   <div class="pick-col">
@@ -1340,7 +1356,9 @@ async function renderPicks(ticket) {
               aria-pressed="${used}">${teamMark(t)}</button>`;
           }).join("")}</div>
       </div>
-    ` : `<div class="empty">${esc(survivor.note || "No survivor plan available.")}</div>`}
+    ` : `<div class="empty">${esc(survivor.note || "").replace(/\s+/g, " ")
+      || esc(why).replace(/\s+/g, " ")
+      || "No survivor plan available."}</div>`}
   </div>
 
   ${survivor.recommendation ? `
