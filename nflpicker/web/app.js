@@ -2315,6 +2315,14 @@ async function loadState() {
     .map((y) => `<option value="${y}">${y}</option>`).join("");
   seasonSel.value = String(state.season);
   $("#refreshed").textContent = `Updated ${ago(meta.last_recompute)}`;
+  // Which build is running, in the corner. It is the first thing worth knowing
+  // when something is reported broken and the first thing nobody can see.
+  const build = $("#build-line");
+  if (build) {
+    build.textContent = meta.build_label || "";
+    build.title = meta.build?.source === "release"
+      ? "The build you installed" : "Running from a source checkout";
+  }
   paintOdds();
   renderHero(meta);
 }

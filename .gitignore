@@ -25,3 +25,4 @@ data/models/*
 build/
 dist/
 *.spec.bak
+nflpicker/_build.py

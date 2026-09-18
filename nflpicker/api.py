@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, identity
+from . import buildinfo, db, identity
 from .availability import is_notable_injury
 from .backtest.report import performance_report
 from .config import get_config
@@ -97,6 +97,11 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "scheduler": scheduler.status(),
             "sources": source_health(),
             "server_time": now_iso(),
+            # Which build this is. Without it, "still broken" and "already
+            # fixed" are both unfalsifiable and a report can chase a fix round
+            # in circles -- the window looks identical either way.
+            "build": buildinfo.build_info(),
+            "build_label": buildinfo.label(),
         }
 
     @app.post("/api/refresh")

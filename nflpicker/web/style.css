@@ -1814,3 +1814,10 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 @media (max-width: 1100px) {
   .grid-3.desk { grid-template-columns: 1fr; }
 }
+
+/* Which build this is, in the corner. Small, permanent, and the first thing
+   to ask for when something is reported broken. */
+.build-line {
+  font-size: 10px; color: var(--text-muted); margin-top: 8px;
+  font-variant-numeric: tabular-nums; letter-spacing: .02em;
+}

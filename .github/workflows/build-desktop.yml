@@ -140,6 +140,18 @@ jobs:
         shell: bash
         run: node --test tests/js/*.test.mjs
 
+      # Stamp the build so the running app can say which one it is. Written
+      # here rather than committed: it is a fact about the packaging run, and
+      # a checked-in version string is a version string that goes stale.
+      - name: Stamp the build
+        shell: bash
+        run: |
+          {
+            echo "COMMIT = \"$GITHUB_SHA\""
+            echo "BUILT_AT = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+          } > nflpicker/_build.py
+          cat nflpicker/_build.py
+
       - name: Build
         run: pyinstaller nflpicker.spec --noconfirm -- --profile ${{ inputs.profile || 'full' }}
 
