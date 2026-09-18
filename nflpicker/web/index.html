@@ -84,6 +84,15 @@
   </aside>
 
   <main class="main">
+    <!-- Shown only when a newer build has actually been published. An update
+         banner that is always there is an advert; one that appears when
+         something has changed is information. -->
+    <div class="update-bar" id="update-bar" hidden>
+      <span class="ub-dot"></span>
+      <span id="update-text"></span>
+      <a id="update-link" href="#" target="_blank" rel="noopener">Get it</a>
+      <button class="ub-close" id="update-dismiss" aria-label="Dismiss">&times;</button>
+    </div>
     <header class="hero">
       <!-- Four zones, left to right: what is live, what you are looking at,
            the time, and the controls. The time is in the middle because it is

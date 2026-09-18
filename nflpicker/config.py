@@ -124,14 +124,6 @@ class Config:
     survivor_last_week: int = field(
         default_factory=lambda: _int("NFLPICKER_SURVIVOR_LAST_WEEK", 18))
 
-    # Which day the week's power ranking is cut on. Monday is 0, so 2 is
-    # Wednesday: Monday night has been played, the injury reports have started,
-    # and nothing about the coming Sunday is known yet that will not still be
-    # true on Saturday. The ranking is taken once on that day and then left
-    # alone for the week -- a ranking that keeps being revised is a live
-    # readout with a week number on it, and cannot be moved against.
-    ranking_cut_weekday: int = field(
-        default_factory=lambda: _int("NFLPICKER_RANKING_CUT_WEEKDAY", 2))
 
     # Whether the app fetches on its own, or only when asked.
     #

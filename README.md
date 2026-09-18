@@ -1,4 +1,16 @@
-# NFL Picker
+# The Edge
+
+**Installing the app?** See **[INSTALL.md](INSTALL.md)** — download, install,
+first run and the optional betting-lines key. This file is about running it
+from source.
+
+> **Not betting advice.** The Edge is a projection tool. Its own measured
+> record, shown in the app, is about 51% against the spread where 52.4% is
+> break-even — an "edge" here is inside the noise more often than not. Never
+> stake money you cannot afford to lose. US helpline: 1-800-GAMBLER.
+
+---
+
 
 A self-hosted NFL projection and pick engine. It pulls schedules, scores, odds
 from multiple sportsbooks, play-by-play efficiency data and news; projects every

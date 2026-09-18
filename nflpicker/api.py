@@ -110,6 +110,17 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         wanted = [s.strip() for s in stages.split(",")] if stages else None
         return await scheduler.refresh_now(wanted, full=full)
 
+    @app.get("/api/updates")
+    def updates_check(force: bool = Query(default=False)) -> dict:
+        """Whether a newer build has been published.
+
+        Its own endpoint rather than a field on /api/state, because that is
+        fetched every minute and this asks the internet. Cached for a day.
+        """
+        from . import updates
+
+        return updates.check(force=force)
+
     @app.post("/api/refresh/odds")
     async def refresh_odds() -> dict:
         """The betting lines, on their own, because they are the metered feed.
@@ -387,7 +398,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         if not weeks:
             return {"season": season, "week": None, "weeks": [],
                     "teams": [], "sources": {}}
-        week = week if week in weeks else weeks[-1]
+        # The current week by default, not the newest row in the table. The
+        # Teams page shows the current week's cut, and this is what fills its
+        # Move column -- so if this answered about a different week the arrows
+        # would describe a table nobody was looking at.
+        if week not in weeks:
+            current = pipeline.current_week(season)
+            week = current if current in weeks else weeks[-1]
         # Which weeks were cut while the app was running for them.
         live_cuts = {
             r["week"]: True for r in db.query(

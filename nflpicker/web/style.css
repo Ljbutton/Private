@@ -1821,3 +1821,38 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   font-size: 10px; color: var(--text-muted); margin-top: 8px;
   font-variant-numeric: tabular-nums; letter-spacing: .02em;
 }
+
+/* ------------------------------------------------------- a newer build */
+/* Only on screen when there is actually one to get. A banner that is always
+   there is an advert; one that appears when something has changed is
+   information, and gets read. */
+.update-bar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 -30px 14px; padding: 9px 30px;
+  background: color-mix(in srgb, var(--series-1) 12%, var(--surface-sunken));
+  border-bottom: 1px solid color-mix(in srgb, var(--series-1) 35%, transparent);
+  font-size: 13px; color: var(--text-primary);
+}
+.update-bar .ub-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--series-1);
+  flex: none; animation: live-pulse 2.4s var(--ease) infinite;
+}
+.update-bar a {
+  color: var(--series-1); font-weight: 650; text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+.update-bar .ub-close {
+  margin-left: auto; appearance: none; border: 0; background: transparent;
+  color: var(--text-muted); font-size: 17px; line-height: 1; cursor: pointer;
+  padding: 0 2px;
+}
+.update-bar .ub-close:hover { color: var(--text-primary); }
+
+/* The wagering notice. Muted but not hidden: it has to be readable where a
+   number could be mistaken for a recommendation, and it names the app's own
+   measured rate rather than gesturing at risk in general. */
+.wager-note {
+  border-left-color: var(--warning);
+  font-size: 11.5px; line-height: 1.55; margin-top: 12px;
+}
+.wager-note b { color: var(--text-primary); }

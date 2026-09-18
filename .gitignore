@@ -7,6 +7,10 @@ venv/
 .ruff_cache/
 .env
 data/*.db
+# The migrator's own copies. Five of these were committed and came to 59MB --
+# a database is not source, and a backup of one is the least source-like thing
+# in the tree.
+data/*.backup
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm

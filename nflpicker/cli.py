@@ -210,6 +210,17 @@ def cmd_teasers(args) -> int:
     return 0
 
 
+# Printed above anything that names a stake. The app's own measured record is
+# that it does not beat the closing line, so a table headed "Best bets" without
+# this is making a claim its own backtest contradicts.
+WAGER_NOTICE = (
+    "Not betting advice. Model output only. This model does not beat the "
+    "closing line — about 51% against the spread, where 52.4% is break-even —\n"
+    "so an edge here is inside the noise more often than not. "
+    "Never stake what you cannot afford to lose. US helpline: 1-800-GAMBLER.\n"
+)
+
+
 def cmd_picks(args) -> int:
     from .pipeline import Pipeline
 
@@ -221,6 +232,7 @@ def cmd_picks(args) -> int:
     if args.contest in ("all", "ats"):
         payload = latest_pick("ats", season, week) or {}
         print(f"\n=== Best bets — {season} week {week} ===")
+        print(WAGER_NOTICE)
         _print_table(
             payload.get("edges", [])[:12],
             ["market", "selection", "book", "price", "win_prob", "expected_value",

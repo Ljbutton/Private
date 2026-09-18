@@ -59,6 +59,23 @@ function modelLineText(card) {
 /* Edge colour is diverging: blue when it favours home, red when away, neutral
    when there is nothing there. The number is always shown, so colour is never
    the only channel. */
+/* Shown wherever a number could be read as "bet this".
+
+   Not boilerplate anybody asked for -- the app's own measured record is that
+   it does not beat the closing line, and a page that prints an edge without
+   saying so is making a claim the Performance tab contradicts. It names the
+   actual number rather than gesturing at risk in general, which is the only
+   version of this worth reading. */
+function wagerNotice() {
+  return `<p class="note wager-note">
+    <b>Not betting advice.</b> These are model outputs, not recommendations.
+    This model does not beat the closing line: its measured rate against the
+    spread is about 51%, and 52.4% is break-even at standard juice — so an
+    "edge" here is inside the noise more often than not. Never stake money you
+    cannot afford to lose. If gambling stops being fun, stop: in the US, call
+    or text 1-800-GAMBLER.</p>`;
+}
+
 function edgePill(edge) {
   if (edge === null || edge === undefined) return '<span class="muted">no line</span>';
   const v = Number(edge);
@@ -966,6 +983,7 @@ async function openGame(gameId) {
         <div class="value">${pct(g.prediction?.home_win_prob)}</div>
         <div class="sub">${esc(g.home)} · market ${pct(g.market?.home_win_prob)}</div></div>
     </div>
+    ${wagerNotice()}
 
     <div class="panel" style="background:var(--surface-sunken)">
       <header><h2>Spread movement</h2>
@@ -1322,6 +1340,7 @@ async function renderPicks(ticket) {
     </div>` : ""}
     <div class="pickem-list">${pickRows || `<div class="empty">${
       esc(why).replace(/\s+/g, " ") || "No games to pick."}</div>`}</div>
+    ${(board.picks || []).length ? wagerNotice() : ""}
   </div>
 
   <div class="pick-col">
@@ -2508,6 +2527,27 @@ async function main() {
     }
   });
   paintOdds();
+
+  /* Is there a newer build. Asked once on open and then left alone -- the
+     server caches the answer for a day, and an app that nags about updates
+     every minute teaches people to close the bar without reading it.
+     Dismissing hides that version until another one ships. */
+  api("/api/updates").then((u) => {
+    if (!u.newer || !u.latest) return;
+    let hidden = null;
+    try { hidden = localStorage.getItem("theedge-skip-update"); } catch { /* blocked */ }
+    if (hidden === u.latest) return;
+    const bar = $("#update-bar");
+    const when = u.published_at ? ` · published ${ago(u.published_at)}` : "";
+    $("#update-text").textContent =
+      `A newer version of The Edge is available (${u.latest})${when}.`;
+    $("#update-link").href = u.url;
+    $("#update-dismiss").addEventListener("click", () => {
+      bar.hidden = true;
+      try { localStorage.setItem("theedge-skip-update", u.latest); } catch { /* blocked */ }
+    });
+    bar.hidden = false;
+  }).catch(() => { /* offline is not an error worth showing */ });
 
   // The clock is the one thing on the page that must not wait for a refresh --
   // including the one in the logo, which is why it ticks whether or not there
