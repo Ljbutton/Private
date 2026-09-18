@@ -154,16 +154,21 @@ function renderHero(meta) {
     ? "Read from this computer's account. Settings → Your name changes it."
     : "";
 
-  // The cadence is read from the scheduler rather than written here, so the
-  // line cannot drift away from what the app is actually doing.
+  /* Just "Live". The refresh cadence used to be spelled out beside it, which
+     is a fact about the app's plumbing rather than about the season, and it
+     made the top-left corner read like a status page. It moves to the tooltip,
+     still read from the scheduler so it cannot drift from what is actually
+     happening. */
   const jobs = (meta.scheduler && meta.scheduler.jobs) || [];
   const fastest = jobs.reduce((min, j) => {
     const s = j.next_interval_seconds || j.interval_seconds;
     return s && (!min || s < min) ? s : min;
   }, 0);
-  $("#cadence").textContent = fastest
-    ? `Live · updates every ${fastest >= 60 ? `${Math.round(fastest / 60)} min` : `${fastest}s`}`
-    : "Live";
+  const cadence = $("#cadence");
+  cadence.textContent = "Live";
+  cadence.title = fastest
+    ? `Updates every ${fastest >= 60 ? `${Math.round(fastest / 60)} min` : `${fastest}s`}`
+    : "";
 
   // What you are looking at *is* the headline. The date used to sit here too
   // and again in the clock two inches to the right, so it said nothing twice.
@@ -1357,7 +1362,11 @@ async function renderSettings(ticket) {
   /* Each group collapses, and two sit side by side. Open, stacked and full
      width, this was a very long page to scroll past to reach the one box you
      came for -- and the save button was stranded in the middle of it, which is
-     the one place a save button should never be. It is at both ends now. */
+     the one place a save button should never be.
+     One bar, at the top. There was a second at the foot of the page for when
+     the groups were open and long; with everything closed by default the page
+     is shorter than the screen, and a duplicate of the only button on it was
+     costing the height that made that true. */
   /* The theme, where someone looking for a setting would look for it. The
      header toggle stays: one is for flipping it, the other is for finding it.
      It is not a stored setting like the rest -- the browser remembers the
@@ -1403,43 +1412,35 @@ async function renderSettings(ticket) {
     </div>
   </details>`).join("")}
   </div>
-  ${saveBar("bottom")}
   <p class="note">A secret is never sent back to this page, so an empty box
     means "leave it alone", not "clear it"; to remove a key, type a space and
     save.</p>
 
-  <div class="panel">
+  <div class="grid-2 tool-row">
+  <div class="panel tool-panel">
     <header><h2>Prediction markets</h2>
-      <span class="hint">an optional feed — the board reads "–" without it</span></header>
-    <div class="controls">
-      <button class="btn" id="test-pmkt">Test connection</button>
-      <span id="pmkt-result" class="muted"></span>
-    </div>
-    <div id="pmkt-venues" class="backup-list"></div>
-    <p class="note">Asks Kalshi and Polymarket directly and reports each one. The
-      status dot in the sidebar can only say a feed failed; "no NFL games right
-      now" and "this machine cannot reach the host" look identical from the
-      outside and need opposite responses.</p>
+      <span class="hint" title="Asks Kalshi and Polymarket directly and reports each one. The status dot in the sidebar can only say a feed failed; &quot;no NFL games right now&quot; and &quot;this machine cannot reach the host&quot; look identical from the outside and need opposite responses.">an optional feed — the board reads "–" without it</span>
+      <div class="controls" style="margin-left:auto">
+        <button class="btn" id="test-pmkt">Test connection</button>
+      </div></header>
+    <div class="tool-out"><span id="pmkt-result" class="muted"></span>
+      <div id="pmkt-venues" class="backup-list"></div></div>
   </div>
 
-  <div class="panel">
+  <div class="panel tool-panel">
     <header><h2>Backup</h2>
-      <span class="hint">your picks, results and settings exist in one file —
-        this makes a copy of it</span></header>
-    <div class="controls">
-      <button class="btn" id="make-backup">Back up now</button>
-      <span id="backup-result" class="muted"></span>
-    </div>
-    <div id="backup-list" class="backup-list"></div>
-    <p class="note">The app already writes a copy before it changes the database's
-      shape, but that is one file per version and a second upgrade from the same
-      version overwrites it — a safety net for the app's own changes, not a backup
-      you should rely on. This one you asked for. The newest
-      ${backups.keep ?? 10} are kept; older ones are removed so a growing
-      database cannot quietly fill the disk. Copies live in
-      <code>${esc(backups.directory || "")}</code> — that folder is inside the data
-      directory, so copy it somewhere else if you want it to survive losing this
-      machine.</p>
+      <span class="hint">your picks, results and settings are one file —
+        this copies it</span>
+      <button class="why" type="button" aria-label="About backups"
+        title="The app already writes a copy before it changes the database's shape, but that is one file per version and a second upgrade from the same version overwrites it — a safety net for the app's own changes, not a backup you should rely on. This one you asked for. The newest ${
+          backups.keep ?? 10} are kept; older ones are removed so a growing database cannot quietly fill the disk. Copies live in ${
+          esc(backups.directory || "")} — that folder is inside the data directory, so copy it somewhere else if you want it to survive losing this machine.">?</button>
+      <div class="controls" style="margin-left:auto">
+        <button class="btn" id="make-backup">Back up now</button>
+      </div></header>
+    <div class="tool-out"><span id="backup-result" class="muted"></span>
+      <div id="backup-list" class="backup-list"></div></div>
+  </div>
   </div>`;
 
   /* A refresh re-renders this whole page, which used to close every section

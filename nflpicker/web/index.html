@@ -25,7 +25,7 @@
         </svg>
         <span class="logo-text">The<span>Edge</span></span>
       </div>
-      <div class="logo-sub">Model &amp; market desk</div>
+      <div class="logo-sub">Model &amp; prediction tracker</div>
     </div>
 
     <nav class="side-nav" role="tablist">
@@ -66,43 +66,46 @@
 
   <main class="main">
     <header class="hero">
+      <!-- Four zones, left to right: what is live, what you are looking at,
+           the time, and the controls. The time is in the middle because it is
+           the one thing on this bar that is not about the app. -->
       <div class="hero-left">
         <div class="eyebrow"><span class="pulse"></span><span id="cadence">Live</span></div>
-        <h1 id="whenline">Week 1</h1>
+        <div class="when-row">
+          <h1 id="whenline">Week 1</h1>
+          <!-- The dial rides beside the season, which is the other thing on
+               this bar that is a moment in time. Same mark as the logo,
+               wearing a rim, with its two strokes as hands -- app.js turns
+               them on the minute. No baseline under it: the logo's flat line
+               is the market it climbs away from, and on a clock face it read
+               as a crack across the glass. -->
+          <svg class="dialmark" viewBox="0 0 28 28" aria-hidden="true">
+            <circle class="bm-rim" cx="14" cy="14" r="11.5" />
+            <line class="bm-hand bm-hour" id="bm-hour"
+                  x1="14" y1="14" x2="14" y2="7.1" transform="rotate(108.5 14 14)" />
+            <line class="bm-hand bm-minute" id="bm-minute"
+                  x1="14" y1="14" x2="14" y2="5.2" transform="rotate(222 14 14)" />
+            <circle class="bm-dot" cx="14" cy="14" r="1.5" />
+          </svg>
+        </div>
       </div>
-      <!-- The controls sit on the title's line rather than under the clock,
-           which is a band of vertical space back on every page. -->
-      <div class="hero-mid">
-        <div class="hero-controls">
-          <select id="season" aria-label="Season"></select>
-          <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
+
+      <div class="hero-center">
+        <div class="hero-greet" id="greeting"></div>
+        <div class="clock" id="clock"></div>
+        <div class="clock-date" id="clockdate"></div>
+      </div>
+
+      <div class="hero-right">
+        <select id="season" aria-label="Season"></select>
+        <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
+        <div class="hero-buttons">
           <button class="icon-btn" id="fullscreen" title="Full screen (F11)" aria-label="Toggle full screen">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg>
           </button>
           <button class="icon-btn" id="theme" title="Toggle light and dark" aria-label="Toggle theme">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18zm0 2.2V18.8a6.8 6.8 0 0 1 0-13.6z"/></svg>
           </button>
-        </div>
-      </div>
-      <div class="hero-right">
-        <div class="hero-greet" id="greeting"></div>
-        <div class="hero-time">
-          <!-- The clock, which is where the dial belongs: beside the time it
-               is telling. Same mark, wearing a dial, with the two strokes as
-               its hands -- app.js turns them on the minute. -->
-          <svg class="dialmark" viewBox="0 0 28 28" aria-hidden="true">
-            <circle class="bm-rim" cx="14" cy="12" r="10.5" />
-            <path class="bm-flat" d="M2.4 24.8H25.6" />
-            <line class="bm-hand bm-hour" id="bm-hour"
-                  x1="14" y1="12" x2="14" y2="5.1" transform="rotate(108.5 14 12)" />
-            <line class="bm-hand bm-minute" id="bm-minute"
-                  x1="14" y1="12" x2="14" y2="3.2" transform="rotate(222 14 12)" />
-            <circle class="bm-dot" cx="14" cy="12" r="1.5" />
-          </svg>
-          <div>
-            <div class="clock" id="clock"></div>
-            <div class="clock-date" id="clockdate"></div>
-          </div>
         </div>
       </div>
     </header>
