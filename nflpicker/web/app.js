@@ -1935,12 +1935,30 @@ async function render() {
     await view(renderTicket);
     if (ticket !== renderTicket) return;
     foldPanels($("#view"));
+    measureFit();
     markScrollFades($("#view"));
   } catch (err) {
     if (ticket !== renderTicket) return;
     $("#view").innerHTML = `<div class="panel"><div class="empty">
       Could not load this view: ${esc(err.message)}</div></div>`;
   }
+}
+
+/* How much of the window the chrome above and below the view is using.
+
+   A page that must fit the screen has to know what is left of it, and that
+   used to be a constant: 162px, standing for the header plus the page's own
+   padding. The header changed height and the constant did not, so Picks
+   overflowed by exactly the difference and the page it was built to fit
+   scrolled again. Measuring it means the next header change costs nothing. */
+function measureFit() {
+  const view = $("#view");
+  if (!view) return;
+  const main = view.parentElement;
+  const below = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
+  const top = view.getBoundingClientRect().top + window.scrollY;
+  document.documentElement.style.setProperty(
+    "--fit-offset", `${Math.round(top + below)}px`);
 }
 
 /* Every box on the page that fades its bottom edge while more is below.

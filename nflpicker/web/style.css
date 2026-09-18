@@ -958,7 +958,13 @@ td.team { font-weight: 600; }
    usable on a short window; below that the page scrolls again, which is the
    honest failure mode. */
 #view.fit-screen {
-  height: calc(100vh - 162px); min-height: 460px;
+  /* The offset is measured, not guessed. It used to be a hard-coded 162px
+     standing for "the header and the page padding", and the first time the
+     header changed height the number was wrong and Picks grew a scrollbar
+     again -- the one thing this whole section exists to prevent. app.js
+     writes what the gap actually is after every render; the fallback is only
+     for the frame before it has. */
+  height: calc(100vh - var(--fit-offset, 184px)); min-height: 460px;
   display: flex; flex-direction: column;
 }
 #view.fit-screen > .grid-2 { flex: 1; min-height: 0; margin-bottom: 0; }
