@@ -149,6 +149,11 @@ jobs:
           {
             echo "COMMIT = \"$GITHUB_SHA\""
             echo "BUILT_AT = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+            # Subscription check and update notice. Set both as repository
+            # variables (Settings -> Secrets and variables -> Actions ->
+            # Variables). Left unset, the build runs unlicensed, as before.
+            echo "LICENSE_SERVER = \"${{ vars.LICENSE_SERVER_URL }}\""
+            echo "STORE_URL = \"${{ vars.WHOP_STORE_URL }}\""
           } > nflpicker/_build.py
           cat nflpicker/_build.py
 
@@ -480,6 +485,13 @@ jobs:
           path: downloaded
           merge-multiple: true
 
+      - name: Write version.json for the update notice
+        run: |
+          # Read by the license server's /v1/latest. Only the Windows build is
+          # made on every push, so this names the commit this run built.
+          printf '{"commit": "%s", "built_at": "%s", "notes": ""}\n' \
+            "${{ github.sha }}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > downloaded/version.json
+          cat downloaded/version.json
       - name: Show what will be published
         id: assets
         run: |

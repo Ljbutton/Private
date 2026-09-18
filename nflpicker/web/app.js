@@ -13,8 +13,122 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 async function api(path, options) {
   const res = await fetch(path, options);
+  // The subscription lapsed while the app was open: stop and ask for a key
+  // rather than letting every panel fail one by one.
+  if (res.status === 402) {
+    const body = await res.json().catch(() => ({}));
+    showLicenseGate(body.license || {}).then(() => location.reload());
+    throw new Error("license required");
+  }
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
+}
+
+/* ------------------------------------------------------------- licensing */
+
+let gatePromise = null;
+
+/* Full-screen activation form. Resolves once a key has been accepted. */
+function showLicenseGate(lic) {
+  if (gatePromise) return gatePromise;
+  const gate = $("#license-gate");
+  const form = $("#license-form");
+  const input = $("#license-key");
+  const msg = $("#license-msg");
+  const submit = $("#license-submit");
+  const store = $("#license-store");
+  if (lic.store_url) { store.href = lic.store_url; store.hidden = false; }
+  msg.className = "license-msg";
+  msg.textContent = lic.has_key ? (lic.message || "") : "";
+  gate.hidden = false;
+  setTimeout(() => input.focus(), 50);
+  gatePromise = new Promise((resolve) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      submit.disabled = true;
+      submit.textContent = "Checking…";
+      msg.className = "license-msg";
+      msg.textContent = "";
+      try {
+        const res = await fetch("/api/license/activate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: input.value.trim() }),
+        });
+        const out = await res.json();
+        if (out.valid) {
+          msg.className = "license-msg ok";
+          msg.textContent = "Activated. Loading The Edge…";
+          gate.hidden = true;
+          gatePromise = null;
+          resolve(out);
+          return;
+        }
+        msg.textContent = out.message || "That key didn't work.";
+      } catch {
+        msg.textContent = "Couldn't reach The Edge. Try again.";
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "Activate";
+      }
+    });
+  });
+  return gatePromise;
+}
+
+async function ensureLicensed() {
+  const lic = await fetch("/api/license").then((r) => r.json())
+    .catch(() => ({ required: false, valid: true }));
+  if (lic.required && !lic.valid) await showLicenseGate(lic);
+  paintLicense();
+}
+
+/* The sidebar line and, when it matters, a banner: offline for days, or a
+   subscription that is winding down. */
+async function paintLicense() {
+  const lic = await fetch("/api/license").then((r) => r.json()).catch(() => null);
+  const line = $("#license-line");
+  const banner = $("#license-banner");
+  if (!lic || !lic.required) { line.hidden = true; banner.hidden = true; return; }
+  line.hidden = false;
+  line.className = "license-line";
+  line.textContent = `Subscription ${lic.valid ? "active" : "inactive"} · key ${lic.key_hint || ""}`;
+  let warn = "";
+  if (lic.offline && lic.grace_days_left !== null) {
+    line.className = "license-line warn";
+    const days = Math.max(0, Math.floor(lic.grace_days_left));
+    warn = `Can't reach the license server. The Edge keeps working offline for ${days} more day${days === 1 ? "" : "s"}.`;
+  } else if (lic.status === "canceling") {
+    warn = lic.message || "Your subscription ends at the close of this billing period.";
+  }
+  if (!warn) { banner.hidden = true; return; }
+  banner.innerHTML = `<span class="grow">${esc(warn)}</span>` +
+    (lic.store_url ? `<a class="pill" href="${esc(lic.store_url)}" target="_blank" rel="noopener">Manage subscription</a>` : "");
+  banner.hidden = false;
+}
+
+/* --------------------------------------------------------- update notice */
+
+function dismissedUpdate() {
+  try { return localStorage.getItem("edge.update.dismissed") || ""; } catch { return ""; }
+}
+
+async function checkForUpdate() {
+  const banner = $("#update-banner");
+  const up = await fetch("/api/updates").then((r) => r.json()).catch(() => null);
+  if (!up || !up.newer || !up.latest) { banner.hidden = true; return; }
+  if (dismissedUpdate() === up.latest) { banner.hidden = true; return; }
+  const day = (up.published_at || "").slice(0, 10);
+  banner.innerHTML =
+    `<span class="grow"><b>A new version of The Edge is available</b>` +
+    `${day ? ` (${esc(day)})` : ""}. ${up.notes ? esc(up.notes) + " " : ""}` +
+    `Install it over this one. Your picks and settings are kept.</span>` +
+    (up.url ? `<a class="pill" href="${esc(up.url)}" target="_blank" rel="noopener">Download update</a>` : "") +
+    `<button class="link" id="update-later" type="button">Later</button>`;
+  banner.hidden = false;
+  $("#update-later").addEventListener("click", () => {
+    try { localStorage.setItem("edge.update.dismissed", up.latest); } catch { /* fine */ }
+    banner.hidden = true;
+  });
 }
 
 
@@ -2787,10 +2901,8 @@ async function main() {
   });
   paintOdds();
 
-  /* The update banner is not wired up. `/api/updates` still answers and the
-     build stamp is still on the Settings page, so the app can say which
-     version it is when asked -- it just does not say it unprompted. Coming
-     back to this properly is a job of its own. */
+  /* The update banner: one line above the page when a newer build has been
+     published, with a "Later" that remembers which build it was about. */
 
   // The clock is the one thing on the page that must not wait for a refresh --
   // including the one in the logo, which is why it ticks whether or not there
@@ -2810,8 +2922,12 @@ async function main() {
     }
   }, 30000);
 
+  await ensureLicensed();
   await loadState();
   setTab(state.tab, { fromHash: true });
+  checkForUpdate();
+  // Every few hours for a window left open all week; the server caches it.
+  setInterval(() => { checkForUpdate(); paintLicense(); }, 3 * 3600 * 1000);
 
   /* Everything that is due, once a minute.
      This is a real fetch rather than a poll for someone else's work: the

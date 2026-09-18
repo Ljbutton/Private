@@ -69,6 +69,7 @@
         <span id="refreshed"></span>
       </div>
       <div class="build-line" id="build-line" title="Which build this is"></div>
+      <div class="license-line" id="license-line" hidden></div>
     </div>
   </aside>
 
@@ -154,9 +155,37 @@
       </div>
     </header>
 
+    <div class="update-banner" id="update-banner" role="status" hidden></div>
+    <div class="update-banner warn" id="license-banner" role="status" hidden></div>
+
     <div id="view"><div class="panel"><div class="empty">Loading…</div></div></div>
   </main>
 
+</div>
+
+<!-- Shown instead of the app until this copy has a valid subscription key.
+     Only a packaged, licensed build ever shows it. -->
+<div class="license-gate" id="license-gate" hidden>
+  <form class="license-card" id="license-form" autocomplete="off">
+    <div class="logo">
+      <svg class="brandmark" viewBox="0 0 28 28" aria-hidden="true">
+        <path class="bm-flat" d="M2 20h24" />
+        <path class="bm-rise" d="M2 20 L13 6 L26 12.5" />
+        <circle class="bm-dot" cx="13" cy="6" r="2.6" />
+      </svg>
+      <span class="logo-text">The<span>Edge</span></span>
+    </div>
+    <h2>Activate your subscription</h2>
+    <p class="muted">Paste the license key from your Whop purchase. You can find it on
+      whop.com under <b>Your orders</b>.</p>
+    <label for="license-key" class="side-label">License key</label>
+    <input id="license-key" name="key" type="text" spellcheck="false"
+      placeholder="XXXXXX-XXXXXX-XXXXXX" required />
+    <div class="license-msg" id="license-msg" role="alert"></div>
+    <button class="btn primary" id="license-submit" type="submit">Activate</button>
+    <a class="license-store" id="license-store" target="_blank" rel="noopener" hidden>
+      Don't have a key? Get a subscription</a>
+  </form>
 </div>
 
 <dialog class="detail" id="detail">

@@ -7,11 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import buildinfo, db, identity
+from . import buildinfo, db, identity, licensing
 from .availability import is_notable_injury
 from .config import get_config
 from .market import movement
@@ -54,6 +54,38 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
     app = FastAPI(title="The Edge", version="0.1.0", lifespan=lifespan)
     app.state.pipeline = pipeline
     app.state.scheduler = scheduler
+
+    # ---------------------------------------------------------- license
+    # Everything under /api needs a licensed copy, except the calls that get
+    # it licensed and the update check. The page itself and its scripts are
+    # always served, so the activation screen can load.
+    OPEN_PATHS = ("/api/license", "/api/update")
+
+    @app.middleware("http")
+    async def require_license(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/") and not path.startswith(OPEN_PATHS):
+            if not licensing.allowed():
+                return JSONResponse(status_code=402, content={
+                    "error": "license_required", "license": licensing.status()})
+            licensing.recheck_in_background()
+        return await call_next(request)
+
+    @app.get("/api/license")
+    def license_status() -> dict:
+        return licensing.status()
+
+    @app.post("/api/license/activate")
+    def license_activate(payload: dict = Body(default={})) -> dict:  # noqa: B008
+        return licensing.activate(str(payload.get("key") or ""))
+
+    @app.post("/api/license/recheck")
+    def license_recheck() -> dict:
+        return licensing.recheck(force=True)
+
+    @app.post("/api/license/deactivate")
+    def license_deactivate() -> dict:
+        return licensing.deactivate()
 
     # ------------------------------------------------------------- meta
     @app.get("/api/state")

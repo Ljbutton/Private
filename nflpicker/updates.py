@@ -13,9 +13,11 @@ internet is not an error, it is a Tuesday.
 
 from __future__ import annotations
 
+import sys
 import time
+from urllib.parse import urlencode
 
-from . import buildinfo
+from . import buildinfo, licensing
 
 RELEASES = "https://api.github.com/repos/Ljbutton/Private/releases/tags/latest"
 DOWNLOAD = "https://github.com/Ljbutton/Private/releases/tag/latest"
@@ -30,6 +32,36 @@ _cache: dict = {"at": 0.0, "result": None}
 def _published_commit(payload: dict) -> str:
     """Which commit the newest release was built from."""
     return str(payload.get("target_commitish") or "")[:7]
+
+
+def asset_name() -> str:
+    """The installer a customer on this computer should download."""
+    if sys.platform == "win32":
+        return "TheEdge-windows-setup.exe"
+    if sys.platform == "darwin":
+        return "TheEdge-macos-arm.tar.gz"
+    return ""
+
+
+def _from_license_server(server: str, timeout: float) -> tuple[dict, str, str | None]:
+    """Newest build as the license server reports it.
+
+    Used whenever this copy is licensed. It keeps working after the repository
+    goes private -- the server holds the GitHub token, the app never does --
+    and its download link is only honoured for a subscription that is live.
+    """
+    with licensing._http(timeout) as c:
+        r = c.get(f"{server}/v1/latest")
+    r.raise_for_status()
+    data = r.json()
+    url = None
+    key = licensing.saved_key()
+    if data.get("download_url") and key and asset_name():
+        url = f"{data['download_url']}?{urlencode({'key': key, 'asset': asset_name()})}"
+    url = url or data.get("download_page") or licensing.store_url() or DOWNLOAD
+    payload = {"target_commitish": data.get("commit") or "",
+               "published_at": data.get("built_at")}
+    return payload, url, data.get("notes") or ""
 
 
 def check(*, force: bool = False, timeout: float = 6.0) -> dict:
@@ -55,12 +87,16 @@ def check(*, force: bool = False, timeout: float = 6.0) -> dict:
         return out
 
     try:
-        import httpx
+        server = licensing.server_url()
+        if server:
+            payload, out["url"], out["notes"] = _from_license_server(server, timeout)
+        else:
+            import httpx
 
-        response = httpx.get(RELEASES, timeout=timeout,
-                             headers={"Accept": "application/vnd.github+json"})
-        response.raise_for_status()
-        payload = response.json()
+            response = httpx.get(RELEASES, timeout=timeout,
+                                 headers={"Accept": "application/vnd.github+json"})
+            response.raise_for_status()
+            payload = response.json()
     except Exception as exc:                                  # noqa: BLE001
         out["reason"] = f"could not reach the release feed: {type(exc).__name__}"
         # Not cached for a day: a laptop that was offline when it asked should
