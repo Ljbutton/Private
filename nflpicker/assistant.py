@@ -51,12 +51,25 @@ conclusion and the numbers behind it, not the route you took.
 - Asked for a list, give the list. A short line each, with the number that \
 justifies it. No summary paragraph afterwards.
 - Be brief. Numbers over adjectives. Under 150 words unless asked for more.
+/no_think
 """
 
-# Ollama and llama.cpp both read this to turn a reasoning model's thinking off
-# at the template level. It is the single biggest thing that makes an answer
-# arrive sooner: a 4B reasoning model will happily spend a thousand tokens
-# deciding how to approach a question that needs thirty to answer.
+# That last line is not an instruction the model is asked to follow. Asking a
+# reasoning model not to reason does not work -- the prompt above already asks
+# twice, and the reported symptom was it writing "Thinking Process:" and a
+# numbered plan anyway. `/no_think` is a switch the Qwen chat template reads:
+# with it present the template closes the thinking block before generation
+# starts, so there is no ramble to leak and none of the tokens it would have
+# cost.
+#
+# The token part is the real fix. The answer was stopping mid-sentence because
+# the whole budget had gone on working-out and the answer itself never got
+# written, and no amount of stripping afterwards recovers an answer that was
+# never generated.
+
+# Sent as parameters as well, for servers that read the switch there instead.
+# Ollama and llama.cpp both accept these; a server that knows neither ignores
+# both, which is why they can be sent unconditionally.
 NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}, "think": False}
 
 # Enough for a ranked list with a line of reasoning each, and not enough for an
@@ -178,30 +191,34 @@ def context(season: int, week: int) -> dict:
             "line_moved_toward_us": _round((card.get("movement") or {}).get("toward_us")),
         })
 
-    # Every team, in our order, with the numbers the Teams page ranks on.
+    # Every team, in our order, as one line each.
+    #
+    # This was thirty-two twelve-key objects and seven and a half thousand
+    # characters -- over half the whole prompt, and on a four-billion-parameter
+    # model running on somebody's laptop the prompt is most of the wait. The
+    # same numbers as a labelled line read just as well and cost a third as
+    # much, which is the difference between an answer in ten seconds and one in
+    # forty. The key order is fixed and documented in `teams_columns` so the
+    # model never has to infer what a number is.
     ratings = latest_team_rows(season, "team_ratings")
     projections = latest_team_rows(season, "season_projections")
     teams = []
     for rank, abbr in enumerate(team_rank_order(season, ratings, projections), start=1):
         rating = ratings.get(abbr) or {}
         projection = projections.get(abbr) or {}
-        teams.append({
-            "rank": rank,
-            "team": abbr,
-            "record": f"{int(projection.get('wins_actual') or 0)}-"
-                      f"{int(projection.get('losses_actual') or 0)}",
-            "power": _round(rating.get("power"), 2),
-            "pythagorean": _round(rating.get("pythagorean"), 3),
-            "off_rating": _round(rating.get("off_rating"), 1),
-            "def_rating": _round(rating.get("def_rating"), 1),
-            "exp_wins": _round(projection.get("exp_wins"), 1),
-            "wins_80pct": (None if projection.get("wins_p10") is None
-                           else f"{_round(projection.get('wins_p10'), 1)}"
-                                f"-{_round(projection.get('wins_p90'), 1)}"),
-            "playoff_prob": _round(projection.get("playoff_prob"), 3),
-            "division_prob": _round(projection.get("division_prob"), 3),
-            "title_prob": _round(projection.get("sb_prob"), 3),
-        })
+        span = ("?" if projection.get("wins_p10") is None
+                else f"{int(projection['wins_p10'])}-{int(projection['wins_p90'])}")
+        teams.append(
+            f"{rank} {abbr} "
+            f"{int(projection.get('wins_actual') or 0)}-"
+            f"{int(projection.get('losses_actual') or 0)} "
+            f"pow {_round(rating.get('power'), 1)} "
+            f"pyth {_round(rating.get('pythagorean'), 2)} "
+            f"proj {_round(projection.get('exp_wins'), 1)} ({span}) "
+            f"playoff {_round(projection.get('playoff_prob'), 2)} "
+            f"div {_round(projection.get('division_prob'), 2)} "
+            f"title {_round(projection.get('sb_prob'), 3)}"
+        )
 
     # The season's results, as short strings. A game is "W3 KC 27-20 DEN",
     # which a model reads as well as a nested object and at a fifth the tokens.
@@ -237,6 +254,8 @@ def context(season: int, week: int) -> dict:
             "ranking_inputs": "projected wins, Pythagorean, rating, title odds "
                               "and the floor of the 80% range — not record",
         },
+        "teams_columns": "rank abbr record pow pyth proj (80% range) "
+                         "playoff div title",
         "teams": teams,
         "this_week": games,
         "results_so_far": results,
@@ -312,6 +331,11 @@ def _strip_untagged_thinking(text: str) -> str:
     return blocks[-1] if len(blocks) > 1 else text
 
 
+def _is_thinking(text: str) -> bool:
+    """Whether this text is working-out rather than an answer."""
+    return bool(_PREAMBLE.match(text)) and not _ANSWER_MARK.search(text)
+
+
 def _reply_from(choice: dict) -> str:
     """The answer, with any thinking removed -- or the thinking if that is all
     there is, because a visible ramble beats a blank bubble."""
@@ -322,6 +346,13 @@ def _reply_from(choice: dict) -> str:
     # it still wearing a `<think>` tag is just the bug with extra steps.
     answer = _STRAY_TAG.sub("", _THINK.sub("", content)).strip()
     if answer:
+        # A model that ran out of room mid-thought has no answer in it, and the
+        # last paragraph of an unfinished plan is not one -- it is a fragment
+        # of somebody's notes, which is exactly what was on screen when this
+        # was reported. Say what happened instead.
+        if (choice.get("finish_reason") or "") == "length" and _is_thinking(answer):
+            return ("The model spent its whole answer thinking and ran out of room "
+                    "before writing one. Ask again, or ask something narrower.")
         return _strip_untagged_thinking(answer)
     for key in _REASONING_KEYS:
         value = str(message.get(key) or "").strip()

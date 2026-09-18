@@ -307,3 +307,45 @@ def test_thinking_is_switched_off_and_the_answer_is_capped():
     assert assistant.NO_THINKING["chat_template_kwargs"]["enable_thinking"] is False
     assert assistant.NO_THINKING["think"] is False
     assert 200 <= assistant.MAX_TOKENS <= 1200
+
+
+def test_a_truncated_ramble_is_reported_rather_than_shown():
+    """The model spending its whole budget thinking has no answer in it.
+
+    What was on screen when this was reported: "Thinking Process:", a numbered
+    plan, and then a sentence stopping mid-word -- the 700-token answer had
+    gone entirely on working-out. The last paragraph of an unfinished plan is
+    not a conclusion, it is a fragment of somebody's notes.
+    """
+    from nflpicker import assistant
+
+    reply = assistant._reply_from({
+        "finish_reason": "length",
+        "message": {"content": "Thinking Process:\n\n1. Analyse the request\n"
+                               "2. Look at the JSON\n\nSeveral games have"},
+    })
+    assert "ran out of room" in reply
+    assert "Thinking Process" not in reply
+
+
+def test_a_finished_answer_is_left_alone():
+    """The guard above must not fire on a model that simply answered."""
+    from nflpicker import assistant
+
+    text = "TEN over IND at 85.7% is the strongest edge on the board."
+    assert assistant._reply_from(
+        {"finish_reason": "stop", "message": {"content": text}}) == text
+
+
+def test_thinking_is_switched_off_in_the_prompt_not_asked_for():
+    """`/no_think` is a Qwen chat-template switch, not an instruction.
+
+    Asking a reasoning model not to reason does not work -- the prompt asks
+    twice in words and the model wrote "Thinking Process:" anyway. The switch
+    closes the thinking block before generation starts, which is what stops
+    the tokens being spent rather than merely hiding them afterwards.
+    """
+    from nflpicker import assistant
+
+    assert assistant.SYSTEM_PROMPT.rstrip().endswith("/no_think")
+    assert assistant.NO_THINKING["think"] is False

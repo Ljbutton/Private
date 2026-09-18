@@ -101,17 +101,40 @@ def test_no_week_is_invented_past_the_schedule(four_weeks):
 
 
 def test_movement_is_measured_against_the_previous_week_we_hold(four_weeks, client):
-    """Against the previous *stored* week, not literally week-1.
+    """Against the previous week we *cut*, not literally the week before.
 
     A gap in the history -- the app switched off for a fortnight -- would
     otherwise be reported as one week of enormous movement that never happened.
     """
     four_weeks.rebuild_power_history(2025)
     db.execute("DELETE FROM power_snapshots WHERE season = 2025 AND week = 3")
+    # These weeks were cut while the app was running for them; see the test
+    # below for why a reconstruction is not something a team can move against.
+    db.execute("UPDATE power_snapshots SET source = 'live' WHERE season = 2025")
 
     body = client.get("/api/power/history?season=2025&week=4").json()
     assert body["compared_to"] == 2, "week 3 is missing, so 4 is compared to 2"
     assert body["weeks"] == [1, 2, 4]
+
+
+def test_nothing_moves_against_a_week_that_was_reconstructed(four_weeks, client):
+    """A backfilled week is not a previous position.
+
+    An app first opened in week two showed every team up or down against a
+    week one that had been computed after the fact, from games that had
+    already been played, and had never been on screen for anyone to have
+    moved away from. Those arrows described the backfill, not the season. The
+    reconstruction stays -- it is what draws the trend line -- it just is not
+    something a rank can be measured against.
+    """
+    four_weeks.rebuild_power_history(2025)
+    db.execute(
+        "UPDATE power_snapshots SET source = 'live' WHERE season = 2025 AND week = 4")
+
+    body = client.get("/api/power/history?season=2025&week=4").json()
+    assert body["compared_to"] is None
+    assert {row["move"] for row in body["teams"]} == {None}
+    assert body["weeks"] == [1, 2, 3, 4], "the rebuilt weeks are still held"
 
 
 def test_the_history_says_which_weeks_were_reconstructed(four_weeks, client):
@@ -183,3 +206,62 @@ def test_recompute_fills_the_weeks_before_it_on_its_own(pipeline, temp_env):
     weeks = sorted(r["week"] for r in db.query(
         "SELECT DISTINCT week FROM power_snapshots WHERE season = 2025"))
     assert weeks[:5] == [1, 2, 3, 4, 5], f"got {weeks}"
+
+
+def test_a_live_cut_is_never_rewritten(four_weeks):
+    """Once taken, a week's ranking says the same thing in December.
+
+    It used to be rewritten on every recompute while its week was current,
+    which made "the power rankings" something that quietly reordered itself
+    several times a day -- and made the Move column a comparison between two
+    numbers that had both moved since anyone last looked.
+    """
+    db.execute(
+        "INSERT INTO power_snapshots"
+        "(season, week, team, rank, power, elo, pythagorean,"
+        " wins, losses, ties, source, captured_at) "
+        "VALUES(2025, 2, 'KC', 99, 0, 1500, 0.5, 0, 0, 0, 'live', 'then')")
+
+    from nflpicker.ratings.elo import run_elo
+
+    power = four_weeks.power_from([], run_elo([]), 2025, week=2)
+    written = four_weeks.store_power_snapshot(2025, 2, power, [])
+
+    assert written == 0, "the cut stands"
+    row = db.query("SELECT rank, captured_at FROM power_snapshots "
+                   "WHERE season = 2025 AND week = 2 AND team = 'KC'")[0]
+    assert row["rank"] == 99 and row["captured_at"] == "then"
+
+
+def test_the_cut_waits_for_its_day(four_weeks):
+    """Wednesday, and not before.
+
+    Monday and Tuesday are deliberately quiet even though the week number has
+    already turned over: last week's cut is the most recent claim anyone has
+    made, and inventing a new one from a weekend still being counted is a
+    worse answer than waiting a day.
+    """
+    from datetime import datetime
+
+    db.execute(
+        "INSERT INTO power_snapshots"
+        "(season, week, team, rank, power, elo, pythagorean,"
+        " wins, losses, ties, source, captured_at) "
+        "VALUES(2025, 1, 'KC', 1, 0, 1500, 0.5, 0, 0, 0, 'live', 'then')")
+
+    monday = datetime(2025, 9, 15)
+    wednesday = datetime(2025, 9, 17)
+    assert monday.weekday() == 0 and wednesday.weekday() == 2
+    assert not four_weeks.ranking_cut_due(2025, 2, now=monday)
+    assert four_weeks.ranking_cut_due(2025, 2, now=wednesday)
+
+
+def test_the_first_cut_of_a_season_does_not_wait(four_weeks):
+    """An app first opened on a Sunday should not sit with an empty history
+    until the following Wednesday. The weekly rhythm starts from the first
+    cut, whenever that happens to be."""
+    from datetime import datetime
+
+    monday = datetime(2025, 9, 15)
+    assert monday.weekday() == 0, "a day the weekly rule would say no to"
+    assert four_weeks.ranking_cut_due(2025, 2, now=monday)
