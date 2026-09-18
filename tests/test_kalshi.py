@@ -253,3 +253,29 @@ def test_a_board_that_already_has_prices_is_not_refetched():
         "markets": [_market("E-BUF", yes_bid=60, yes_ask=62), _market("E-DET")],
     }]
     assert source.fill_prices(events) is events
+
+
+def test_the_diagnostic_reads_the_events_it_reports_on():
+    """The counts and the sentence have to come from the same data.
+
+    They did not: the attempts were stripped of their rows for the response,
+    and the message was then built from the stripped list. It found no markets
+    because they had just been removed, and reported "31 events carrying no
+    contracts at all" directly above a row reading "31 events · 62 markets".
+    """
+    from nflpicker import settings as settings_module
+    from nflpicker.sources.kalshi import KalshiSource
+
+    events = [{
+        "event_ticker": "KXNFLGAME-26SEP20CARATL",
+        "markets": [_market("KXNFLGAME-26SEP20CARATL-ATL", yes_bid=0, yes_ask=100),
+                    _market("KXNFLGAME-26SEP20CARATL-CAR", yes_bid=0, yes_ask=100)],
+    }]
+    attempt = {"series": "KXNFLGAME[open]", "error": None, "events": 1,
+               "markets": 2, "sample": "KXNFLGAME-26SEP20CARATL-ATL",
+               "rows": events}
+
+    message = settings_module._pairing_message(1, [attempt])
+    assert "no contracts at all" not in message, "the rows were right there"
+    assert "not one of them has a price" in message
+    assert KalshiSource  # imported for the module the message reaches into

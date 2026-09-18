@@ -373,6 +373,65 @@ def _why_empty(choice: dict) -> str:
     return "The model returned an empty answer."
 
 
+def _ollama_base(url: str) -> str | None:
+    """The native Ollama root behind an OpenAI-compatible URL, if it is one.
+
+    Ollama serves both: `/v1/chat/completions` for compatibility and
+    `/api/chat` for everything the compatibility layer cannot express. The
+    switch that turns a reasoning model's thinking off is one of those things.
+    """
+    url = (url or "").rstrip("/")
+    return url[: -len("/v1")] if url.endswith("/v1") else None
+
+
+def _ask_ollama(base: str, payload: dict, timeout: float) -> dict | None:
+    """Ask Ollama directly. Returns None if this is not Ollama after all.
+
+    Worth the extra code path because it is the only one that actually works.
+    `/no_think` is a Qwen *3* template convention and this model ignored it;
+    the OpenAI-compatible endpoint drops `think` because it is not part of that
+    API; and no amount of asking in the prompt stops a reasoning model
+    reasoning -- it was asked twice, in words, and still opened with "Thinking
+    Process:".
+
+    Here `think: false` is a real parameter, and Ollama returns any reasoning in
+    `message.thinking`, separate from `message.content`. Separate is the whole
+    point: there is nothing to strip, and a model that thinks anyway cannot
+    spend the answer's tokens doing it.
+    """
+    import httpx
+
+    native = {
+        "model": payload["model"],
+        "messages": payload["messages"],
+        "stream": False,
+        "think": False,
+        "options": {"temperature": 0.2, "num_predict": MAX_TOKENS},
+    }
+    try:
+        response = httpx.post(f"{base}/api/chat", json=native, timeout=timeout)
+    except Exception:                                         # noqa: BLE001
+        return None
+    if response.status_code == 404:
+        return None                     # not Ollama; the caller falls back
+    response.raise_for_status()
+    body = response.json()
+    message = body.get("message") or {}
+    # `thinking` is deliberately never read. It is the model's working-out and
+    # the reader asked for an answer.
+    answer = _STRAY_TAG.sub("", _THINK.sub("", str(message.get("content") or ""))).strip()
+    if answer and body.get("done_reason") == "length" and _is_thinking(answer):
+        answer = ("The model spent its whole answer thinking and ran out of room "
+                  "before writing one. Ask again, or ask something narrower.")
+    elif answer:
+        answer = _strip_untagged_thinking(answer)
+    if not answer:
+        raise AssistantError(
+            f"The model returned an empty answer (done_reason: "
+            f"{body.get('done_reason') or 'unknown'}).")
+    return {"reply": answer, "model": body.get("model", payload["model"])}
+
+
 def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0) -> dict:
     """Send a conversation to the local model with the board attached."""
     state = status()
@@ -398,6 +457,14 @@ def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0)
     }
 
     import httpx
+
+    # Ollama's own endpoint first, because it is the one that can be told not
+    # to think. Anything else falls through to the compatible API below.
+    base = _ollama_base(state["endpoint"])
+    if base:
+        answered = _ask_ollama(base, payload, timeout)
+        if answered is not None:
+            return answered
 
     try:
         response = httpx.post(

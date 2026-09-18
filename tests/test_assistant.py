@@ -150,6 +150,11 @@ def test_an_empty_answer_is_raised_not_returned(monkeypatch):
     monkeypatch.setattr(a, "context", lambda season, week: {})
 
     class _Resp:
+        # 404 so the native Ollama probe falls through: this test is about the
+        # OpenAI-compatible path, which is what a server that is not Ollama
+        # leaves us with.
+        status_code = 404
+
         def raise_for_status(self):
             pass
 
@@ -158,7 +163,14 @@ def test_an_empty_answer_is_raised_not_returned(monkeypatch):
                                  "finish_reason": "length"}]}
 
     import httpx
-    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: _Resp())
+
+    def post(url, *args, **kwargs):
+        resp = _Resp()
+        if url.endswith("/chat/completions"):
+            resp.status_code = 200
+        return resp
+
+    monkeypatch.setattr(httpx, "post", post)
     with pytest.raises(a.AssistantError, match="ran out of room"):
         a.ask([{"role": "user", "content": "hi"}], 2026, 2)
 
@@ -349,3 +361,60 @@ def test_thinking_is_switched_off_in_the_prompt_not_asked_for():
 
     assert assistant.SYSTEM_PROMPT.rstrip().endswith("/no_think")
     assert assistant.NO_THINKING["think"] is False
+
+
+def test_thinking_goes_in_its_own_field_and_is_never_read(monkeypatch):
+    """Ollama's native endpoint separates reasoning from the answer.
+
+    This is the fix that actually holds. `/no_think` is a Qwen 3 template
+    convention the model ignored, the OpenAI-compatible endpoint drops `think`
+    because it is not part of that API, and asking in words does not work --
+    it was asked twice and still opened with "Thinking Process:". Here the
+    reasoning arrives in `message.thinking` and simply is not read.
+    """
+    import httpx
+
+    from nflpicker import assistant
+
+    sent = {}
+
+    class Reply:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"model": "qwen", "done_reason": "stop", "message": {
+                "thinking": "Thinking Process:\n1. Analyse the request\n2. ...",
+                "content": "TEN over IND at 85.7% is the strongest edge.",
+            }}
+
+    def fake_post(url, json=None, timeout=None):
+        sent["url"] = url
+        sent["body"] = json
+        return Reply()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    out = assistant._ask_ollama(
+        "http://127.0.0.1:11435", {"model": "qwen", "messages": []}, 30.0)
+
+    assert out["reply"] == "TEN over IND at 85.7% is the strongest edge."
+    assert "Thinking" not in out["reply"]
+    assert sent["url"].endswith("/api/chat")
+    assert sent["body"]["think"] is False
+
+
+def test_a_server_that_is_not_ollama_falls_through(monkeypatch):
+    """A 404 on /api/chat means the compatible endpoint is all there is."""
+    import httpx
+
+    from nflpicker import assistant
+
+    class NotFound:
+        status_code = 404
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: NotFound())
+    assert assistant._ask_ollama("http://x", {"model": "m", "messages": []}, 5.0) is None

@@ -265,3 +265,26 @@ def test_the_first_cut_of_a_season_does_not_wait(four_weeks):
     monday = datetime(2025, 9, 15)
     assert monday.weekday() == 0, "a day the weekly rule would say no to"
     assert four_weeks.ranking_cut_due(2025, 2, now=monday)
+
+
+def test_a_weeks_cut_cannot_see_its_own_thursday(four_weeks):
+    """A ranking for week N is the state going *into* week N.
+
+    The backfill always obeyed this; the current week did not, because it was
+    handed today's rating -- which on a Thursday night already knows what
+    Buffalo and Detroit just did. So week two's table was reporting week two's
+    results back as though they were what we thought beforehand.
+    """
+    four_weeks.recompute()
+    cut = {r["team"]: r["wins"] for r in db.query(
+        "SELECT team, wins FROM power_snapshots "
+        "WHERE season = 2025 AND source = 'live'")}
+    latest = db.query_one(
+        "SELECT MAX(week) w FROM power_snapshots WHERE season = 2025 AND source = 'live'")
+    week = latest["w"]
+    played_before = db.query_one(
+        "SELECT COUNT(*) n FROM games WHERE season = 2025 AND week < ? AND status = 'final'",
+        (week,))["n"]
+    # KC wins every week in this fixture, so its record in the cut is exactly
+    # the number of its games that had finished before the week began.
+    assert cut.get("KC") == min(played_before, week - 1)

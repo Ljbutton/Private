@@ -445,10 +445,19 @@ def _pairing_message(seen: int, found: list[dict]) -> str:
     yet; both contracts resolving to the same team is a ticker whose shape has
     changed under us; no team at all is an abbreviation we do not know.
     """
-    from .sources.kalshi import pairing_report
+    from .sources.kalshi import KalshiSource, pairing_report
 
     rows = [e for a in found for e in (a.get("rows") or [])]
+    # Through the same refetch the real fetch uses, so this reports on what the
+    # app would actually have got rather than on the first response. Otherwise
+    # the panel says "no prices" about a board the pipeline goes on to price.
+    with contextlib.suppress(Exception):
+        rows = KalshiSource().fill_prices(rows)
     counts = pairing_report(rows)
+    if counts["paired"]:
+        return (f"{counts['paired']} of {seen} events do pair once the books "
+                f"are fetched separately — this reads as a stale cache rather "
+                f"than a broken feed; try again in a minute")
     sample = found[0].get("sample") or "none"
     if counts["markets"] == 0:
         return f"{seen} events came back carrying no contracts at all"
@@ -505,11 +514,22 @@ def test_prediction_markets() -> dict:
     kalshi = next((r for r in results if r["venue"] == "Kalshi"), None)
     if kalshi and kalshi["ok"] and not kalshi["n"]:
         with contextlib.suppress(Exception):
+            # Probed once and read twice: the message needs the events
+            # themselves to say *why* they did not pair, and the response
+            # carries only the counts, because thirty-one events with their
+            # markets nested is most of a megabyte of JSON going to a panel
+            # that displays five numbers.
+            #
+            # These used to be the same stripped list, which made the
+            # diagnostic wrong in the most misleading way available: it read
+            # the rows it had just removed, found none, and reported "31
+            # events carrying no contracts at all" on the same screen as a row
+            # saying "31 events · 62 markets".
+            probed = KalshiSource().probe()
             kalshi["attempts"] = [
-                {k: v for k, v in a.items() if k != "rows"}
-                for a in KalshiSource().probe()
+                {k: v for k, v in a.items() if k != "rows"} for a in probed
             ]
-            found = [a for a in kalshi["attempts"] if a["events"]]
+            found = [a for a in probed if a["events"]]
             if found:
                 seen = sum(a["events"] for a in found)
                 kalshi["message"] = _pairing_message(seen, found)

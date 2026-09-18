@@ -996,6 +996,33 @@ def _pythagorean(rating: dict, points: list[float] | None) -> float | None:
     return pythagorean_expectation(points[0], points[1])
 
 
+# Two sets, and which one applies depends on how much the season has actually
+# told us.
+#
+# The late set is the one that was here: projected finish, the Pythagorean, the
+# rating, title odds and the floor of the 80% range. It is right in November.
+#
+# In September it was badly wrong, and the reason is that four of its five
+# terms are the same fact wearing different hats. Projected wins banks the
+# games already won. The floor of the range banks them. Title odds bank them.
+# The Pythagorean off one game is a single score line -- a team that won 33-8
+# in week one reads as the best offence in football. So a table meant to rank
+# teams by how good they are was ranking them by one Sunday, four times over,
+# and Miami finished above Denver, the Chargers and the Rams.
+#
+# The rating is the term that does not do that: it is shrunk Elo, so it carries
+# what last season established and moves slowly. Early, it should be most of
+# the answer; by midseason the projections have earned their weight and it
+# should not be. The rating's own Pythagorean term already fades in by games
+# played -- this is the same idea applied one level up, where it had been
+# missed.
+RANK_WEIGHTS_EARLY = {
+    "power": 0.55,          # what we knew before the season started
+    "exp_wins": 0.20,       # where it is heading, at low confidence
+    "sb_prob": 0.10,
+    "wins_p10": 0.10,
+    "pythagorean": 0.05,    # one score line, and it shows
+}
 RANK_WEIGHTS = {
     "exp_wins": 0.30,       # where the season is projected to end up
     "pythagorean": 0.20,    # points scored and allowed, which ignores who won
@@ -1003,6 +1030,34 @@ RANK_WEIGHTS = {
     "sb_prob": 0.15,        # what twenty thousand seasons think of them
     "wins_p10": 0.15,       # the floor of the 80% range: a team's bad case
 }
+
+# Games played per team before the late weights apply in full. Six is the same
+# number the rating uses to fade its own Pythagorean in, and for the same
+# reason: it is about where a team's scoring record stops being noise.
+RANK_WEIGHTS_FULL_AT = 6.0
+
+
+def rank_weights(played: float) -> dict[str, float]:
+    """The blend for a season this far along, between the two sets above."""
+    trust = max(0.0, min(1.0, float(played or 0.0) / RANK_WEIGHTS_FULL_AT))
+    return {k: RANK_WEIGHTS_EARLY[k] * (1.0 - trust) + RANK_WEIGHTS[k] * trust
+            for k in RANK_WEIGHTS}
+
+
+def _games_played(projections: dict) -> float:
+    """Games the average team has played, from the records we already hold.
+
+    One number for the whole table rather than one per team: a team on a bye
+    should not be ranked by a different rule from the rest of the league.
+    """
+    counts = []
+    for row in (projections or {}).values():
+        if not isinstance(row, dict):
+            continue
+        played = sum(float(row.get(k) or 0.0)
+                     for k in ("wins_actual", "losses_actual", "ties_actual"))
+        counts.append(played)
+    return sum(counts) / len(counts) if counts else 0.0
 
 
 def _z(values: dict[str, float | None]) -> dict[str, float]:
@@ -1046,7 +1101,8 @@ def ranking_scores(ratings: dict, projections: dict) -> dict[str, float]:
         "pythagorean": _z(field(ratings, "pythagorean")),
         "power": _z(field(ratings, "power")),
     }
-    return {team: sum(RANK_WEIGHTS[k] * parts[k][team] for k in RANK_WEIGHTS)
+    weights = rank_weights(_games_played(projections))
+    return {team: sum(weights[k] * parts[k][team] for k in weights)
             for team in teams}
 
 

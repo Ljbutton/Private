@@ -1472,9 +1472,20 @@ class Pipeline:
         # under the reader several times a day. A ranking is a claim made on a
         # particular day from what was known then; one that keeps being revised
         # is a live readout with a week number on it.
+        #
+        # And computed from the games that had finished *before this week
+        # started*, not from every game on the board. `power` above is today's
+        # rating, which on a Thursday night already knows what Buffalo and
+        # Detroit just did -- so week two's ranking was reporting week two's
+        # results. A ranking for week N is the state going into week N; it is
+        # the same rule the backfill has always used for earlier weeks, and
+        # the current week had simply been exempt from it.
         if self.ranking_cut_due(season, week):
             with contextlib.suppress(Exception):
-                self.store_power_snapshot(season, week, power, completed,
+                before = [g for g in completed
+                          if int(g["season"]) < int(season) or int(g["week"]) < week]
+                as_of = self.power_from(before, run_elo(before), season, week=week)
+                self.store_power_snapshot(season, week, as_of, before,
                                           projections=_projection_rows(sim))
 
         # And the weeks before this one, which an install made mid-season has
