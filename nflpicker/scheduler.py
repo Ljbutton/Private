@@ -251,6 +251,13 @@ class Scheduler:
     # on a forced run.
     SLOW_STAGES = ("stats",)
 
+    # The one stage that costs money. Every other source here is free and can
+    # be asked as often as you like; the Odds API is a monthly allowance of a
+    # few hundred requests, and each poll spends three of them. So it is never
+    # part of "refresh everything" -- it has its own button, which says what it
+    # is about to spend, and nothing else can reach it by accident.
+    METERED_STAGES = ("odds",)
+
     async def refresh_now(self, stages: list[str] | None = None, *,
                           full: bool = False) -> dict:
         """Manual refresh, sharing the lock so it cannot overlap a scheduled run.
@@ -269,7 +276,7 @@ class Scheduler:
 
         if full and not stages:
             stages = [n for n in stage_names(get_config())
-                      if n not in self.SLOW_STAGES]
+                      if n not in self.SLOW_STAGES + self.METERED_STAGES]
         lock = self._lock or asyncio.Lock()
         async with lock:
             result = await asyncio.to_thread(

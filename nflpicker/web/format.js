@@ -117,3 +117,58 @@ export function statusClass(status) {
   if (v.includes("questionable") || v.includes("limited")) return "questionable";
   return "";
 }
+
+/* The small amount of markdown a chat model actually emits.
+
+   It writes `**bold**`, `### headings`, `- lists` and `1.` lists whether or
+   not it is asked to, and those were being escaped and shown as literal
+   asterisks and hashes -- which reads as the model being broken rather than as
+   the app not rendering it.
+
+   Hand-written rather than a library: this is nine constructs, the input is a
+   few hundred words, and the alternative is shipping a markdown parser inside
+   a desktop app to format one panel. Everything is escaped first and only
+   these patterns are turned back into tags, so nothing the model writes can
+   put markup on the page. */
+export function markdown(text) {
+  const lines = esc(String(text || "")).split("\n");
+  const out = [];
+  let list = null;                      // "ul" | "ol" | null
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const inline = (t) => t
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>")
+    .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!line.trim()) { closeList(); continue; }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      // Capped at h4: these sit inside a chat bubble, and a model's "###" is a
+      // paragraph label rather than a document structure.
+      const level = Math.min(heading[1].length + 2, 4);
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) {
+      if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; }
+      out.push(`<li>${inline(bullet[1])}</li>`);
+      continue;
+    }
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (numbered) {
+      if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; }
+      out.push(`<li>${inline(numbered[1])}</li>`);
+      continue;
+    }
+    closeList();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList();
+  return out.join("");
+}

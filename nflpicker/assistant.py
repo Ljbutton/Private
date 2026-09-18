@@ -34,6 +34,9 @@ Rules you do not break:
 
 - Answer only from the data you are given. If it is not in there, say so. Never \
 invent a line, a score, an injury or a statistic.
+- "This week" means the week in `current_week`, and its games are the ones in \
+`this_week`. `results_so_far` is earlier weeks and is history. Never add the \
+two together or describe a finished game as part of this week.
 - The blind projection is the model before it sees the betting line; the blend \
 is after. The fitted market weight is high, so the blend is mostly the market. \
 Be honest about that when asked whether the model is any good.
@@ -236,6 +239,17 @@ def context(season: int, week: int) -> dict:
     return {
         "season": season,
         "current_week": week,
+        # Spelled out, because the model got this wrong in exactly the way an
+        # unlabelled structure invites: asked to summarise "this week" it
+        # counted seventeen games, which is this week's sixteen plus the whole
+        # of last week's results sitting in the same payload. The two lists are
+        # different questions and the field names alone did not say so.
+        "how_to_read_this": (
+            f"'this_week' is week {week} of the {season} season and is the only "
+            f"thing 'this week' ever means. Those games have not been played "
+            f"unless a score is shown. 'results_so_far' is every earlier week, "
+            f"already finished, and is history -- never count it as part of this "
+            f"week. Each line there starts with its week number."),
         "how_the_model_works": {
             "inputs": [
                 "Elo rating, shrunk toward the mean between seasons",
@@ -257,8 +271,10 @@ def context(season: int, week: int) -> dict:
         "teams_columns": "rank abbr record pow pyth proj (80% range) "
                          "playoff div title",
         "teams": teams,
-        "this_week": games,
-        "results_so_far": results,
+        "this_week": {"week": week, "n_games": len(games), "games": games},
+        "results_so_far": {"weeks_finished": sorted(
+            {int(r.split()[0][1:]) for r in results if r[:1] == "W"}),
+            "n_games": len(results), "games": results},
         "model_record": {
             "walk_forward_margin_mae": _round((report.get("blind") or {}).get("margin_mae"), 2),
             "closing_line_margin_mae": _round(

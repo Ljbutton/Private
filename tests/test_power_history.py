@@ -233,58 +233,58 @@ def test_a_live_cut_is_never_rewritten(four_weeks):
     assert row["rank"] == 99 and row["captured_at"] == "then"
 
 
-def test_the_cut_waits_for_its_day(four_weeks):
-    """Wednesday, and not before.
+def test_no_cut_until_the_week_before_it_has_finished(four_weeks):
+    """The last game of week N-1 going final is the moment to rank week N.
 
-    Monday and Tuesday are deliberately quiet even though the week number has
-    already turned over: last week's cut is the most recent claim anyone has
-    made, and inventing a new one from a weekend still being counted is a
-    worse answer than waiting a day.
+    That instant is the only one at which every team has been seen the same
+    number of times. A Wednesday is close and not the same thing: a Wednesday
+    arrives with Monday night sometimes still unplayed, and week two's table
+    was showing a 2-0 team because of it.
     """
-    from datetime import datetime
+    db.execute("UPDATE games SET status = 'scheduled' WHERE season = 2025 AND week = 1")
+    assert not four_weeks.ranking_cut_due(2025, 2), "week 1 is not finished"
 
+    db.execute("UPDATE games SET status = 'final' WHERE season = 2025 AND week = 1")
+    assert four_weeks.ranking_cut_due(2025, 2)
+
+
+def test_a_week_with_one_game_left_is_not_complete(four_weeks):
+    """Monday night counts. One game outstanding is a week outstanding."""
     db.execute(
-        "INSERT INTO power_snapshots"
+        "UPDATE games SET status = 'scheduled' WHERE season = 2025 AND week = 1 "
+        "AND game_id = 'g1'")
+    assert not four_weeks.week_is_complete(2025, 1)
+    assert not four_weeks.ranking_cut_due(2025, 2)
+
+
+def test_there_is_never_a_week_one_ranking(four_weeks):
+    """Nothing has been played, so there is nothing to rank on.
+
+    It matters beyond week one: the Move column needs two cuts to have moved
+    between them, so no week-one cut is what makes week two show no movement
+    and week three the first that does.
+    """
+    assert not four_weeks.ranking_cut_due(2025, 1)
+
+
+def test_a_cut_that_saw_too_much_is_dropped_on_upgrade(four_weeks):
+    """An earlier build wrote cuts it should not have, and they cannot be
+    corrected in place -- only removed, so the backfill can rebuild the week."""
+    for week, played in ((1, 0), (2, 2)):     # week 1 at all; week 2 at 2-0
+        db.execute(
+            "INSERT OR REPLACE INTO power_snapshots"
+            "(season, week, team, rank, power, elo, pythagorean,"
+            " wins, losses, ties, source, captured_at) "
+            "VALUES(2025, ?, 'KC', 1, 0, 1500, 0.5, ?, 0, 0, 'live', 'then')",
+            (week, played))
+    db.execute(
+        "INSERT OR REPLACE INTO power_snapshots"
         "(season, week, team, rank, power, elo, pythagorean,"
         " wins, losses, ties, source, captured_at) "
-        "VALUES(2025, 1, 'KC', 1, 0, 1500, 0.5, 0, 0, 0, 'live', 'then')")
+        "VALUES(2025, 3, 'KC', 1, 0, 1500, 0.5, 2, 0, 0, 'live', 'then')")
 
-    monday = datetime(2025, 9, 15)
-    wednesday = datetime(2025, 9, 17)
-    assert monday.weekday() == 0 and wednesday.weekday() == 2
-    assert not four_weeks.ranking_cut_due(2025, 2, now=monday)
-    assert four_weeks.ranking_cut_due(2025, 2, now=wednesday)
-
-
-def test_the_first_cut_of_a_season_does_not_wait(four_weeks):
-    """An app first opened on a Sunday should not sit with an empty history
-    until the following Wednesday. The weekly rhythm starts from the first
-    cut, whenever that happens to be."""
-    from datetime import datetime
-
-    monday = datetime(2025, 9, 15)
-    assert monday.weekday() == 0, "a day the weekly rule would say no to"
-    assert four_weeks.ranking_cut_due(2025, 2, now=monday)
-
-
-def test_a_weeks_cut_cannot_see_its_own_thursday(four_weeks):
-    """A ranking for week N is the state going *into* week N.
-
-    The backfill always obeyed this; the current week did not, because it was
-    handed today's rating -- which on a Thursday night already knows what
-    Buffalo and Detroit just did. So week two's table was reporting week two's
-    results back as though they were what we thought beforehand.
-    """
-    four_weeks.recompute()
-    cut = {r["team"]: r["wins"] for r in db.query(
-        "SELECT team, wins FROM power_snapshots "
-        "WHERE season = 2025 AND source = 'live'")}
-    latest = db.query_one(
-        "SELECT MAX(week) w FROM power_snapshots WHERE season = 2025 AND source = 'live'")
-    week = latest["w"]
-    played_before = db.query_one(
-        "SELECT COUNT(*) n FROM games WHERE season = 2025 AND week < ? AND status = 'final'",
-        (week,))["n"]
-    # KC wins every week in this fixture, so its record in the cut is exactly
-    # the number of its games that had finished before the week began.
-    assert cut.get("KC") == min(played_before, week - 1)
+    assert sorted(four_weeks.repair_power_cuts(2025)) == [1, 2]
+    left = [r["week"] for r in db.query(
+        "SELECT DISTINCT week FROM power_snapshots WHERE season = 2025 "
+        "AND source = 'live' ORDER BY week")]
+    assert left == [3], "a 2-0 record in week 3 is exactly right"

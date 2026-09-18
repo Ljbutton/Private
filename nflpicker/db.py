@@ -43,6 +43,11 @@ COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = (
     # and how serious. Only "who" and "how serious" were columns; the other two
     # were buried in a 400-character prose comment that had to be read to be
     # understood, which is not what a table is for.
+    # v13: a week's ranking now carries the projection it was ordered by, and
+    # the record it was taken with. The order was frozen and everything beside
+    # it on the row was live, so week 2's table showed a 2-0 team -- the games
+    # played on the Thursday of the week the ranking was supposed to precede.
+    ("power_snapshots", "projection", "TEXT"),
     ("injuries", "injury", "TEXT"),
     ("injuries", "return_date", "TEXT"),
     ("injuries", "first_seen", "TEXT"),

@@ -13,7 +13,6 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -1515,6 +1514,10 @@ class Pipeline:
         # already held, so the work is done once and every later recompute
         # finds nothing to do. Suppressed because a ranking history is not
         # worth failing a recompute over.
+        # Cuts an earlier build wrote that it should not have. Removed rather
+        # than corrected: the reconstruction below builds the week properly.
+        with contextlib.suppress(Exception):
+            self.repair_power_cuts(season)
         with contextlib.suppress(Exception):
             self.rebuild_power_history(season, completed=completed)
 
@@ -1664,40 +1667,79 @@ class Pipeline:
         return out
 
     def ranking_cut_due(self, season: int, week: int, *, now=None) -> bool:
-        """Whether this week's ranking still has to be taken.
+        """Whether this week's ranking should be taken yet.
 
-        Once a week, on the cut day, and then not again. Two things have to be
-        true: nothing has been cut for this week yet, and the cut day has come
-        round. Wednesday by default -- Monday night is played, the injury
-        reports have started, and nothing is known about the coming Sunday that
-        will not still be true on Saturday.
+        Once the week before it has finished, and not before. Not a day of the
+        week, not a number of games -- the last game of week N-1 going final is
+        the moment every team has been seen the same number of times, and it is
+        the only moment at which a ranking for week N can be a statement about
+        the same evidence for everybody.
 
-        Monday and Tuesday are deliberately quiet even though the week number
-        has already turned over. The new week has no ranking yet on those days,
-        which is the honest state of affairs: last week's cut is the most
-        recent claim anyone has made, and inventing a new one from a weekend
-        whose consequences are still being counted would be a worse answer than
-        waiting a day.
+        This replaced a Wednesday rule, which was close but not the same thing:
+        a Wednesday can arrive with Monday night still unplayed, and it did.
+        Week two's table was showing a 2-0 team.
 
-        The one exception is a season with no cut at all. An app first opened
-        on a Sunday should not sit there with an empty history until the
-        following Wednesday, so the first cut of a season is taken whenever it
-        is asked for, and the weekly rhythm starts from there.
+        It also means there is no week-one ranking, ever. Nothing has been
+        played, so there is nothing to rank on beyond last season, and a table
+        claiming otherwise in September is exactly the sort of ranking that
+        deserves the reader's suspicion. Week two is the first cut, which is
+        why the Move column only starts saying anything in week three: it takes
+        two cuts to have moved between them.
         """
+        del now                                   # kept for the older callers
+        if week < 2:
+            return False
         held = db.query(
             "SELECT 1 FROM power_snapshots WHERE season = ? AND week = ? "
             "AND source = 'live' LIMIT 1", (season, week),
         )
         if held:
             return False
-        any_cut = db.query(
-            "SELECT 1 FROM power_snapshots WHERE season = ? AND source = 'live' "
-            "LIMIT 1", (season,),
+        return self.week_is_complete(season, week - 1)
+
+    @staticmethod
+    def repair_power_cuts(season: int) -> list[int]:
+        """Drop live cuts that could not have been taken when they say.
+
+        A database written by an earlier build holds two kinds of bad cut, and
+        neither can be corrected in place -- only removed, so the backfill can
+        reconstruct the week properly.
+
+        A week-one cut is invalid by definition: nothing had been played.
+
+        A cut is also invalid when the records frozen into it show more games
+        than the week before it had. Week two's ranking recording a 2-0 team is
+        a ranking that saw the Thursday night game of the week it was supposed
+        to precede.
+        """
+        dropped = []
+        rows = db.query(
+            "SELECT week, MAX(wins + losses + ties) AS played FROM power_snapshots "
+            "WHERE season = ? AND source = 'live' GROUP BY week", (season,),
         )
-        if not any_cut:
-            return True
-        now = now or datetime.now().astimezone()
-        return now.weekday() >= int(self.config.ranking_cut_weekday)
+        for row in rows:
+            week = int(row["week"])
+            if week < 2 or (row["played"] or 0) > week - 1:
+                db.execute(
+                    "DELETE FROM power_snapshots WHERE season = ? AND week = ? "
+                    "AND source = 'live'", (season, week))
+                dropped.append(week)
+        return dropped
+
+    @staticmethod
+    def week_is_complete(season: int, week: int) -> bool:
+        """Every game scheduled that week has finished.
+
+        By the schedule rather than by counting a team's games, so a bye costs
+        nothing: a team with no game that week has nothing outstanding. A week
+        nobody has any games in is not complete, it is unplayed.
+        """
+        row = db.query_one(
+            "SELECT COUNT(*) AS n, SUM(status = 'final') AS done FROM games "
+            "WHERE season = ? AND week = ? AND season_type = 'REG'",
+            (season, week),
+        )
+        return bool(row and row["n"] and row["n"] == (row["done"] or 0))
 
     def store_power_snapshot(self, season: int, week: int, power, completed: list[dict],
                              *, source: str = "live",
@@ -1733,13 +1775,19 @@ class Pipeline:
         rows = []
         for rank, team in enumerate(ranked, start=1):
             wins, losses, ties = records.get(team.team, [0.0, 0.0, 0.0])
+            # The projection the order was built from, kept with it. Freezing
+            # the rank and leaving the numbers beside it live is how week two
+            # ended up showing a 2-0 record: the ordering was as of the end of
+            # week one and every other cell on the row was as of now.
+            projection = (projections or {}).get(team.team) or {}
             rows.append([season, week, team.team, rank, team.power, team.elo,
-                         team.pythagorean, wins, losses, ties, source, stamp])
+                         team.pythagorean, wins, losses, ties, source, stamp,
+                         json.dumps(projection, default=float)])
         db.executemany(
             "INSERT OR REPLACE INTO power_snapshots"
             "(season, week, team, rank, power, elo, pythagorean,"
-            " wins, losses, ties, source, captured_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            " wins, losses, ties, source, captured_at, projection) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
         return len(rows)

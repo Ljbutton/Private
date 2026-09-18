@@ -105,6 +105,23 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         wanted = [s.strip() for s in stages.split(",")] if stages else None
         return await scheduler.refresh_now(wanted, full=full)
 
+    @app.post("/api/refresh/odds")
+    async def refresh_odds() -> dict:
+        """The betting lines, on their own, because they are the metered feed.
+
+        Three requests out of a monthly allowance, every time. That is a
+        deliberate spend and it gets a deliberate button; nothing else in the
+        app is allowed to reach it, so a refresh of the scores can never
+        quietly cost a credit.
+        """
+        result = await scheduler.refresh_now(["odds"])
+        usage = None
+        with contextlib.suppress(Exception):
+            from .sources.odds_api import OddsApiSource
+
+            usage = OddsApiSource().usage()
+        return {**result, "usage": usage}
+
     # ------------------------------------------------------------ games
     @app.get("/api/games")
     def games(week: int | None = None, season: int | None = None) -> dict:
@@ -220,6 +237,37 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         season = pipeline.season()
         ratings = latest_team_rows(season, "team_ratings")
         projections = latest_team_rows(season, "season_projections")
+
+        # This week's cut, if it has been taken: its order, its records and the
+        # projection it was ordered by. All three or none of them -- freezing
+        # the rank and leaving the rest of the row live is what put a 2-0
+        # record in week two's table, beside a ranking that was taken before
+        # those games were played.
+        cut_rows = db.query(
+            "SELECT team, rank, power, pythagorean, wins, losses, ties, projection "
+            "FROM power_snapshots WHERE season = ? AND week = ? AND source = 'live'",
+            (season, pipeline.current_week(season)),
+        )
+        cut = {r["team"]: r for r in cut_rows}
+        if cut:
+            for abbr, row in cut.items():
+                frozen = {}
+                with contextlib.suppress(Exception):
+                    frozen = json.loads(row["projection"] or "{}") or {}
+                frozen.setdefault("wins_actual", row["wins"])
+                frozen.setdefault("losses_actual", row["losses"])
+                frozen.setdefault("ties_actual", row["ties"])
+                # The distribution is not stored with the cut, so it is carried
+                # over from the live projection: it is a shape, and it is the
+                # one thing on the page that is drawn rather than claimed.
+                live = projections.get(abbr) or {}
+                if live.get("distribution") is not None:
+                    frozen.setdefault("distribution", live["distribution"])
+                projections[abbr] = {**live, **frozen}
+                rating = dict(ratings.get(abbr) or {})
+                rating["power"] = row["power"]
+                rating["pythagorean"] = row["pythagorean"]
+                ratings[abbr] = rating
         # Points for and against, from the games themselves.
         #
         # The Pythagorean is stored on the rating row, and on a database that
@@ -292,12 +340,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # does not freeze is the rest of the row: the projections, the playoff
         # odds and the records are forecasts and results, and a forecast that
         # ignored Sunday would just be wrong.
-        cut = {r["team"]: r["rank"] for r in db.query(
-            "SELECT team, rank FROM power_snapshots "
-            "WHERE season = ? AND week = ? AND source = 'live'",
-            (season, pipeline.current_week(season)),
-        )}
-        order = ({t: r for t, r in cut.items()} if cut else
+        order = ({t: r["rank"] for t, r in cut.items()} if cut else
                  {team: i for i, team in enumerate(
                      team_rank_order(season, ratings, projections), start=1)})
         # A team the cut does not name -- it cannot happen mid-season, but a
@@ -1000,52 +1043,47 @@ def _pythagorean(rating: dict, points: list[float] | None) -> float | None:
     return pythagorean_expectation(points[0], points[1])
 
 
-# Two sets, and which one applies depends on how much the season has actually
-# told us.
+# One set, and projected finish carries it.
 #
-# The late set is the one that was here: projected finish, the Pythagorean, the
-# rating, title odds and the floor of the 80% range. It is right in November.
+# This has been wrong twice in opposite directions, so it is worth saying what
+# the column is for. The Teams page shows PROJ beside every team -- the wins a
+# team is expected to finish with, out of twenty thousand simulated seasons --
+# and the order has to agree with it, because a table that ranks the Rams 28th
+# next to their own projection of 10.2 wins is not expressing a view, it is
+# contradicting itself on screen.
 #
-# In September it was badly wrong, and the reason is that four of its five
-# terms are the same fact wearing different hats. Projected wins banks the
-# games already won. The floor of the range banks them. Title odds bank them.
-# The Pythagorean off one game is a single score line -- a team that won 33-8
-# in week one reads as the best offence in football. So a table meant to rank
-# teams by how good they are was ranking them by one Sunday, four times over,
-# and Miami finished above Denver, the Chargers and the Rams.
+# Projected wins is also simply the best answer to the question the page is
+# asked: who beats whom. It is the rating applied to a real remaining
+# schedule, so it already knows the Rams beat the Dolphins and the Chiefs beat
+# the Cardinals. The rating stays as a check on it, and the Pythagorean and the
+# odds fill in around the edges, but none of them should be able to outvote the
+# projection.
 #
-# The rating is the term that does not do that: it is shrunk Elo, so it carries
-# what last season established and moves slowly. Early, it should be most of
-# the answer; by midseason the projections have earned their weight and it
-# should not be. The rating's own Pythagorean term already fades in by games
-# played -- this is the same idea applied one level up, where it had been
-# missed.
-RANK_WEIGHTS_EARLY = {
-    "power": 0.55,          # what we knew before the season started
-    "exp_wins": 0.20,       # where it is heading, at low confidence
-    "sb_prob": 0.10,
-    "wins_p10": 0.10,
-    "pythagorean": 0.05,    # one score line, and it shows
-}
+# What went wrong before: the weight was spread evenly enough that four terms
+# which all bank the same Sunday -- projected wins, the floor of the range,
+# title odds, and a Pythagorean off one game -- could between them sort the
+# league by its win-loss column. Records are frozen to completed weeks now, so
+# a single result no longer swings four terms at once, and the fix that split
+# the weights early and late is no longer carrying anything.
 RANK_WEIGHTS = {
-    "exp_wins": 0.30,       # where the season is projected to end up
-    "pythagorean": 0.20,    # points scored and allowed, which ignores who won
-    "power": 0.20,          # neutral-field strength, the rating itself
-    "sb_prob": 0.15,        # what twenty thousand seasons think of them
-    "wins_p10": 0.15,       # the floor of the 80% range: a team's bad case
+    "exp_wins": 0.50,       # where the season is projected to end up
+    "power": 0.20,          # neutral-field strength, as a check on it
+    "sb_prob": 0.12,        # what twenty thousand seasons think of them
+    "wins_p10": 0.10,       # the floor of the 80% range: a team's bad case
+    "pythagorean": 0.08,    # points scored and allowed, which ignores who won
 }
 
-# Games played per team before the late weights apply in full. Six is the same
-# number the rating uses to fade its own Pythagorean in, and for the same
-# reason: it is about where a team's scoring record stops being noise.
-RANK_WEIGHTS_FULL_AT = 6.0
 
+def rank_weights(played: float = 0.0) -> dict[str, float]:
+    """The blend. `played` is accepted and ignored.
 
-def rank_weights(played: float) -> dict[str, float]:
-    """The blend for a season this far along, between the two sets above."""
-    trust = max(0.0, min(1.0, float(played or 0.0) / RANK_WEIGHTS_FULL_AT))
-    return {k: RANK_WEIGHTS_EARLY[k] * (1.0 - trust) + RANK_WEIGHTS[k] * trust
-            for k in RANK_WEIGHTS}
+    It used to fade between an early set and a late one. That existed to stop
+    one Sunday deciding the table, and the real cause of that was records which
+    included games the week had not finished yet -- fixed where it belonged, in
+    what the week's cut is allowed to see. Kept as a parameter so callers and
+    tests do not have to care which it is.
+    """
+    return dict(RANK_WEIGHTS)
 
 
 def _games_played(projections: dict) -> float:

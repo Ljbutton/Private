@@ -1,7 +1,7 @@
 import { barChart, condense, lineChart, sparkline } from "./charts.js";
 import {
   advanceHand, ago, american, clockAngles, esc, greetingLine, kickoffShort,
-  liveLabel, num, pct,
+  liveLabel, markdown, num, pct,
   signed, statusClass, when,
 } from "./format.js";
 
@@ -247,7 +247,13 @@ function renderHero(meta) {
   const line = $("#whenline");
   line.textContent = `Week ${week} · ${season} season`;
   line.classList.toggle("past", !live);
+  // Green for the week that is actually on. Reading a week number and
+  // comparing it to the one in the selector is work; a colour is not.
+  line.classList.toggle("live", live);
   line.title = live ? "The current week" : "Not the current week";
+  // The date is today's either way -- the clock is a clock -- so it reads live
+  // whenever the week beside it does.
+  $("#clockdate").classList.toggle("live", live);
 }
 
 /* How serious an injury status is, for colour. Out and IR are settled; a
@@ -1476,57 +1482,119 @@ async function renderNews(ticket) {
   });
 }
 
-// ------------------------------------------------------------ coming soon
-/* What is being built, and what is deliberately not finished yet.
+// ------------------------------------------------------------- the desk
+/* Support, what is being built, and what has changed -- three columns, one
+   page.
 
-   Prediction markets live here rather than on the board. They were on every
-   game card as a fourth column that read "–" on every row, which is worse than
-   absent: an empty column is a promise the app is not keeping, and the reader
-   has to learn to ignore a quarter of the card. The work is real and it is
-   listed here, where an unfinished thing can be described honestly instead of
-   shown broken. */
-const SOON = [
+   Named "The Desk" because that is what it is: the place you go when the app
+   has not answered your question. Splitting it into a help page, a roadmap and
+   a changelog would be three pages each too thin to justify a tab, and all
+   three answer the same underlying question -- "is this meant to work like
+   this, and if not, when will it".
+
+   Static content. A support page that cannot load is a support page that has
+   failed at the one moment it exists for. */
+const DESK_HELP = [
+  {
+    q: "The board says “–” where a number should be",
+    a: `A dash is always "we do not have this", never zero. The most common
+       cause is the betting lines: without an Odds API key the book columns
+       stay empty and everything the model produces on its own still works.
+       Settings → Data sources takes the key.`,
+  },
+  {
+    q: "Nothing is updating",
+    a: `Fetching is manual by default. The refresh button beside LIVE does
+       everything except the betting lines, and runs itself once a minute while
+       the app is open. The lines have their own button at the bottom left,
+       because each press spends three requests of a monthly allowance. Settings
+       → Model → "Fetch automatically" puts the timers back.`,
+  },
+  {
+    q: "The power rankings have not moved",
+    a: `They are cut once a week and then left alone, the moment the last game
+       of the previous week goes final. A ranking that changes three times on a
+       Tuesday is a live readout with a week number on it, and nothing can be
+       said to have moved against it. There is no week-one ranking at all, so
+       the Move column starts in week three.`,
+  },
+  {
+    q: "The assistant is slow, or will not start",
+    a: `It runs entirely on this machine — nothing is sent anywhere — which is
+       why it needs a model downloaded first. The Assistant tab sets that up in
+       one press. On a laptop the first answer after a cold start is the slow
+       one; the model stays warm for an hour after that.`,
+  },
+  {
+    q: "Windows says the app is not trusted",
+    a: `The build is unsigned. More info → Run anyway. Signing a Windows binary
+       means buying a certificate, and it is on the list below rather than
+       done.`,
+  },
+];
+
+const DESK_SOON = [
   {
     title: "Prediction markets",
     state: "in progress",
-    body: `Kalshi and Polymarket price NFL games as contracts, and a contract
-      price is a probability with money behind it. That makes them a third
-      opinion next to the model and the sportsbook — and the one most likely to
-      disagree with the book for a reason.`,
     items: [
       "Kalshi and Polymarket prices beside the book on every game",
-      "A fourth column on the board, filled in rather than dashed",
-      "Where the contract and the sportsbook disagree, and by how much",
-      "Movement in contract price through the week, as the board already shows for the line",
-      "Contract volume, so a price nobody is trading can be told from a price that is",
+      "Where a contract and a sportsbook disagree, and by how much",
+      "Contract volume, so a price nobody trades reads differently",
     ],
-    note: `Both venues answer. Kalshi returns the right games under the right
-      series ticker. What is missing is the books: the events endpoint nests a
-      summary of each contract without its bid and ask, so there is nothing to
-      price them from. The fix — asking the markets endpoint directly — is
-      written and shipped; whether it is enough is the next thing to find out.`,
+    note: `Both venues answer and the right games come back. What is missing is
+      the books: the events endpoint returns each contract without a bid or an
+      ask. Asking the markets endpoint directly is written and shipped — whether
+      it is enough is the next thing to find out.`,
   },
   {
     title: "Closing line value",
     state: "partly there",
-    body: `Whether the number we published beat the number the market closed at.
-      It is the only honest early read on whether a model has an edge, because
-      it settles long before the win-loss record says anything.`,
     items: [
-      "Already tracked on Performance for games with an opening and a closing line",
+      "Already on Performance where an opening and closing line both exist",
       "Per-week and per-team breakdowns",
-      "A running figure that says how much of the season's edge was real",
+      "One running figure for how much of the season's edge was real",
     ],
   },
   {
-    title: "Your pool, not just the model's",
+    title: "Your pool, not the model's",
     state: "planned",
-    body: `The survivor tracker already compares the original plan with what
-      you actually picked. The same idea applied wider.`,
     items: [
-      "Pick'em scoring against your own league's rules",
+      "Pick'em scored by your own league's rules",
       "More than one survivor entry at a time",
-      "Import a pool's results rather than marking teams used by hand",
+      "Importing a pool's results instead of marking teams used by hand",
+    ],
+  },
+  {
+    title: "Shipping",
+    state: "planned",
+    items: ["A signed Windows build", "A signed and notarised Mac build"],
+  },
+];
+
+/* What changed, newest first. Written by hand: a changelog generated from
+   commit messages is a list of commits, not a list of changes. */
+const DESK_CHANGES = [
+  {
+    when: "This build",
+    items: [
+      "Power rankings follow projected wins, so the order agrees with the PROJ column",
+      "A week's ranking waits for the previous week's last game to go final",
+      "Records and projections are frozen into the ranking with it",
+      "The betting lines have their own button and their own budget",
+      "Everything else refreshes itself once a minute",
+      "The assistant knows which week is which, and its formatting renders",
+      "A moon in dark mode and a sun in light",
+    ],
+  },
+  {
+    when: "Earlier",
+    items: [
+      "Winners read in gold, and finished games say Upset or Expected",
+      "Lines and totals freeze at kickoff instead of tracking the in-play market",
+      "The survivor tracker keeps the original run and scores it against yours",
+      "Connections moved to Settings; the sidebar shows the live game",
+      "The assistant stopped printing its working",
     ],
   },
 ];
@@ -1534,24 +1602,34 @@ const SOON = [
 async function renderSoon(ticket) {
   const root = $("#view");
   if (stale(ticket)) return;
-  const section = (s) => `<div class="panel soon-card">
-    <header><h2>${esc(s.title)}</h2>
-      <span class="soon-state ${esc(s.state.replace(/\s+/g, "-"))}">${esc(s.state)}</span></header>
-    <p class="soon-body">${esc(s.body).replace(/\s+/g, " ")}</p>
-    <ul class="soon-list">${s.items.map(
-      (i) => `<li>${esc(i)}</li>`).join("")}</ul>
+  const help = DESK_HELP.map((h) => `<details class="desk-q">
+    <summary>${esc(h.q)}</summary>
+    <p>${esc(h.a).replace(/\s+/g, " ")}</p></details>`).join("");
+  const soon = DESK_SOON.map((s) => `<div class="desk-item">
+    <div class="desk-head"><b>${esc(s.title)}</b>
+      <span class="soon-state ${esc(s.state.replace(/\s+/g, "-"))}">${esc(s.state)}</span></div>
+    <ul class="soon-list">${s.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
     ${s.note ? `<p class="note">${esc(s.note).replace(/\s+/g, " ")}</p>` : ""}
-  </div>`;
-  root.innerHTML = `
+  </div>`).join("");
+  const changes = DESK_CHANGES.map((c) => `<div class="desk-item">
+    <div class="desk-head"><b>${esc(c.when)}</b></div>
+    <ul class="soon-list">${c.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+  </div>`).join("");
+
+  root.innerHTML = `<div class="grid-3 desk">
     <div class="panel" data-nofold>
-      <header><h2>Coming soon</h2>
-        <span class="hint">what is being built, and what is honestly not
-          finished</span></header>
-      <p class="soon-body">Nothing on this page is in the app yet. It is here
-        so that a feature which is half-built can say so, rather than appearing
-        on the board as a column of dashes.</p>
+      <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
+      ${help}
     </div>
-    ${SOON.map(section).join("")}`;
+    <div class="panel" data-nofold>
+      <header><h2>Being built</h2><span class="hint">and honestly not finished</span></header>
+      ${soon}
+    </div>
+    <div class="panel" data-nofold>
+      <header><h2>What changed</h2><span class="hint">newest first</span></header>
+      ${changes}
+    </div>
+  </div>`;
 }
 
 // --------------------------------------------------------------- settings
@@ -1970,7 +2048,8 @@ async function renderAssistant(ticket) {
   </button>`).join("");
 
   const bubbles = chat.messages.map((m) => `<div class="msg ${esc(m.role)}">
-    <div class="msg-body">${esc(m.content)}</div></div>`).join("");
+    <div class="msg-body">${m.role === "assistant"
+      ? markdown(m.content) : esc(m.content)}</div></div>`).join("");
 
   root.innerHTML = `<div class="chat-shell">
     <aside class="chat-side">
@@ -2176,6 +2255,23 @@ function markScrollFades(root = document) {
    Views call it after every await and before they touch the page. The ticket
    check in `render` is not enough on its own: a view writes to #view itself,
    partway through, long before it returns. */
+/* When the lines were last fetched, and what is left of the allowance. Its own
+   line because it is its own decision: the rest of the app refreshes on a
+   minute and this does not. */
+function paintOdds() {
+  const when = $("#odds-when");
+  if (!when) return;
+  const usage = state.oddsUsage || state.meta?.odds_usage;
+  const at = state.oddsAt
+    || (state.meta?.sources || []).find((s) => s.source === "odds")?.ts;
+  const parts = [];
+  if (at) parts.push(`lines ${ago(at)}`);
+  if (usage && usage.budget) {
+    parts.push(`${usage.remaining_budget ?? usage.budget - usage.used} left this month`);
+  }
+  when.textContent = parts.join(" · ") || "not fetched yet";
+}
+
 function stale(ticket) {
   /* No ticket means nobody is racing this render, so let it paint. Twelve
      handlers used to call their view directly -- the injury picker, every
@@ -2219,6 +2315,7 @@ async function loadState() {
     .map((y) => `<option value="${y}">${y}</option>`).join("");
   seasonSel.value = String(state.season);
   $("#refreshed").textContent = `Updated ${ago(meta.last_recompute)}`;
+  paintOdds();
   renderHero(meta);
 }
 
@@ -2360,6 +2457,32 @@ async function main() {
     }
   });
 
+  /* The lines, on their own button. Everything else in this app is free to
+     fetch; this one spends three requests of a monthly allowance every time,
+     so it is asked for rather than included. */
+  const oddsBtn = $("#refresh-odds");
+  oddsBtn?.addEventListener("click", async () => {
+    if (state.busy) return;
+    state.busy = true;
+    oddsBtn.disabled = true;
+    oddsBtn.classList.add("spinning");
+    try {
+      const out = await api("/api/refresh/odds", { method: "POST" });
+      state.oddsAt = Date.now();
+      if (out.usage) state.oddsUsage = out.usage;
+      await loadState();
+      await render();
+    } catch (err) {
+      alert(`Could not update the odds: ${err.message}`);
+    } finally {
+      state.busy = false;
+      oddsBtn.disabled = false;
+      oddsBtn.classList.remove("spinning");
+      paintOdds();
+    }
+  });
+  paintOdds();
+
   // The clock is the one thing on the page that must not wait for a refresh --
   // including the one in the logo, which is why it ticks whether or not there
   // is any state to render around it.
@@ -2381,16 +2504,21 @@ async function main() {
   await loadState();
   setTab(state.tab, { fromHash: true });
 
-  // The server refreshes on its own schedule; poll so an open tab reflects it
-  // without the user reaching for reload.
+  /* Everything except the odds, once a minute.
+     This is a real fetch now rather than a poll for someone else's work: the
+     scheduler is off by default, so if this tab does not ask, nothing does.
+     It can run this often precisely because the metered feed is not in it --
+     scores, the schedule and the news are free, and a minute is about how long
+     a score is worth being wrong for. */
   setInterval(async () => {
     if (state.busy || document.hidden) return;
     const before = state.meta?.last_recompute;
     try {
+      await api("/api/refresh?full=1", { method: "POST" });
       await loadState();
       if (state.meta?.last_recompute !== before) await render();
     } catch { /* transient: the next tick retries */ }
-  }, 30000);
+  }, 60000);
 }
 
 main();
