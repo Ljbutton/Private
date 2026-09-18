@@ -271,6 +271,13 @@ def test_the_ranking_is_not_a_standings_table(client):
 
 
 def test_a_team_that_wins_ugly_does_not_outrank_one_that_loses_well():
+    """Point differential over a season beats the win-loss column.
+
+    With records attached, because that is what the claim needs: "wins ugly"
+    and "loses well" are statements about accumulated scoring, and the weights
+    lean on the rating instead until the season has produced some. Eight games
+    in, the Pythagorean and the projection have earned their say.
+    """
     from nflpicker.api import ranking_scores
 
     ratings = {
@@ -278,8 +285,10 @@ def test_a_team_that_wins_ugly_does_not_outrank_one_that_loses_well():
         "BBB": {"power": 0.0, "pythagorean": 0.68},   # lost, but outscored
     }
     projections = {
-        "AAA": {"exp_wins": 7.5, "wins_p10": 5, "sb_prob": 0.01},
-        "BBB": {"exp_wins": 10.5, "wins_p10": 8, "sb_prob": 0.09},
+        "AAA": {"exp_wins": 7.5, "wins_p10": 5, "sb_prob": 0.01,
+                "wins_actual": 5, "losses_actual": 3},
+        "BBB": {"exp_wins": 10.5, "wins_p10": 8, "sb_prob": 0.09,
+                "wins_actual": 3, "losses_actual": 5},
     }
     scores = ranking_scores(ratings, projections)
     assert scores["BBB"] > scores["AAA"]

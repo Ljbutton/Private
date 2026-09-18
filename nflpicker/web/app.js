@@ -115,6 +115,73 @@ function renderStatus(meta) {
     rows.push(conn("warn", "Odds API", "no key", "single consensus line only"));
   }
   $("#statusbar").innerHTML = rows.join("");
+  sideFoot(meta);
+}
+
+/* What the bottom of the sidebar shows, which depends on where you are.
+
+   Connections only on Settings: everywhere else it was eight rows of green
+   dots reporting that nothing had happened, which is a lot of standing space
+   for a question you only ask when something is wrong. The game goes there
+   instead -- what is on now, or what is on next. */
+function sideFoot(meta) {
+  const conns = $("#side-conns");
+  const now = $("#side-now");
+  if (!conns || !now) return;
+  const onSettings = state.tab === "settings";
+  conns.hidden = !onSettings;
+  now.hidden = onSettings;
+  if (onSettings) return;
+
+  // The *current* week, not the week being browsed. Looking at week 3 in
+  // October does not mean there is no game on tonight, and the sidebar
+  // answering "what is on now" with "nothing" because you clicked back a week
+  // is the wrong answer to a question about the clock.
+  const games = state.liveSlate || [];
+  const live = games.filter((g) => g.status === "in_progress");
+  const next = games
+    .filter((g) => g.status === "scheduled" && g.kickoff)
+    .sort((a, b) => String(a.kickoff).localeCompare(String(b.kickoff)))[0];
+
+  const line = (g, kicking) => {
+    const score = (side) => {
+      const v = g[`${side}_score`];
+      return v === null || v === undefined ? "" : v;
+    };
+    return `<div class="side-game${kicking ? "" : " on"}">
+      <div class="sg-row"><span class="sg-team">${esc(g.away)}</span>
+        <span class="sg-score">${score("away")}</span></div>
+      <div class="sg-row"><span class="sg-team">${esc(g.home)}</span>
+        <span class="sg-score">${score("home")}</span></div>
+      <div class="sg-when">${kicking
+        ? esc(untilKickoff(g.kickoff))
+        : esc(g.clock || "in progress")}</div>
+    </div>`;
+  };
+
+  if (live.length) {
+    now.innerHTML = `<div class="side-label">
+      ${live.length > 1 ? `${live.length} games on now` : "On now"}</div>`
+      + live.slice(0, 3).map((g) => line(g, false)).join("");
+  } else if (next) {
+    now.innerHTML = '<div class="side-label">Next up</div>' + line(next, true);
+  } else {
+    now.innerHTML = '<div class="side-label">Next up</div>'
+      + '<div class="side-game"><div class="sg-when">No games scheduled.</div></div>';
+  }
+}
+
+/* "in 2h 14m", and it has to be recomputed rather than rendered once -- the
+   whole point of the line is that it counts down. */
+function untilKickoff(kickoff) {
+  const ms = new Date(kickoff).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "kicking off";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `in ${hours}h ${mins % 60}m`;
+  return `in ${Math.round(hours / 24)}d`;
 }
 
 /* ------------------------------------------------------------------ hero */
@@ -411,13 +478,30 @@ async function renderPerformance(ticket) {
     // landing at the top of an ascending sort as if it scored zero.
     return v && v.n ? v.rate : null;
   };
+  /* How many games are behind a rate, for breaking ties on it. Two perfect
+     records are not equally impressive: 2-0 has twice the evidence of 1-0 and
+     belongs above it. Applied as a tie-break rather than as a weighting,
+     because the column is a rate and re-ranking it by sample size would make
+     the numbers on screen stop explaining the order they are in. */
+  const sortWeight = (t, key) => {
+    if (key === "team" || key === "games") return 0;
+    const v = t.tallies[key];
+    return v && v.n ? v.n : 0;
+  };
   const sortedTeams = [...(d.teams || [])].sort((a, b) => {
     const av = sortValue(a, sort.key);
     const bv = sortValue(b, sort.key);
     if (av === null && bv === null) return a.team.localeCompare(b.team);
     if (av === null) return 1;
     if (bv === null) return -1;
-    const cmp = typeof av === "string" ? av.localeCompare(bv) : av - bv;
+    let cmp = typeof av === "string" ? av.localeCompare(bv) : av - bv;
+    // The deeper record first, in whichever direction the column is sorted:
+    // more evidence is better either way round, so this one does not flip.
+    if (cmp === 0 && typeof av !== "string") {
+      const byWeight = sortWeight(a, sort.key) - sortWeight(b, sort.key);
+      if (byWeight !== 0) return -byWeight;
+    }
+    if (cmp === 0) return a.team.localeCompare(b.team);
     return sort.dir === "desc" ? -cmp : cmp;
   });
 
@@ -620,6 +704,12 @@ async function renderHome(ticket) {
   const root = $("#view");
   const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
   if (stale(ticket)) return;
+  // Browsing the live week means Home has just fetched exactly what the
+  // sidebar wants, so it is handed over rather than fetched twice.
+  if (state.week === state.meta?.week && state.season === state.meta?.season) {
+    state.liveSlate = data.games || [];
+    sideFoot(state.meta);
+  }
   if (!data.games.length) {
     root.innerHTML = '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>';
     return;
@@ -716,7 +806,8 @@ async function renderHome(ticket) {
       const yourVerdict = !mineHere || actualWinner === null
         ? "" : (abbr === actualWinner ? " hit" : " miss");
       const beaten = actualWinner !== null && abbr !== actualWinner;
-      return `<div class="gteam${beaten ? " beaten" : ""}">
+      const won = actualWinner !== null && abbr === actualWinner;
+      return `<div class="gteam${beaten ? " beaten" : ""}${won ? " won" : ""}">
         <button class="pickdot${mineHere ? " on" : ""}${yourVerdict}" data-pick="${esc(g.game_id)}"
           data-team="${esc(abbr)}" title="${mineHere ? "Your pick — click to clear" : `Pick ${esc(abbr)}`}"
           aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
@@ -729,8 +820,7 @@ async function renderHome(ticket) {
       </div>
       ${cell("blind", blindHome, blindLineHome, side)}
       ${cell("ours", ourHome, ourLineHome, side)}
-      ${cell("book", bookHome, bookLineHome, side)}
-      ${cell("pmkt", mktHome, undefined, side)}`;
+      ${cell("book", bookHome, bookLineHome, side)}`;
     };
 
     const moved = g.movement?.toward_us;
@@ -745,10 +835,24 @@ async function renderHome(ticket) {
     const blindTotal = p && p.total_points ? num(p.total_points, 1) : null;
     const bookTotal = g.market?.total_points;
 
+    /* Did the favourite win. Judged against the book rather than against our
+       own number, because "upset" is a claim about what the world expected --
+       and the book is the closest thing to a public answer. A game the market
+       had at a coin flip is neither, so it says so instead of calling a 50.4%
+       favourite losing an upset. */
+    const favourite = bookHome === null || bookHome === undefined
+      || Math.abs(Number(bookHome) - 0.5) < 0.02
+      ? null : (Number(bookHome) > 0.5 ? g.home : g.away);
+    const verdictBadge = !actualWinner || !favourite ? "" : (
+      actualWinner === favourite
+        ? `<span class="gverdict expected" title="The book's favourite won">Expected</span>`
+        : `<span class="gverdict upset" title="The underdog won">Upset</span>`);
+
     return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
       <div class="gcard-top">
         <span class="gstate">${gameStamp(g)}</span>
         ${movedBadge}
+        ${verdictBadge}
         <span class="gopen" title="Open this game">&rsaquo;</span>
       </div>
       <div class="gcard-grid">
@@ -756,7 +860,7 @@ async function renderHome(ticket) {
         <div class="ghead blind" title="Blind model — the projection before it is ever shown the line. The only column here independent of the market.">Blind</div>
         <div class="ghead ours" title="Our blend — that same model blended with the line. This is what the app actually claims.">Blend</div>
         <div class="ghead book" title="Sportsbook consensus, with the vig removed">Book</div>
-        <div class="ghead pmkt" title="Prediction markets — Kalshi and Polymarket contract prices">Mkt</div>
+
         ${teamRow("away")}
         ${teamRow("home")}
         <!-- The projected total, as its own row under the two teams rather
@@ -770,7 +874,6 @@ async function renderHome(ticket) {
         <div class="gtot" title="Our blend's projected total">${
           ourTotal === null ? "–" : ourTotal}</div>
         <div class="gtot" title="Sportsbook total">${num(bookTotal, 1)}</div>
-        <div class="gtot"></div>
       </div>
     </article>`;
   };
@@ -778,7 +881,7 @@ async function renderHome(ticket) {
   root.innerHTML = `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
       <span class="hint">Home team listed second · Blind = before the line ·
-        Blend = what we claim · Book = sportsbook · Market = Kalshi/Polymarket ·
+        Blend = what we claim · Book = sportsbook ·
         a tick marks each source's pick</span></header>
     <div class="gboard">${games.map(card).join("")}</div>
     ${anyInherited ? `<p class="note">* These games finished before the app was
@@ -1373,6 +1476,84 @@ async function renderNews(ticket) {
   });
 }
 
+// ------------------------------------------------------------ coming soon
+/* What is being built, and what is deliberately not finished yet.
+
+   Prediction markets live here rather than on the board. They were on every
+   game card as a fourth column that read "–" on every row, which is worse than
+   absent: an empty column is a promise the app is not keeping, and the reader
+   has to learn to ignore a quarter of the card. The work is real and it is
+   listed here, where an unfinished thing can be described honestly instead of
+   shown broken. */
+const SOON = [
+  {
+    title: "Prediction markets",
+    state: "in progress",
+    body: `Kalshi and Polymarket price NFL games as contracts, and a contract
+      price is a probability with money behind it. That makes them a third
+      opinion next to the model and the sportsbook — and the one most likely to
+      disagree with the book for a reason.`,
+    items: [
+      "Kalshi and Polymarket prices beside the book on every game",
+      "A fourth column on the board, filled in rather than dashed",
+      "Where the contract and the sportsbook disagree, and by how much",
+      "Movement in contract price through the week, as the board already shows for the line",
+      "Contract volume, so a price nobody is trading can be told from a price that is",
+    ],
+    note: `Both venues answer. Kalshi returns the right games under the right
+      series ticker. What is missing is the books: the events endpoint nests a
+      summary of each contract without its bid and ask, so there is nothing to
+      price them from. The fix — asking the markets endpoint directly — is
+      written and shipped; whether it is enough is the next thing to find out.`,
+  },
+  {
+    title: "Closing line value",
+    state: "partly there",
+    body: `Whether the number we published beat the number the market closed at.
+      It is the only honest early read on whether a model has an edge, because
+      it settles long before the win-loss record says anything.`,
+    items: [
+      "Already tracked on Performance for games with an opening and a closing line",
+      "Per-week and per-team breakdowns",
+      "A running figure that says how much of the season's edge was real",
+    ],
+  },
+  {
+    title: "Your pool, not just the model's",
+    state: "planned",
+    body: `The survivor tracker already compares the original plan with what
+      you actually picked. The same idea applied wider.`,
+    items: [
+      "Pick'em scoring against your own league's rules",
+      "More than one survivor entry at a time",
+      "Import a pool's results rather than marking teams used by hand",
+    ],
+  },
+];
+
+async function renderSoon(ticket) {
+  const root = $("#view");
+  if (stale(ticket)) return;
+  const section = (s) => `<div class="panel soon-card">
+    <header><h2>${esc(s.title)}</h2>
+      <span class="soon-state ${esc(s.state.replace(/\s+/g, "-"))}">${esc(s.state)}</span></header>
+    <p class="soon-body">${esc(s.body).replace(/\s+/g, " ")}</p>
+    <ul class="soon-list">${s.items.map(
+      (i) => `<li>${esc(i)}</li>`).join("")}</ul>
+    ${s.note ? `<p class="note">${esc(s.note).replace(/\s+/g, " ")}</p>` : ""}
+  </div>`;
+  root.innerHTML = `
+    <div class="panel" data-nofold>
+      <header><h2>Coming soon</h2>
+        <span class="hint">what is being built, and what is honestly not
+          finished</span></header>
+      <p class="soon-body">Nothing on this page is in the app yet. It is here
+        so that a feature which is half-built can say so, rather than appearing
+        on the board as a column of dashes.</p>
+    </div>
+    ${SOON.map(section).join("")}`;
+}
+
 // --------------------------------------------------------------- settings
 /* What you have to tell this app, and where it goes.
 
@@ -1907,7 +2088,7 @@ async function renderAssistant(ticket) {
 const VIEWS = { home: renderHome, teams: renderTeams,
   picks: renderPicks, news: renderNews,
   performance: renderPerformance,
-  assistant: renderAssistant, settings: renderSettings };
+  assistant: renderAssistant, settings: renderSettings, soon: renderSoon };
 
 /* Which render is allowed to write to the page.
 
@@ -1924,6 +2105,9 @@ let renderTicket = 0;
 
 async function render() {
   const ticket = ++renderTicket;
+  // Connections show on Settings and the game everywhere else, so this follows
+  // the tab rather than the data.
+  if (state.meta) sideFoot(state.meta);
   const view = VIEWS[state.tab] || renderHome;
   // Only Picks asks for the viewport's height; every other page is as tall as
   // it needs to be. Cleared here so a class one view sets cannot outlive it.
@@ -1959,6 +2143,15 @@ function measureFit() {
   const top = view.getBoundingClientRect().top + window.scrollY;
   document.documentElement.style.setProperty(
     "--fit-offset", `${Math.round(top + below)}px`);
+  /* And the header's own height, so the wordmark can be centred in the same
+     band as the rest of the top bar. Measured for the same reason the offset
+     above is: the header's height depends on its contents, and a constant
+     here would be wrong the next time any of them changed. */
+  const hero = $(".hero");
+  if (hero) {
+    document.documentElement.style.setProperty(
+      "--hero-h", `${Math.round(hero.getBoundingClientRect().height)}px`);
+  }
 }
 
 /* Every box on the page that fades its bottom edge while more is below.
@@ -1998,6 +2191,12 @@ function stale(ticket) {
 async function loadState() {
   const meta = await api("/api/state");
   state.meta = meta;
+  // The live slate for the sidebar, kept up to date by the same poll that
+  // keeps everything else. Cheap: it is the local server, and it is the one
+  // request that has to happen whichever page is open.
+  api(`/api/games?week=${meta.week}&season=${meta.season}`)
+    .then((live) => { state.liveSlate = live.games || []; sideFoot(meta); })
+    .catch(() => {});
   if (state.season === null) state.season = meta.season;
   if (state.week === null) state.week = meta.week;
   state.weeks = meta.weeks && meta.weeks.length ? meta.weeks
@@ -2146,7 +2345,10 @@ async function main() {
     refreshBtn.disabled = true;
     refreshBtn.classList.add("spinning");
     try {
-      await api("/api/refresh", { method: "POST" });
+      // full=1: the button means "do it now", not "do whatever is due". A
+      // stage inside its own polling interval is exactly the stage a person
+      // pressing refresh wants fetched again.
+      await api("/api/refresh?full=1", { method: "POST" });
       await loadState();
       await render();
     } catch (err) {
@@ -2168,7 +2370,12 @@ async function main() {
   setBrandClock(new Date());
   setInterval(() => {
     setBrandClock(new Date());
-    if (state.meta) renderHero(state.meta);
+    if (state.meta) {
+      renderHero(state.meta);
+      // The sidebar counts down to kickoff, so it has to be redrawn on the
+      // minute rather than only when something is fetched.
+      sideFoot(state.meta);
+    }
   }, 30000);
 
   await loadState();

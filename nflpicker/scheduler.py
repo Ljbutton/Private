@@ -246,12 +246,35 @@ class Scheduler:
                 await task
         self._tasks = []
 
-    async def refresh_now(self, stages: list[str] | None = None) -> dict:
-        """Manual refresh, sharing the lock so it cannot overlap a scheduled run."""
+    # The season-long play-by-play download, which is most of a slow refresh
+    # and cannot have changed since this morning. Left to its own interval even
+    # on a forced run.
+    SLOW_STAGES = ("stats",)
+
+    async def refresh_now(self, stages: list[str] | None = None, *,
+                          full: bool = False) -> dict:
+        """Manual refresh, sharing the lock so it cannot overlap a scheduled run.
+
+        `full` is what the button in the corner asks for. Without it a refresh
+        means "catch up on whatever is due", and each stage that was polled
+        inside its own interval is skipped -- which is right for a timer and
+        wrong for a person who has just pressed refresh. Pressing the button
+        *is* the request to spend an Odds API credit.
+
+        Everything except the play-by-play download, which is most of the wait
+        and is a season's worth of history that has not changed since this
+        morning. It keeps its own interval.
+        """
+        from .stages import stage_names
+
+        if full and not stages:
+            stages = [n for n in stage_names(get_config())
+                      if n not in self.SLOW_STAGES]
         lock = self._lock or asyncio.Lock()
         async with lock:
             result = await asyncio.to_thread(
-                self.pipeline.refresh, stages, force_odds=bool(stages and "odds" in stages)
+                self.pipeline.refresh, stages,
+                force_odds=bool(full or (stages and "odds" in stages)),
             )
         return result.to_dict()
 

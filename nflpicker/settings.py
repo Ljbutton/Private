@@ -166,6 +166,21 @@ SETTINGS: tuple[Setting, ...] = (
         default="18",
     ),
     Setting(
+        key="NFLPICKER_AUTO_REFRESH",
+        label="Fetch automatically",
+        kind="bool",
+        group="Model",
+        help="Off by default. Everything is fetched when you press refresh in "
+             "the top-left corner, which is the whole job in one press. Turned "
+             "on, the app also polls on its own through the day — each source "
+             "on its own timer.",
+        needed_for="Nothing. The refresh button does the same work; this only "
+                   "decides whether it also happens without being asked. "
+                   "Leaving it off is easier on a metered Odds API key and on "
+                   "a laptop battery.",
+        default="false",
+    ),
+    Setting(
         key="NFLPICKER_TRAIN_MAX_AGE_HOURS",
         label="Refit at the latest after",
         kind="number",

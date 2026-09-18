@@ -132,6 +132,19 @@ class Config:
     # readout with a week number on it, and cannot be moved against.
     ranking_cut_weekday: int = field(
         default_factory=lambda: _int("NFLPICKER_RANKING_CUT_WEEKDAY", 2))
+
+    # Whether the app fetches on its own, or only when asked.
+    #
+    # Off by default, which is the honest setting for a desktop app talking to
+    # a metered API. A scheduler that polls all afternoon spends somebody's
+    # Odds API budget on a line that has not moved and warms a laptop to answer
+    # a question nobody asked. The refresh button in the corner does everything
+    # the timers did, at the moment you want it done.
+    #
+    # Turned back on from Settings for anyone who would rather leave it
+    # running, which is a reasonable thing to want on a Sunday.
+    auto_refresh: bool = field(
+        default_factory=lambda: _bool("NFLPICKER_AUTO_REFRESH", False))
     # How much worse a fresh model may be before it is rejected. Walk-forward
     # MAE is computed over all history each time, and one week changes the
     # sample by about a third of a percent, so runs are comparable in practice;

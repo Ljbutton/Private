@@ -37,7 +37,10 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             # Never block startup on a slow network: the UI renders from
             # whatever is already stored and fills in when the fetch lands.
             asyncio.create_task(asyncio.to_thread(pipeline.bootstrap))
-        if start_scheduler:
+        # The caller may say no; so may the setting. Automatic polling is off
+        # unless someone asked for it -- the refresh button does everything the
+        # timers did, when you want it done rather than every few minutes.
+        if start_scheduler and get_config().auto_refresh:
             await scheduler.start()
         yield
         await scheduler.stop()
@@ -97,9 +100,10 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         }
 
     @app.post("/api/refresh")
-    async def refresh(stages: str | None = Query(default=None)) -> dict:
+    async def refresh(stages: str | None = Query(default=None),
+                      full: bool = Query(default=False)) -> dict:
         wanted = [s.strip() for s in stages.split(",")] if stages else None
-        return await scheduler.refresh_now(wanted)
+        return await scheduler.refresh_now(wanted, full=full)
 
     # ------------------------------------------------------------ games
     @app.get("/api/games")

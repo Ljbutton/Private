@@ -123,3 +123,63 @@ def test_a_snapshot_never_includes_a_later_quote():
     assert opening.spread_home == -2.5      # not the later -7.0
     closing = build_consensus("g1", quotes, "2025-09-06T00:00:00+00:00")
     assert closing.spread_home == -7.0
+
+
+def test_a_line_is_frozen_once_the_game_kicks_off(pipeline, temp_env):
+    """In-play odds describe the scoreboard, not the matchup.
+
+    Once a team is three scores down the number on the board is answering a
+    different question, and letting it overwrite the consensus meant a refresh
+    mid-blowout rewrote what the market had thought beforehand -- which is the
+    only thing worth recording about it.
+    """
+    from nflpicker import db
+
+    db.execute("DELETE FROM games")
+    db.execute("DELETE FROM odds_snapshots")
+    db.execute("DELETE FROM consensus")
+    db.execute(
+        "INSERT INTO games(game_id, season, week, season_type, kickoff, home, away,"
+        " status, updated_at) VALUES('g1', 2025, 1, 'REG', '2025-09-07T17:00:00Z',"
+        " 'KC', 'DEN', 'scheduled', '2025-09-07T12:00:00Z')")
+    db.execute(
+        "INSERT INTO odds_snapshots(game_id, book, market, captured_at, home_point,"
+        " away_point, home_price, away_price) VALUES"
+        "('g1', 'dk', 'spread', '2025-09-07T12:00:00Z', -3.0, 3.0, -110, -110)")
+
+    pipeline.rebuild_consensus(["g1"])
+    before = db.query_one("SELECT spread_home FROM consensus WHERE game_id = 'g1'")
+    assert before["spread_home"] == -3.0
+
+    # Kickoff, a blowout, and the in-play line moves to -21.
+    db.execute("UPDATE games SET status = 'in_progress' WHERE game_id = 'g1'")
+    db.execute(
+        "INSERT INTO odds_snapshots(game_id, book, market, captured_at, home_point,"
+        " away_point, home_price, away_price) VALUES"
+        "('g1', 'dk', 'spread', '2025-09-07T18:30:00Z', -21.0, 21.0, -110, -110)")
+    pipeline.rebuild_consensus(["g1"])
+
+    after = db.query_one("SELECT spread_home FROM consensus WHERE game_id = 'g1'")
+    assert after["spread_home"] == -3.0, "the pre-kickoff line stands"
+
+
+def test_a_started_game_with_no_line_still_gets_one(pipeline, temp_env):
+    """The freeze must not leave a started game with nothing at all -- an app
+    first opened on a Sunday afternoon would show a blank board."""
+    from nflpicker import db
+
+    db.execute("DELETE FROM games")
+    db.execute("DELETE FROM odds_snapshots")
+    db.execute("DELETE FROM consensus")
+    db.execute(
+        "INSERT INTO games(game_id, season, week, season_type, kickoff, home, away,"
+        " status, updated_at) VALUES('g2', 2025, 1, 'REG', '2025-09-07T17:00:00Z',"
+        " 'KC', 'DEN', 'in_progress', '2025-09-07T18:00:00Z')")
+    db.execute(
+        "INSERT INTO odds_snapshots(game_id, book, market, captured_at, home_point,"
+        " away_point, home_price, away_price) VALUES"
+        "('g2', 'dk', 'spread', '2025-09-07T18:30:00Z', -7.0, 7.0, -110, -110)")
+
+    pipeline.rebuild_consensus(["g2"])
+    row = db.query_one("SELECT spread_home FROM consensus WHERE game_id = 'g2'")
+    assert row and row["spread_home"] == -7.0

@@ -248,13 +248,20 @@ class Pipeline:
         """
         stamp = now_iso()
         if game_ids is None:
-            # Upcoming games always get a fresh snapshot. Final games are included
-            # only when they have never had one, so a first run backfills history
-            # without rewriting closing lines on every poll afterwards.
+            # Games that have not kicked off get a fresh snapshot. A game that
+            # has started is included only when it has never had one, so a
+            # first run backfills history without rewriting a line afterwards.
+            #
+            # "Has started", not "has finished". In-play odds are a different
+            # market answering a different question -- once a team is three
+            # scores down, the number on the board describes the scoreboard
+            # rather than the matchup -- and letting them overwrite the
+            # consensus meant a refresh mid-blowout rewrote what the market had
+            # thought beforehand. Which is the thing the whole page is for.
             rows = db.query(
                 "SELECT DISTINCT o.game_id FROM odds_snapshots o "
                 "JOIN games g ON g.game_id = o.game_id "
-                "WHERE g.status != 'final' OR NOT EXISTS "
+                "WHERE g.status = 'scheduled' OR NOT EXISTS "
                 "  (SELECT 1 FROM consensus c WHERE c.game_id = o.game_id)"
             )
             game_ids = [r["game_id"] for r in rows]
@@ -269,9 +276,20 @@ class Pipeline:
             )
             if not quotes:
                 continue
-            is_final = bool(db.query_one(
-                "SELECT 1 AS x FROM games WHERE game_id = ? AND status = 'final'", (game_id,)
+            # Kicked off, by either clock: the status the feed reports, or a
+            # kickoff time that has passed. Both, because a scoreboard that has
+            # not updated yet still leaves a game whose line should be closed.
+            started = bool(db.query_one(
+                "SELECT 1 AS x FROM games WHERE game_id = ? "
+                "AND (status != 'scheduled' OR (kickoff IS NOT NULL AND kickoff <= ?))",
+                (game_id, now_iso()),
             ))
+            # Never rewrite a line once the game is under way. The explicit
+            # game-id path skips the filter above -- a fresh odds fetch names
+            # the games it touched -- so the rule has to hold here too.
+            if started and not full_history and db.query_one(
+                    "SELECT 1 AS x FROM consensus WHERE game_id = ? LIMIT 1", (game_id,)):
+                continue
 
             if full_history:
                 # One consensus per distinct quote time, each built only from
@@ -281,7 +299,7 @@ class Pipeline:
                     (t, [q for q in quotes if (q["captured_at"] or "") <= t]) for t in times
                 ]
             else:
-                captured = (quotes[-1]["captured_at"] if is_final else stamp) or stamp
+                captured = (quotes[-1]["captured_at"] if started else stamp) or stamp
                 snapshots = [(captured, quotes)]
 
             for captured, visible in snapshots:
