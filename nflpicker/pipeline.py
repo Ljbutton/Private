@@ -1630,8 +1630,17 @@ class Pipeline:
         edges.sort(key=lambda e: e["expected_value"], reverse=True)
 
         # ---- pick'em (both modes) and survivor
+        #
+        # The whole week, including games that have already been played. The
+        # board used to be built from the unplayed ones only, so by Sunday
+        # evening it had quietly shrunk to whatever was left and there was no
+        # way to see what it had said about the rest -- which is the half you
+        # want on a Monday, when the question is how the week went rather than
+        # what to pick. A finished game keeps the prediction it was given
+        # while it was still upcoming (see `upcoming` above), so these are the
+        # numbers the board committed to, not a rerun with the answers known.
         entries = []
-        for g in upcoming:
+        for g in games:
             if int(g["week"]) != week:
                 continue
             prediction = by_game.get(g["game_id"])

@@ -1013,7 +1013,8 @@ td.team { font-weight: 600; }
   display: flex; flex-direction: column;
 }
 #view.fit-screen > .grid-2,
-#view.fit-screen > .pick-board { flex: 1; min-height: 0; margin-bottom: 0; }
+#view.fit-screen > .pick-board,
+#view.fit-screen > .perf-grid { flex: 1; min-height: 0; margin-bottom: 0; }
 /* Three columns: the picks, survivor's choice, and the run that choice
    commits you to.
 
@@ -1023,8 +1024,12 @@ td.team { font-weight: 600; }
    full height. Written as a third and two thirds at this level, with the pair
    splitting its two thirds evenly, so the three columns come out equal while
    survivor and the run stay one element and can be drawn as one panel. */
+/* Half and half: the week's picks, and survivor with the run it commits you
+   to. Both halves split their own list into two columns rather than one long
+   one, which is the only way sixteen games and seventeen weeks both fit a
+   screen without either of them scrolling. */
 .pick-board {
-  display: grid; grid-template-columns: 1fr 2fr; gap: 16px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
   align-items: stretch; min-height: 0;
 }
 .pick-board > * { min-width: 0; }
@@ -1032,10 +1037,39 @@ td.team { font-weight: 600; }
    direct child panel and outranks a bare class on specificity. Left as
    `.survivor-pair` this lost, both halves were laid out as flex items in one
    column, and the run was drawn on top of survivor's own list. */
+/* The choice on top, the run underneath -- not side by side. With the crest
+   grid gone from the top half there is height to spare, and the run reads
+   better wide and short than tall and narrow: seventeen rows in two columns
+   is one glance, seventeen in one column is a scroll. */
 .pick-board > .panel.survivor-pair {
-  display: grid; grid-template-columns: 1fr 1fr;
+  display: grid; grid-template-rows: minmax(0, auto) minmax(0, 1fr);
   min-width: 0; min-height: 0; padding: 0; overflow: hidden;
 }
+.sv-run-below {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  padding: 14px 18px 16px; border-top: 1px solid var(--grid);
+}
+/* Two columns of weeks. `column-count` rather than a grid because the rows
+   are table rows: the table is laid out once and the browser splits the
+   finished flow, so the two columns stay in step without splitting the
+   markup into two tables that would each need their own header. */
+/* Two tables abreast, each carrying its own header, so the back half of the
+   season sits beside the front half instead of below the fold. */
+.sv-run-cols {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr;
+  gap: 0 14px; align-content: start; overflow-y: auto;
+}
+/* `min-width: 0` on the tracks, because a grid item's automatic minimum is
+   its content and a four-column table is wider than half this panel -- so
+   without it the right-hand table pushed its last column off the edge and the
+   win probabilities were cut in half. `table-layout: fixed` then keeps the
+   two tables in step with each other rather than each sizing to its own
+   longest team name. */
+.sv-run-cols > * { min-width: 0; }
+.sv-run-cols .slate { width: 100%; table-layout: fixed; font-size: 12px; }
+.sv-run-cols .slate th, .sv-run-cols .slate td { padding: 5px 6px; }
+.sv-run-cols .slate td:first-child, .sv-run-cols .slate th:first-child { width: 33%; }
+.sv-run-cols thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
 /* One panel, one border, divided down the middle -- not two panels with a gap.
    The divider is the join: it says these are two halves of one subject rather
    than two subjects that happen to be adjacent. */
@@ -1100,6 +1134,32 @@ td.team { font-weight: 600; }
 }
 .team-picker.used .team-pick { padding: 2px; display: grid; place-items: center; }
 .team-picker.used .tbadge { width: 100%; height: auto; aspect-ratio: 1; max-width: 22px; }
+/* The picker spans the page above both panels, because it now governs both.
+   Sitting inside the injury panel it looked like a control for that table --
+   which is exactly what it used to be, and exactly the confusion to avoid now
+   that it also filters the news beside it. */
+.news-filter { padding: 10px 12px; margin-bottom: 14px; }
+.team-picker.wide {
+  display: grid; grid-template-columns: repeat(33, minmax(0, 1fr));
+  gap: 3px; max-height: none; overflow: visible;
+}
+.team-picker.wide .team-pick { padding: 3px 2px; }
+/* The league mark stands for "all of it", so it reads as a word rather than a
+   crest and is set apart from the thirty-two that follow it. */
+.tbadge.league {
+  display: grid; place-items: center;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  --team: var(--text-secondary);
+}
+.tbadge.league .mono { font-size: 8px; letter-spacing: .02em; opacity: 1; }
+.team-pick.league { margin-right: 5px; }
+.team-pick.league.on .tbadge.league { border-color: var(--series-1); }
+/* Which filter is in force, said once on each panel that obeys it. */
+.filter-who {
+  margin-left: auto; font-weight: 700; color: var(--series-1);
+  text-transform: uppercase; letter-spacing: .06em; font-size: 10.5px;
+}
+
 /* The sort control sits on the panel's own header line, pushed right, so it
    reads as a property of the list rather than another row above it. */
 .news-sort { margin-left: auto; display: flex; align-items: center; gap: 7px; }
@@ -1256,7 +1316,10 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    half-width column pushed the whole page sideways rather than scrolling
    inside its own box. */
 .grid-2 > * { min-width: 0; }
-.pickem-list { display: grid; gap: 4px; }
+/* Two columns, so a sixteen-game week is one screen rather than a scroll.
+   The rows are self-contained cards, so they flow into columns cleanly. */
+.pickem-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+  align-content: start; }
 .pick-row {
   display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px;
   align-items: center;
@@ -1304,6 +1367,76 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .pick-tiles .value { font-size: 17px; grid-column: 2; grid-row: 1; }
 .pick-tiles .label { grid-column: 1; grid-row: 1; }
 .pick-tiles .sub { grid-column: 2; grid-row: 2; justify-self: end; font-size: 10px; }
+
+/* The record and the survivor button share the team's row, between its name
+   and its score. Both are small and fixed-width so the scores stay in a
+   column down the card rather than stepping in and out with the text. */
+.trec {
+  font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+  min-width: 30px; text-align: right;
+}
+.sdot {
+  appearance: none; cursor: pointer; flex: none;
+  width: 18px; height: 18px; border-radius: 5px; padding: 0;
+  font: inherit; font-size: 10px; font-weight: 800; line-height: 1;
+  border: 1px solid var(--border); background: var(--surface-sunken);
+  color: var(--text-muted);
+}
+.sdot:hover:not(:disabled) { border-color: var(--series-1); color: var(--series-1); }
+.sdot.on {
+  background: var(--series-1); border-color: var(--series-1); color: #06130c;
+}
+.sdot.on.hit { background: var(--good); border-color: var(--good); }
+.sdot.on.miss { background: var(--critical); border-color: var(--critical); color: #fff; }
+.sdot:disabled { opacity: .28; cursor: not-allowed; }
+
+/* The bye box sits in the board's grid as one more card, because that is
+   exactly the space it is filling: the hole two or three missing games leave
+   at the end of the week. */
+.byecard { display: flex; flex-direction: column; gap: 8px; cursor: default; }
+.byehead {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-secondary);
+}
+.byehead .hint { text-transform: none; letter-spacing: 0; }
+.byelist { display: grid; gap: 3px; }
+.byerow {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto auto auto;
+  gap: 8px; align-items: center; padding: 3px 4px;
+  border-radius: var(--radius-sm); background: var(--surface-sunken);
+}
+.byerow .tname { font-size: 12px; }
+.byerank { font-size: 12px; font-weight: 700; color: var(--text-primary);
+  font-variant-numeric: tabular-nums; }
+.bypow { font-size: 11px; font-variant-numeric: tabular-nums; min-width: 34px;
+  text-align: right; }
+
+/* Four panels, two by two, each scrolling inside itself rather than the page
+   scrolling past all four. This page is a set of answers to "how is it
+   going", and the answers are compared with each other -- which you cannot do
+   while three of them are below the fold. */
+.perf-grid {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  gap: 16px;
+}
+.perf-grid > .panel {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  margin-bottom: 0;
+}
+.perf-grid .table-scroll { min-height: 0; overflow: auto; }
+/* The season panel holds two tables; the week-by-week one is the longer and
+   gives way, since the totals above it are three rows and always fit. */
+.perf-grid .table-scroll:last-of-type { flex: 1; }
+.perf-grid .clv-cut .table-scroll { max-height: none; }
+/* The survivor panel is filled after the page is painted -- the tracker is a
+   second request -- so whatever it drops in has to be allowed to scroll
+   inside the panel rather than push the page down. It was the one panel of
+   the four that overflowed, by exactly the height of the table it fetches. */
+.perf-grid > #survivor-track { overflow: hidden; }
+.perf-grid > #survivor-track > .grid-2,
+.perf-grid > #survivor-track > .empty { overflow: auto; min-height: 0; flex: 1; }
 
 .muted { color: var(--text-muted); }
 .empty { color: var(--text-muted); padding: 34px 22px; text-align: center; font-size: 13px; }

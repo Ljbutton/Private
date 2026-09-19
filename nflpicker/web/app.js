@@ -603,7 +603,16 @@ async function renderPerformance(ticket) {
   const root = $("#view");
   const d = await api(`/api/scoreboard?season=${state.season}`);
   if (stale(ticket)) return;
-  const pickers = d.pickers || [];
+  /* The prediction-market venue comes out of this page.
+
+     It was a column beside the blind model, the blend and the book, and it
+     could not be read the way the other three are: it scores only the games
+     Kalshi and Polymarket happened to quote, which is a different and much
+     smaller set every week, so its rate sat in a row of rates that are not
+     comparable to it. The venues still have their own place in the app; what
+     they do not have is a column pretending to be a fourth opinion on the
+     same games. */
+  const pickers = (d.pickers || []).filter((p) => p !== "market");
   if (!d.weeks.length) {
     paint(root, `<div class="panel"><div class="empty">
       Nothing graded yet — this fills in as games finish and you record picks on the board.
@@ -696,7 +705,9 @@ async function renderPerformance(ticket) {
       >${esc(label)}<span class="sort-arrow">${on ? (sort.dir === "desc" ? "▾" : "▴") : "⇅"}</span></th>`;
   };
 
-  if (!paint(root, `<div class="panel" data-nofold>
+  root.classList.add("fit-screen");
+  if (!paint(root, `<div class="perf-grid">
+  <div class="panel" data-nofold>
     <header><h2>Season ${d.season}</h2>
       <span class="hint">Straight-up winners · "same games" scores only games every
         picker had a view on</span></header>
@@ -730,12 +741,12 @@ async function renderPerformance(ticket) {
       <thead><tr>
         ${sortHead("team", "Team", "")}
         ${sortHead("games", "Games", "num")}
-        ${(d.pickers || []).map((p) => sortHead(p, d.labels[p], "num")).join("")}
+        ${pickers.map((p) => sortHead(p, d.labels[p], "num")).join("")}
       </tr></thead>
       <tbody>${sortedTeams.map((t) => `<tr>
         <td class="who">${esc(t.team)}</td>
         <td class="num muted">${t.games}</td>
-        ${d.pickers.map((p) => {
+        ${pickers.map((p) => {
           const v = t.tallies[p];
           if (!v.n) return `<td class="num muted${p === sort.key ? " sorted" : ""}">–</td>`;
           // Above half is being read well, below it badly; the midpoint is
@@ -755,6 +766,7 @@ async function renderPerformance(ticket) {
       <span class="hint">the plan as first made, against the teams you
         actually spent</span></header>
     <div class="empty">Loading…</div>
+  </div>
   </div>`)) return;
 
   /* The plan the optimiser made before any of it had happened, against what
@@ -910,6 +922,13 @@ async function renderHome(ticket) {
   const myPick = {};
   for (const row of mine.picks || []) myPick[row.game_id] = row.selection;
 
+  // This week's survivor pick, and every week the others were spent in, so a
+  // team already used is shown as unavailable rather than silently moving.
+  // Both come down with the games rather than as a second request: they are
+  // facts about the same week and would only be fetched together anyway.
+  const survivorPick = data.survivor_pick || null;
+  const usedWeeks = data.survivor_used_weeks || {};
+
   /* Broadcast order: the order ESPN and the books list a week in, which is
      simply kickoff time, with anything already finished moved to the back.
 
@@ -929,6 +948,30 @@ async function renderHome(ticket) {
     const t = Date.parse(g.kickoff);
     return Number.isNaN(t) ? Infinity : t;      // undated games sit at the end
   };
+  /* Who is not playing, in the hole their absence leaves.
+
+     A bye week takes two or three games off the board and leaves a ragged
+     gap at the end of the grid. The teams that made the gap are the obvious
+     thing to put in it, and they are genuinely worth a look: their rivals are
+     playing, their ranking is about to move without them, and a survivor pick
+     cannot use them. Split by conference because that is how anybody reading
+     a bye week is already thinking about it. */
+  const byeBox = (conf, rows) => rows.length ? `<article class="gcard byecard">
+    <div class="byehead">${esc(conf)} on bye<span class="hint">no game in week ${
+      state.week}</span></div>
+    <div class="byelist">${rows.map((b) => `<div class="byerow">
+      ${teamMark(b.team)}
+      <span class="tname"><span class="nick">${esc(b.name || b.team)}</span>
+        <span class="abbr">${esc(b.team)}</span></span>
+      <span class="trec">${esc(b.record || "")}</span>
+      <span class="byerank">${b.rank ? `#${b.rank}` : "–"}</span>
+      <span class="bypow muted">${b.power === null || b.power === undefined
+        ? "" : signed(b.power, 1)}</span>
+    </div>`).join("")}</div></article>` : "";
+  const byes = data.byes || [];
+  const byeCards = byeBox("AFC", byes.filter((b) => b.conference === "AFC"))
+    + byeBox("NFC", byes.filter((b) => b.conference === "NFC"));
+
   const games = [...data.games].sort((a, b) => {
     const done = (g) => (g.status === "final" ? 1 : 0);
     return done(a) - done(b)
@@ -1005,6 +1048,15 @@ async function renderHome(ticket) {
       const t = (state.meta?.teams || {})[abbr] || {};
       const score = g[`${side}_score`];
       const mineHere = yourPick === abbr;
+      /* The survivor pick, made here rather than on a grid of crests two pages
+         away. Picking it beside the game means the week comes with it, which
+         is the whole reason to move it: a list of teams you have used cannot
+         say which week you spent each one in, and that is the only thing that
+         makes a run checkable afterwards. */
+      const survivorHere = survivorPick === abbr;
+      const survivorElsewhere = survivorHere ? null : (usedWeeks[abbr] ?? null);
+      const survivorVerdict = !survivorHere || actualWinner === null
+        ? "" : (abbr === actualWinner ? " hit" : " miss");
       // Blue while the game is undecided, so your pick still reads as yours
       // rather than as a result you have not earned yet.
       const yourVerdict = !mineHere || actualWinner === null
@@ -1020,6 +1072,15 @@ async function renderHome(ticket) {
         <span class="tname" title="${esc(t.full_name || abbr)}${
           side === "home" ? " (home)" : " (away)"}"><span class="nick">${
             esc(t.name || abbr)}</span><span class="abbr">${esc(abbr)}</span></span>
+        <span class="trec" title="Record going into this week">${
+          esc(g[`${side}_record`] || "")}</span>
+        <button class="sdot${survivorHere ? " on" : ""}${survivorVerdict}"
+          data-survivor="${esc(abbr)}"${survivorElsewhere
+            ? ` disabled title="${esc(abbr)} was already used in week ${survivorElsewhere}"`
+            : ` title="${survivorHere
+                ? `Your survivor pick this week — click to release`
+                : `Take ${esc(abbr)} as this week's survivor pick`}"`}
+          aria-pressed="${survivorHere}">S</button>
         <span class="tscore">${score === null || score === undefined ? "" : score}</span>
       </div>
       ${cell("blind", blindHome, blindLineHome, side)}
@@ -1087,7 +1148,7 @@ async function renderHome(ticket) {
       <span class="hint">Home team listed second · Blind = before the line ·
         Blend = what we claim · Book = sportsbook ·
         a tick marks each source's pick</span></header>
-    <div class="gboard">${games.map(card).join("")}</div>
+    <div class="gboard">${games.map(card).join("")}${byeCards}</div>
     ${anyInherited ? `<p class="note">* These games finished before the app was
       running, so the model has no pick of its own and the sportsbook's number is
       shown in its place.</p>` : ""}
@@ -1114,6 +1175,24 @@ async function renderHome(ticket) {
       await api("/api/my-picks", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ game_id: gameId, selection: next }),
+      });
+      await render();
+    });
+  });
+
+  // The survivor pick, same rule: inside a card that opens a dialog, so the
+  // click stops here. Clicking the team you already have releases it.
+  $$(".sdot", root).forEach((dot) => {
+    dot.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (dot.disabled) return;
+      const team = dot.dataset.survivor;
+      await api("/api/survivor/pick", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          season: state.season, week: state.week,
+          team: survivorPick === team ? null : team,
+        }),
       });
       await render();
     });
@@ -1459,6 +1538,13 @@ async function renderTeams(ticket) {
       `<div class="card-head">${teamMark(team.team)}<b>${esc(team.name)}</b>
         <span class="muted">#${team.rank} · ${num(team.exp_wins, 1)} expected wins</span>
       </div><div class="facts">${card(team)}</div>`;
+    /* The crest here is written long after the page was wired.
+       `teamMark` draws the logo at opacity 0 and `wireLogos` reveals it once
+       the image reports itself loaded -- so a mark inserted after that pass
+       has nobody listening for it and sits invisible for ever, leaving the
+       bare abbreviation underneath. Every other late write on this page
+       already re-wires; this one did not. */
+    wireLogos($("#team-card"));
     $$("#view tr[data-team]").forEach(
       (tr) => tr.classList.toggle("on", tr.dataset.team === abbr));
     const dist = team.distribution || {};
@@ -1539,9 +1625,22 @@ async function renderPicks(ticket) {
     </span>
   </div>`).join("");
 
-  const path = (survivor.path || []).map((s) => `<tr>
+  /* The run in two tables rather than one.
+
+     `column-count: 2` was the obvious way and does not work: CSS columns
+     fragment a block flow, and a table is one unbreakable box, so the whole
+     thing sat in the first column and the back half of the season fell off
+     the bottom. Splitting the rows and emitting two tables is what actually
+     puts week fourteen beside week six. */
+  const runRow = (s) => `<tr>
     <td class="team">Week ${s.week}</td><td>${esc(s.team)}</td>
-    <td class="muted">vs ${esc(s.opponent)}</td><td>${pct(s.win_prob, 1)}</td></tr>`).join("");
+    <td class="muted">vs ${esc(s.opponent)}</td><td>${pct(s.win_prob, 1)}</td></tr>`;
+  const runTable = (rows) => rows.length ? `<table class="slate">
+      <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
+        <th class="num">Win prob</th></tr></thead>
+      <tbody>${rows.map(runRow).join("")}</tbody></table>` : "";
+  const runAll = survivor.path || [];
+  const runHalf = Math.ceil(runAll.length / 2);
   /* This week's options as one list, the recommendation included and marked,
      rather than a pick in one panel and a table of "alternatives" in another.
      Deviating is not a separate subject from choosing -- it is the same choice
@@ -1606,52 +1705,26 @@ async function renderPicks(ticket) {
         <div class="alt-list">${altRows
           || '<div class="empty">No alternatives.</div>'}</div>
       </div>
-      <div class="used-block">
-        <h3>Teams you have already used<span class="hint">click a mark to use or
-          release it — the plan replans itself</span></h3>
-        <div class="team-picker used">${(state.meta?.teams
-          ? Object.keys(state.meta.teams).sort() : []).map((t) => {
-            const used = (data.survivor_used || []).includes(t);
-            return `<button class="team-pick${used ? " used" : ""}" data-used="${esc(t)}"
-              title="${esc(t)} — ${used ? "used, click to release" : "available, click to mark used"}"
-              aria-pressed="${used}">${teamMark(t)}</button>`;
-          }).join("")}</div>
-      </div>
     ` : `<div class="empty">${esc(survivor.note || "").replace(/\s+/g, " ")
       || esc(why).replace(/\s+/g, " ")
       || "No survivor plan available."}</div>`}
   </section>
 
   ${survivor.recommendation ? `
-  <section class="sv-half survivor-run">
+  <section class="sv-run-below survivor-run">
     <header><h2>The rest of the run</h2>
       <span class="hint" title="The recommendation is not always this week's safest team. Spending a strong team now can cost more later than it gains today, so the optimiser solves the whole remaining path — which is why the cost of switching, shown beside this week's options, is measured over this run rather than over Sunday.">every week from here</span></header>
-    <div class="table-scroll"><table class="slate">
-      <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
-        <th class="num">Win prob</th></tr></thead>
-      <tbody>${path}</tbody></table></div>
+    <div class="sv-run-cols">${runTable(runAll.slice(0, runHalf))}${
+      runTable(runAll.slice(runHalf))}</div>
   </section>` : ""}
   </div>
   </div>`)) return;
 
+  /* No crest grid to wire any more. Which teams have been spent is recorded
+     by picking them on the board, beside the game, where the week comes with
+     the choice; this page reads that rather than offering a second, weekless
+     way to say the same thing. */
   wireLogos(root);
-  /* Clicking a mark toggles it and replans immediately. Typing a
-     comma-separated list meant naming a team from memory, spelling its
-     abbreviation the way this app happens to spell it, and pressing a second
-     button before anything happened. */
-  $$("[data-used]", root).forEach((button) => {
-    button.addEventListener("click", async () => {
-      const team = button.dataset.used;
-      const used = new Set(data.survivor_used || []);
-      if (used.has(team)) used.delete(team); else used.add(team);
-      button.classList.toggle("used");
-      await api("/api/survivor/used", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ teams: [...used] }),
-      });
-      await render();
-    });
-  });
 }
 
 /* A story's time as a number, so a missing or unparseable date sorts last
@@ -1709,7 +1782,10 @@ async function renderNews(ticket) {
                                || storyTime(b) - storyTime(a) },
   };
   const sortKey = NEWS_SORTS[state.newsSort] ? state.newsSort : "relevance";
-  const sorted = [...(data.items || [])].sort(NEWS_SORTS[sortKey].by);
+  const chosen = state.newsTeam === undefined ? "__all__" : state.newsTeam;
+  const sorted = [...(data.items || [])]
+    .filter((n) => chosen === "__all__" || (n.teams || []).includes(chosen))
+    .sort(NEWS_SORTS[sortKey].by);
 
   const items = sorted.map((n) => `<div class="news-item">
     <div class="news-tags">
@@ -1728,17 +1804,40 @@ async function renderNews(ticket) {
   /* One team at a time, chosen by its mark. A league-wide list is four hundred
      rows you scroll past to find the one team you are about to pick, and the
      status filter happens server-side: "Active" is not an injury report. */
-  const teams = data.injury_teams || [];
+  /* One picker for the whole page.
+
+     There were two lists on this page and one way to filter them -- the crests
+     chose a team for the injury table and the news feed ignored them
+     entirely, which is the wrong way round for the question people actually
+     bring here: "is there anything I should know about this team before I
+     pick them". So the row moves to the top and filters both, and gains a
+     league mark at the front that means everything, because "show me all of
+     it again" needs to be one click rather than a page reload.
+
+     Counts on each crest are injuries plus stories, since it now filters
+     both and a crest that reads 0 while there is news about them would be
+     lying about what a click will do. */
   const counts = data.injury_counts || {};
-  if (!state.injuryTeam || !teams.includes(state.injuryTeam)) {
-    state.injuryTeam = teams[0] || null;
+  const newsCounts = {};
+  for (const item of data.items || []) {
+    for (const t of item.teams || []) newsCounts[t] = (newsCounts[t] || 0) + 1;
   }
-  const picker = (state.meta?.teams ? Object.keys(state.meta.teams).sort() : teams)
-    .map((t) => {
-      const n = counts[t] || 0;
-      return `<button class="team-pick${t === state.injuryTeam ? " on" : ""}${
+  const ALL = "__all__";
+  const known = state.meta?.teams ? Object.keys(state.meta.teams).sort()
+    : (data.injury_teams || []);
+  if (state.newsTeam === undefined) state.newsTeam = ALL;
+  if (state.newsTeam !== ALL && !known.includes(state.newsTeam)) state.newsTeam = ALL;
+  const team = state.newsTeam;
+
+  const picker = `<button class="team-pick league${team === ALL ? " on" : ""}"
+      data-team="${ALL}" title="Every team — all injuries and all news">
+      <span class="tbadge league"><span class="mono">NFL</span></span>
+      <span class="tp-count"></span></button>`
+    + known.map((t) => {
+      const n = (counts[t] || 0) + (newsCounts[t] || 0);
+      return `<button class="team-pick${t === team ? " on" : ""}${
         n ? "" : " empty"}" data-team="${esc(t)}"
-        title="${esc(t)} — ${n ? `${n} listed` : "nobody listed"}">
+        title="${esc(t)} — ${counts[t] || 0} injured, ${newsCounts[t] || 0} stories">
         ${teamMark(t)}<span class="tp-count">${n || ""}</span></button>`;
     }).join("");
 
@@ -1748,7 +1847,8 @@ async function renderNews(ticket) {
      fact about our polling rather than about the player. The source's prose
      comment stays too, but as a tooltip: it is the fallback when the feed did
      not break the injury out into fields, not a column of its own. */
-  const shown = (data.injuries || []).filter((i) => i.team === state.injuryTeam);
+  const shown = (data.injuries || []).filter(
+    (i) => team === ALL || i.team === team);
   const injuries = shown.map((i) => `<tr${i.detail
       ? ` title="${esc(i.detail)}"` : ""}>
     <td class="team">${esc(i.player)}${i.position
@@ -1758,12 +1858,17 @@ async function renderNews(ticket) {
     <td><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
     </tr>`).join("");
 
-  if (!paint(root, `<div class="grid-2 news-split">
+  const who = team === ALL ? "the league" : team;
+  if (!paint(root, `
+    <div class="panel news-filter" data-nofold>
+      <div class="team-picker wide">${picker}</div>
+    </div>
+    <div class="grid-2 news-split">
     <div class="panel">
       <header><h2>Injury report</h2>
         <span class="hint">questionable, doubtful, out, IR and PUP only —
-          not the whole roster</span></header>
-      <div class="team-picker">${picker}</div>
+          not the whole roster</span>
+        <span class="hint filter-who">${esc(who)}</span></header>
       ${injuries
         ? `<div class="table-scroll tall"><table class="slate roster">
             <thead><tr><th>Player</th>
@@ -1771,9 +1876,9 @@ async function renderNews(ticket) {
               <th title="How long they have been listed, and when they are expected back">How long</th>
               <th>Status</th></tr></thead>
             <tbody>${injuries}</tbody></table></div>`
-        : `<div class="empty">${state.injuryTeam
-            ? `Nobody listed for ${esc(state.injuryTeam)} — everyone is available.`
-            : "No injury report stored yet."}</div>`}
+        : `<div class="empty">${team === ALL
+            ? "No injury report stored yet."
+            : `Nobody listed for ${esc(team)} — everyone is available.`}</div>`}
     </div>
 
     <div class="panel">
@@ -1784,7 +1889,9 @@ async function renderNews(ticket) {
             `<option value="${k}"${k === sortKey ? " selected" : ""}>${esc(v.label)}</option>`
           ).join("")}</select>
         </div></header>
-      <div class="news-feed">${items || '<div class="empty">No news stored yet.</div>'}</div>
+      <div class="news-feed">${items || `<div class="empty">${team === ALL
+        ? "No news stored yet."
+        : `Nothing about ${esc(team)} in the stored feed.`}</div>`}</div>
       <p class="note">The points estimate is a coarse prior from position and availability —
         a starting quarterback is worth two to three points, a backup almost nothing. It is a
         triage signal for what to look at, never a substitute for the market's own reaction.</p>
@@ -1800,7 +1907,7 @@ async function renderNews(ticket) {
   // given a selected state that nothing could ever change.
   $$(".team-pick[data-team]", root).forEach((button) => {
     button.addEventListener("click", () => {
-      state.injuryTeam = button.dataset.team;
+      state.newsTeam = button.dataset.team;
       render();
     });
   });
@@ -2063,16 +2170,6 @@ async function renderSettings(ticket) {
 
   <div class="grid-2 tool-row">
   <div class="panel tool-panel">
-    <header><h2>Prediction markets</h2>
-      <span class="hint" title="Asks Kalshi and Polymarket directly and reports each one. The status dot in the sidebar can only say a feed failed; &quot;no NFL games right now&quot; and &quot;this machine cannot reach the host&quot; look identical from the outside and need opposite responses.">an optional feed — the board reads "–" without it</span>
-      <div class="controls" style="margin-left:auto">
-        <button class="btn" id="test-pmkt">Test connection</button>
-      </div></header>
-    <div class="tool-out"><span id="pmkt-result" class="muted"></span>
-      <div id="pmkt-venues" class="backup-list"></div></div>
-  </div>
-
-  <div class="panel tool-panel">
     <header><h2>Backup</h2>
       <span class="hint">your picks, results and settings are one file —
         this copies it</span>
@@ -2122,48 +2219,6 @@ async function renderSettings(ticket) {
       : '<div class="empty">No backups yet.</div>';
   };
   paintBackups(backups.backups);
-
-  $("#test-pmkt")?.addEventListener("click", async (ev) => {
-    const out = $("#pmkt-result");
-    const venues = $("#pmkt-venues");
-    out.textContent = "asking both venues…";
-    out.className = "muted";
-    venues.innerHTML = "";
-    ev.target.disabled = true;
-    try {
-      const r = await api("/api/settings/test-prediction-markets", { method: "POST" });
-      out.textContent = r.summary;
-      out.className = r.ok ? "pos" : "neg";
-      /* The per-series attempts are shown when a venue answers with nothing.
-         "Quoting no NFL games" and "we asked under a ticker they renamed" are
-         the same sentence from outside and need opposite fixes, so the ticker
-         asked and the count returned go on screen rather than into a log. */
-      venues.innerHTML = (r.venues || []).map((v) => `<div class="backup-row">
-        <span class="nm">${v.ok ? "✓" : "✕"} ${esc(v.venue)}</span>
-        <span class="muted">${esc(v.message)}</span>
-      </div>${(v.attempts || []).map((a) => `<div class="backup-row probe">
-        <span class="nm">${esc(a.series)}</span>
-        <span class="muted">${a.error
-          ? esc(a.error)
-          /* A /markets row counts prices rather than events, because on that
-             endpoint "how many contracts came back" was never the question --
-             the question is how many of them carry a book. A row reading "62
-             markets" beside a message saying nothing has a price was the most
-             confusing thing on this panel. */
-          : a.priced !== undefined
-            ? `${a.markets} contracts · ${a.priced} priced (${a.book} with a
-               book, ${a.last_trade} last trade)${
-               a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`
-            : `${a.events} events · ${a.markets} markets${
-              a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`}</span>
-      </div>`).join("")}`).join("");
-    } catch (err) {
-      out.textContent = String(err);
-      out.className = "neg";
-    } finally {
-      ev.target.disabled = false;
-    }
-  });
 
   $("#make-backup")?.addEventListener("click", async (ev) => {
     const out = $("#backup-result");

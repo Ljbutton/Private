@@ -174,7 +174,37 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
     def games(week: int | None = None, season: int | None = None) -> dict:
         season = season or pipeline.season()
         week = week or pipeline.current_week(season)
-        return {"season": season, "week": week, "games": game_cards(season, week)}
+
+        # Who is not playing, and what there is to say about them. A bye week
+        # leaves a hole in the board where two or three games would be; the
+        # teams that made the hole are the obvious thing to put in it.
+        ranks = {r["team"]: r for r in db.query(
+            "SELECT team, rank, power FROM power_snapshots "
+            "WHERE season = ? AND week = ? AND source = 'live'", (season, week))}
+        records = records_before(season, week)
+        byes = [
+            {
+                "team": team,
+                "name": TEAMS[team].name if team in TEAMS else team,
+                "conference": TEAMS[team].conference if team in TEAMS else "",
+                "record": records.get(team, ""),
+                "rank": (ranks.get(team) or {}).get("rank"),
+                "power": (ranks.get(team) or {}).get("power"),
+            }
+            for team in teams_on_bye(season, week)
+        ]
+        return {
+            "season": season, "week": week,
+            "games": game_cards(season, week),
+            "byes": byes,
+            "survivor_pick": survivor_pick_for(season, week),
+            # Every other week a team has been spent in, so the board can show
+            # one as unavailable instead of quietly moving the pick.
+            "survivor_used_weeks": {
+                team: wk for wk, team in survivor_picks(season).items()
+                if int(wk) != int(week)
+            },
+        }
 
     @app.get("/api/game/{game_id}")
     def game_detail(game_id: str) -> dict:
@@ -517,6 +547,46 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "survivor": latest_pick("survivor", season, week),
             "survivor_used": db.get_meta("survivor_used_teams", []) or [],
         }
+
+    @app.post("/api/survivor/pick")
+    def set_survivor_pick(payload: dict[str, Any]) -> dict:
+        """Take, or release, this week's survivor team.
+
+        The pick is made on the board now, beside the game it is a bet on,
+        rather than on a grid of thirty-two crests on another page. That grid
+        recorded a set -- "I used KC" -- and a set cannot be walked against a
+        schedule: it does not say whether that was the week they were fourteen
+        point favourites or the week they lost. Choosing it where the week is
+        already on screen means the week comes with it for free.
+
+        The two older keys are still written from this one, so the planner and
+        the tracker keep reading what they have always read.
+        """
+        season = int(payload.get("season") or pipeline.season())
+        week = int(payload.get("week") or pipeline.current_week(season))
+        team = (payload.get("team") or "").strip().upper() or None
+        if team and team not in TEAMS:
+            raise HTTPException(status_code=400, detail=f"unknown team: {team}")
+
+        by_week = dict(db.get_meta(SURVIVOR_PICKS_KEY, {}) or {})
+        season_picks = dict(by_week.get(str(season), {}) or {})
+        if team:
+            # One team, one season. Taking a team you already spent moves the
+            # pick rather than keeping both, because keeping both is not a
+            # thing survivor allows and silently doing it would show a run
+            # that cannot happen.
+            for other_week, other in list(season_picks.items()):
+                if other == team and other_week != str(week):
+                    season_picks.pop(other_week)
+            season_picks[str(week)] = team
+        else:
+            season_picks.pop(str(week), None)
+        by_week[str(season)] = season_picks
+        db.set_meta(SURVIVOR_PICKS_KEY, by_week)
+        _sync_legacy_survivor_keys(season)
+        pipeline.recompute(force=True)
+        return {"ok": True, "season": season, "week": week, "team": team,
+                "picks": season_picks}
 
     @app.post("/api/survivor/used")
     def set_survivor_used(payload: dict[str, Any]) -> dict:
@@ -1144,6 +1214,81 @@ def team_rank_order(season: int, ratings: dict | None = None,
     return sorted(scores, key=lambda t: (-scores[t], t))
 
 
+# Week -> team, per season. The two older keys (a flat list of teams, and a
+# team -> week map) are derived from this one so nothing downstream had to
+# change; this is the one that is written when a pick is made.
+SURVIVOR_PICKS_KEY = "survivor_picks_by_week"
+
+
+def survivor_picks(season: int) -> dict[int, str]:
+    raw = (db.get_meta(SURVIVOR_PICKS_KEY, {}) or {}).get(str(season), {}) or {}
+    out = {}
+    for week, team in raw.items():
+        with contextlib.suppress(TypeError, ValueError):
+            out[int(week)] = str(team).upper()
+    return out
+
+
+def survivor_pick_for(season: int, week: int) -> str | None:
+    return survivor_picks(season).get(int(week))
+
+
+def _sync_legacy_survivor_keys(season: int) -> None:
+    """Rewrite the flat list and the team -> week stamps from the week map."""
+    from .picks.survivor import USED_WEEKS_KEY
+
+    picks = survivor_picks(season)
+    db.set_meta("survivor_used_teams", sorted(set(picks.values())))
+    db.set_meta(USED_WEEKS_KEY, {team: week for week, team in picks.items()})
+
+
+def records_before(season: int, week: int) -> dict[str, str]:
+    """Every team's W-L(-T) going into `week`, as a string ready to print.
+
+    Before, not including: a record beside a game is the record the two teams
+    bring to it. Counting the week itself would have week two's board reading
+    1-0 for a team whose only game is the one underneath the number.
+    """
+    tally: dict[str, list[int]] = {}
+    for row in db.query(
+        "SELECT home, away, home_score, away_score FROM games "
+        "WHERE season = ? AND week < ? AND status = 'final' "
+        "AND home_score IS NOT NULL AND away_score IS NOT NULL",
+        (season, week),
+    ):
+        home, away = row["home"], row["away"]
+        hs, as_ = row["home_score"], row["away_score"]
+        for team in (home, away):
+            tally.setdefault(team, [0, 0, 0])
+        if hs == as_:
+            tally[home][2] += 1
+            tally[away][2] += 1
+        else:
+            winner, loser = (home, away) if hs > as_ else (away, home)
+            tally[winner][0] += 1
+            tally[loser][1] += 1
+    out = {}
+    for team in TEAMS:
+        wins, losses, ties = tally.get(team, [0, 0, 0])
+        out[team] = f"{wins}-{losses}" + (f"-{ties}" if ties else "")
+    return out
+
+
+def teams_on_bye(season: int, week: int) -> list[str]:
+    """Who has no game this week. Empty before the schedule reaches the
+    weeks that have byes in them, and empty again in the weeks that do not."""
+    playing = set()
+    for row in db.query(
+        "SELECT home, away FROM games WHERE season = ? AND week = ? "
+        "AND season_type = 'REG'", (season, week),
+    ):
+        playing.add(row["home"])
+        playing.add(row["away"])
+    if not playing:
+        return []
+    return sorted(t for t in TEAMS if t not in playing)
+
+
 def game_cards(season: int, week: int) -> list[dict]:
     """Everything the UI needs to render one week's games."""
     games = db.query(
@@ -1204,6 +1349,10 @@ def game_cards(season: int, week: int) -> list[dict]:
     news_by_game = affected_games(news_items, games)
     availability = db.get_meta("availability", {}) or {}
 
+    # Each team's record going into this week, which is what a record on a
+    # game card means: week two's board says 1-0, not what they finished at.
+    records = records_before(season, week)
+
     cards = []
     for game in games:
         gid = game["game_id"]
@@ -1230,6 +1379,8 @@ def game_cards(season: int, week: int) -> list[dict]:
                 "away_color": TEAMS[game["away"]].color if game["away"] in TEAMS else "#888",
                 "home_score": game["home_score"],
                 "away_score": game["away_score"],
+                "home_record": records.get(game["home"], ""),
+                "away_record": records.get(game["away"], ""),
                 "venue": game["venue"],
                 "prediction": prediction,
                 "components": components,
