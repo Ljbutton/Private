@@ -13,7 +13,6 @@ from fastapi.staticfiles import StaticFiles
 
 from . import buildinfo, db, identity
 from .availability import is_notable_injury
-from .backtest.report import performance_report
 from .config import get_config
 from .market import movement
 from .ml.train import load_report
@@ -460,57 +459,6 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             )},
         }
 
-    @app.get("/api/power/track")
-    def power_track(team: str, season: int | None = None) -> dict:
-        """One team's rank across every week we hold, for the trend line.
-
-        Served per team rather than as the whole 32x18 matrix on the weekly
-        endpoint: that response is re-fetched every time the reader clicks a
-        different week, and carrying every team's whole season in it to draw
-        one line would multiply it by thirty-two for no gain.
-        """
-        season = season or pipeline.season()
-        abbr = team.upper()
-        rows = db.query(
-            "SELECT week, rank, power, wins, losses, ties, source "
-            "FROM power_snapshots WHERE season = ? AND team = ? ORDER BY week",
-            (season, abbr),
-        )
-        entry = TEAMS.get(abbr)
-        best = min((r["rank"] for r in rows), default=None)
-        worst = max((r["rank"] for r in rows), default=None)
-        return {
-            "season": season,
-            "team": abbr,
-            "name": entry.full_name if entry else abbr,
-            "color": entry.color if entry else None,
-            "weeks": rows,
-            # The two numbers a trend line is read for, so the reader does not
-            # have to squint at the peaks to find them.
-            "best": best,
-            "worst": worst,
-        }
-
-    @app.post("/api/power/rebuild")
-    def power_rebuild(season: int | None = None) -> dict:
-        """Fill in the weeks the app was not running for, from stored games."""
-        return pipeline.rebuild_power_history(season or pipeline.season())
-
-    @app.get("/api/team/{abbr}/history")
-    def team_history(abbr: str) -> dict:
-        abbr = abbr.upper()
-        return {
-            "team": abbr,
-            "ratings": db.query(
-                "SELECT captured_at, elo, power, off_rating, def_rating "
-                "FROM team_ratings WHERE team = ? ORDER BY captured_at", (abbr,)
-            ),
-            "projections": db.query(
-                "SELECT captured_at, exp_wins, playoff_prob, division_prob, sb_prob "
-                "FROM season_projections WHERE team = ? ORDER BY captured_at", (abbr,)
-            ),
-        }
-
     # ------------------------------------------------------------ picks
     @app.get("/api/picks")
     def picks(week: int | None = None, season: int | None = None) -> dict:
@@ -571,19 +519,6 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         out["saved_at"] = original.get("saved_at")
         out["from_week"] = original.get("from_week")
         return out
-
-    @app.get("/api/picks/history")
-    def pick_history(contest: str = "ats", season: int | None = None) -> dict:
-        season = season or pipeline.season()
-        rows = db.query(
-            "SELECT week, captured_at, payload FROM pick_history "
-            "WHERE contest = ? AND season = ? ORDER BY week DESC, captured_at DESC",
-            (contest, season),
-        )
-        for row in rows:
-            with contextlib.suppress(Exception):
-                row["payload"] = json.loads(row["payload"])
-        return {"contest": contest, "season": season, "entries": rows}
 
     # ------------------------------------------------------------- news
 
@@ -787,29 +722,6 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         }
 
     # ------------------------------------------------------- performance
-    @app.get("/api/edge")
-    def edge(season: int | None = None) -> dict:
-        """Whether the line moves toward us — the sharpest test available."""
-        from .market.opening import coverage, movement_report
-
-        return {
-            "movement": movement_report(season if season else None),
-            "coverage": coverage(),
-            "clv": performance_report(season if season else None).get("clv"),
-        }
-
-    @app.get("/api/performance")
-    def performance(season: int | None = None) -> dict:
-        report = performance_report(season if season else None)
-        # The walk-forward numbers are the honest benchmark; ship them together
-        # so the UI can show them beside any in-sample backfill figures.
-        training = load_report() or {}
-        report["walk_forward"] = training.get("blind")
-        report["walk_forward_market"] = {
-            "margin_mae": (training.get("blind") or {}).get("market_margin_mae"),
-        }
-        return report
-
     # -------------------------------------------------------------- web
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

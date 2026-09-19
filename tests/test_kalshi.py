@@ -279,3 +279,44 @@ def test_the_diagnostic_reads_the_events_it_reports_on():
     assert "no contracts at all" not in message, "the rows were right there"
     assert "not one of them has a price" in message
     assert KalshiSource  # imported for the module the message reaches into
+
+
+def test_the_events_are_built_from_the_markets_endpoint():
+    """The other way round from how this started.
+
+    /events with nested markets is one request and reads well, and on this
+    series it returns contracts with no bid and no ask -- so the pairing had
+    nothing to price and the venue looked like it was quoting nothing.
+    /markets owns the books, and every contract names its event, so the events
+    can be assembled from it rather than fetched and then patched.
+    """
+    from nflpicker.sources.kalshi import KalshiSource, normalise
+
+    source = KalshiSource()
+    source.fetch_markets = lambda series, **kw: [
+        _market("KXNFLGAME-26SEP20CARATL-ATL", event_ticker="KXNFLGAME-26SEP20CARATL",
+                yes_bid=70, yes_ask=72, close_time="2026-09-20T17:00:00Z"),
+        _market("KXNFLGAME-26SEP20CARATL-CAR", event_ticker="KXNFLGAME-26SEP20CARATL",
+                yes_bid=28, yes_ask=30),
+    ] if series == "KXNFLGAME" else []
+
+    events = source.events_from_markets()
+    assert len(events) == 1 and len(events[0]["markets"]) == 2
+    quotes = normalise(events)
+    assert len(quotes) == 1
+    assert {quotes[0].home, quotes[0].away} == {"ATL", "CAR"}
+
+
+def test_the_events_endpoint_is_still_the_fallback():
+    """Both paths, because a change at either end should be survivable."""
+    from nflpicker.sources.kalshi import KalshiSource
+
+    source = KalshiSource()
+    source.fetch_markets = lambda series, **kw: []
+    source.fetch_events = lambda **kw: [{
+        "event_ticker": "KXNFLGAME-26SEP20CARATL",
+        "markets": [_market("KXNFLGAME-26SEP20CARATL-ATL", yes_bid=70, yes_ask=72),
+                    _market("KXNFLGAME-26SEP20CARATL-CAR", yes_bid=28, yes_ask=30)],
+    }]
+    quotes = source.fetch()
+    assert len(quotes) == 1 and {quotes[0].home, quotes[0].away} == {"ATL", "CAR"}

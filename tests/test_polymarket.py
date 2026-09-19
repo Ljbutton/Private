@@ -84,3 +84,46 @@ def test_malformed_payloads_do_not_raise():
     assert normalise([]) == []
     assert normalise([{"outcomes": "not json", "outcomePrices": None}]) == []
     assert normalise([{**TEAM_OUTCOME_MARKET, "outcomePrices": '["nan","nan"]'}]) == []
+
+
+def test_a_page_of_unrelated_markets_is_not_nfl():
+    """The failure this fixes was silent and looked like the venue's fault.
+
+    When the tag was renamed, the last-resort query returned two hundred open
+    markets about elections and crypto. None of them parse as a game, so the
+    app reported "reachable, but quoting no NFL games right now" -- which is a
+    true sentence about the wrong question.
+    """
+    from nflpicker.sources.polymarket import PolymarketSource, matchup_from_title
+
+    assert matchup_from_title("Will the Chiefs beat the Broncos?") == ("KC", "DEN")
+    assert matchup_from_title("Chiefs vs. Broncos") == ("KC", "DEN")
+    assert matchup_from_title("Will Bitcoin hit 200k in 2026?") is None
+    assert not PolymarketSource.looks_like_nfl({"question": "Who wins the election?"})
+    assert PolymarketSource.looks_like_nfl({"question": "Chiefs vs. Broncos"})
+
+
+def test_the_open_board_is_swept_when_every_tag_misses(monkeypatch):
+    """Immune to the tag being renamed again, which it has been twice."""
+    from nflpicker.sources.polymarket import PolymarketSource
+
+    source = PolymarketSource()
+    asked = []
+
+    def fake_get(url, params=None, **kw):
+        asked.append(dict(params or {}))
+        tagged = any(k in (params or {}) for k in
+                     ("tag_slug", "tag", "series_slug"))
+        if tagged:
+            return [{"question": "Will Bitcoin hit 200k in 2026?"}]
+        if (params or {}).get("offset"):
+            return []
+        return [{"question": "Will the Chiefs beat the Broncos?"},
+                {"question": "Who wins the election?"}]
+
+    monkeypatch.setattr(source.http, "get_json", fake_get)
+    markets = source.fetch_markets(limit=200)
+
+    assert len(markets) == 1, "only the football survives the sweep"
+    assert markets[0]["question"].startswith("Will the Chiefs")
+    assert any("offset" in a for a in asked), "it fell through to the sweep"

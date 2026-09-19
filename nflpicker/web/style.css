@@ -1856,3 +1856,12 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   font-size: 11.5px; line-height: 1.55; margin-top: 12px;
 }
 .wager-note b { color: var(--text-primary); }
+
+/* ------------------------------------------ closing-line value, cut two ways */
+/* One season figure says whether you are beating the line; it cannot say
+   where. By team is sorted worst first on purpose -- the leaks are the point,
+   and a list sorted best first buries them. */
+.clv-cuts { align-items: start; margin-top: 4px; }
+.clv-cut .table-scroll { max-height: 260px; overflow-y: auto; }
+.clv-cut table { font-size: 12.5px; }
+.clv-cut .sub-head { margin-top: 10px; }

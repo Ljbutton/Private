@@ -161,6 +161,18 @@ def _teams_from_question(question: str) -> tuple[str | None, str | None]:
     return (found[0], found[1]) if len(found) == 2 else (None, None)
 
 
+def matchup_from_title(title: str) -> tuple[str, str] | None:
+    """The two teams a market title names, or nothing.
+
+    Public because it is also how the fetcher decides whether a page of markets
+    has any football on it at all -- a test that depends on our own team list
+    rather than on the venue's tags, which have been renamed under this adapter
+    more than once.
+    """
+    home, away = _teams_from_question(title)
+    return (home, away) if home and away and home != away else None
+
+
 def normalise(markets: list[dict], *, min_volume: float = 0.0) -> list[PolymarketQuote]:
     """Turn raw Gamma markets into home-oriented quotes.
 
@@ -203,25 +215,68 @@ class PolymarketSource:
     def __init__(self, client: HttpClient | None = None) -> None:
         self.http = client or HttpClient(cache_ttl=120.0)
 
-    def fetch_markets(self, *, limit: int = 200) -> list[dict]:
-        """Open NFL markets. Tag filtering is best-effort across API versions."""
-        attempts = [
-            {"closed": "false", "limit": limit, "tag_slug": "nfl"},
-            {"closed": "false", "limit": limit, "tag": "nfl"},
-            {"closed": "false", "limit": limit},
-        ]
+    # Query shapes this venue has used for the same thing. Tried in order and
+    # kept only when what comes back actually looks like NFL games.
+    TAGGED = (
+        {"tag_slug": "nfl"},
+        {"tag": "nfl"},
+        {"series_slug": "nfl"},
+        {"tag_slug": "sports", "related_tags": "true"},
+    )
+
+    @staticmethod
+    def looks_like_nfl(market: dict) -> bool:
+        """Does this market's title name two teams we know.
+
+        The test that does not depend on their taxonomy. Tag names have changed
+        under this adapter more than once, and each time the fallback quietly
+        returned two hundred open markets about elections and crypto -- none of
+        which parse, so the venue reported "no NFL games right now" when what
+        had actually happened was that we asked the wrong question.
+        """
+        title = str(market.get("question") or market.get("title") or "")
+        if not title:
+            return False
+        return matchup_from_title(title) is not None
+
+    def fetch_markets(self, *, limit: int = 200, pages: int = 5) -> list[dict]:
+        """Open NFL markets, however this venue is filing them this season.
+
+        The tagged queries first, because they are one request. If none of them
+        comes back with anything that parses as a game, the open board is swept
+        page by page and filtered on our own team names instead -- slower, and
+        immune to the tag being renamed again.
+        """
         last_error: Exception | None = None
-        for params in attempts:
+
+        def ask(params: dict) -> list[dict]:
+            nonlocal last_error
             try:
                 payload = self.http.get_json(
-                    f"{GAMMA}/markets", params, cache_ttl=120.0, retries=2
-                )
+                    f"{GAMMA}/markets", {"closed": "false", "limit": limit, **params},
+                    cache_ttl=120.0, retries=2)
             except SourceError as exc:
                 last_error = exc
-                continue
-            markets = payload if isinstance(payload, list) else payload.get("data") or []
-            if markets:
+                return []
+            return payload if isinstance(payload, list) else payload.get("data") or []
+
+        for params in self.TAGGED:
+            markets = ask(params)
+            if any(self.looks_like_nfl(m) for m in markets):
                 return markets
+
+        found: list[dict] = []
+        for page in range(pages):
+            markets = ask({"offset": page * limit, "order": "volume24hr",
+                           "ascending": "false"})
+            if not markets:
+                break
+            found.extend(m for m in markets if self.looks_like_nfl(m))
+            if len(markets) < limit:
+                break
+        if found:
+            return found
+
         if last_error:
             raise SourceError(f"Polymarket markets unavailable: {last_error}")
         return []

@@ -399,6 +399,25 @@ function clvBlock(clv) {
     </div>`;
   }
   const good = clv.average > 0;
+  const vs = clv.versus_model;
+  /* A small table of the same number cut a different way. One season figure
+     says whether you are beating the line; it cannot say where. */
+  const cut = (rows, key, label) => !rows || rows.length < 2 ? "" : `
+    <div class="clv-cut">
+      <h3 class="sub-head">${esc(label)}</h3>
+      <div class="table-scroll"><table class="slate">
+        <thead><tr><th>${esc(key === "week" ? "Wk" : "Team")}</th>
+          <th class="num">Picks</th><th class="num">Beat</th>
+          <th class="num">Value</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr>
+          <td class="who">${key === "week" ? `Week ${r.week}` : esc(r.selection)}</td>
+          <td class="num muted">${r.n}</td>
+          <td class="num muted">${r.beat}</td>
+          <td class="num ${r.average > 0 ? "hit" : (r.average < 0 ? "miss" : "")}">${
+            signed(r.average, 2)}</td>
+        </tr>`).join("")}</tbody></table></div>
+    </div>`;
+
   return `<div class="panel">
     <header><h2>Your closing-line value</h2>
       <span class="hint">${clv.n} pick${clv.n === 1 ? "" : "s"} the line moved after</span></header>
@@ -409,7 +428,19 @@ function clvBlock(clv) {
       <div class="tile"><div class="label">Beat the close</div>
         <div class="value ${clv.beat_rate > 0.5 ? "pos" : ""}">${pct(clv.beat_rate, 0)}</div>
         <div class="sub">${clv.beat} of ${clv.n} picks</div></div>
+      ${vs && vs.n ? `<div class="tile" title="The same games at the same moment, the only difference being which side was taken. A game you both called the same way cancels out, which is right — you cannot claim credit for agreeing.">
+        <div class="label">You vs the model</div>
+        <div class="value ${vs.difference > 0 ? "pos" : (vs.difference < 0 ? "neg" : "")}">${
+          signed(vs.difference, 2)}</div>
+        <div class="sub">you ${signed(vs.yours, 2)} · model ${signed(vs.model, 2)}</div></div>
+      <div class="tile"><div class="label">Where you differed</div>
+        <div class="value">${vs.disagreed}</div>
+        <div class="sub">of ${vs.n} · agreed on ${vs.agreed}</div></div>` : ""}
     </div>
+    ${vs && vs.disagreed === 0 && vs.n ? `<p class="note">You have taken the
+      model's side on every game it had a view on, so there is nothing yet to
+      separate your judgement from its own. The comparison starts saying
+      something the first time you disagree with it.</p>` : ""}
     <div class="table-scroll"><table class="slate">
       <thead><tr><th>Wk</th><th>Pick</th><th>Game</th>
         <th class="num">You got</th><th class="num">Closed</th>
@@ -422,6 +453,10 @@ function clvBlock(clv) {
         <td class="num muted">${signed(p.line_at_close, 1)}</td>
         <td class="num ${p.clv > 0 ? "hit" : (p.clv < 0 ? "miss" : "")}">${signed(p.clv, 1)}</td>
       </tr>`).join("")}</tbody></table></div>
+    <div class="grid-2 clv-cuts">
+      ${cut(clv.by_week, "week", "By week")}
+      ${cut(clv.by_team, "selection", "By team · worst first")}
+    </div>
     <p class="note">Positive means you took a better number than the one that closed —
       you backed a team at &minus;3 and it closed &minus;5, so you have two points of value
       whether or not they covered. This is the one honest early read on whether
@@ -951,6 +986,14 @@ async function openGame(gameId) {
   $(".dialog-title", dlg).textContent = "Loading…";
   body.innerHTML = '<div class="empty">Loading…</div>';
   dlg.showModal();
+  /* Alerts for this game have now been seen, because they are on the screen.
+     Nothing marked them, so every alert this app ever raised stayed unread for
+     ever -- which makes the unread count a running total of the season rather
+     than a thing to act on. */
+  api("/api/alerts/seen", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: (alertsFor.alerts || []).map((a) => a.id).filter(Boolean) }),
+  }).catch(() => { /* a badge that stays lit is not worth an error */ });
 
   const [d, alertsFor] = await Promise.all([
     api(`/api/game/${encodeURIComponent(gameId)}`),

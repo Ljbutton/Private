@@ -382,5 +382,43 @@ class KalshiSource:
                 "; ".join(f"{a['series']}: {a['error']}" for a in attempts)[:300])
         return []
 
+    def events_from_markets(self, *, limit: int = 1000) -> list[dict]:
+        """Build the events from /markets, which is where the books live.
+
+        The other way round from how this started. /events with nested markets
+        is one request and reads well, and on this series it returns contracts
+        without a bid or an ask -- so the pairing had nothing to price and the
+        venue looked like it was quoting nothing. /markets is the endpoint that
+        owns market data; every contract names its event, so the events can be
+        assembled from it rather than fetched and then patched.
+        """
+        by_event: dict[str, dict] = {}
+        for series in NFL_SERIES:
+            try:
+                rows = self.fetch_markets(series, limit=limit)
+            except SourceError:
+                continue
+            for market in rows:
+                key = str(market.get("event_ticker") or "")
+                if not key:
+                    continue
+                event = by_event.setdefault(
+                    key, {"event_ticker": key, "markets": [],
+                          "close_time": market.get("close_time")})
+                event["markets"].append(market)
+            if by_event:
+                break
+        return list(by_event.values())
+
     def fetch(self) -> list[KalshiQuote]:
+        """Quotes, from whichever endpoint has the prices.
+
+        /markets first because it is the one that carries a book. The events
+        endpoint is kept as the fallback: it is a single request, it is what
+        works when the series is filed somewhere the markets query does not
+        reach, and having both means a change at either end is survivable.
+        """
+        quotes = normalise(self.events_from_markets())
+        if quotes:
+            return quotes
         return normalise(self.fill_prices(self.fetch_events()))

@@ -391,6 +391,80 @@ def _no_clv() -> dict:
     }
 
 
+def _clv_groups(rows: list[dict], key: str) -> list[dict]:
+    """The same number, cut by week or by team.
+
+    One season figure says whether you are beating the line; it cannot say
+    *where*. A per-team cut is the one most likely to find something real --
+    people are reliably early on the teams they watch and reliably late on the
+    ones they do not -- and a per-week cut says whether anything changed.
+    """
+    buckets: dict = {}
+    for row in rows:
+        buckets.setdefault(row[key], []).append(row["clv"])
+    out = [
+        {key: name, "n": len(vals),
+         "average": round(sum(vals) / len(vals), 2),
+         "beat": sum(1 for v in vals if v > 0),
+         "beat_rate": round(sum(1 for v in vals if v > 0) / len(vals), 4)}
+        for name, vals in buckets.items()
+    ]
+    # By week in order; by team worst-to-best, because the leaks are the point.
+    if key == "week":
+        return sorted(out, key=lambda r: r["week"])
+    return sorted(out, key=lambda r: (r["average"], r[key]))
+
+
+def _clv_versus_model(rows: list[dict]) -> dict:
+    """Your closing-line value against the model's, on the games you picked.
+
+    The interesting question is not whether the model beats the market -- it is
+    measured and it does not -- but whether *you* add anything on top of it.
+    Same games, same moment, the only difference being which side was taken:
+    that isolates the judgement from the schedule and from the timing, which is
+    what makes it a fair comparison rather than two unrelated numbers.
+
+    A game you both called the same way contributes nothing to either side of
+    the difference, which is correct: you cannot claim credit for agreeing.
+    """
+    ids = tuple({r["game_id"] for r in rows})
+    if not ids:
+        return {"n": 0}
+    placeholders = ",".join("?" for _ in ids)
+    predicted = {
+        r["game_id"]: r["home_win_prob"] for r in db.query(
+            f"SELECT game_id, home_win_prob FROM predictions "  # noqa: S608
+            f"WHERE game_id IN ({placeholders}) AND home_win_prob IS NOT NULL",
+            ids,
+        )
+    }
+    mine, theirs, agreed = [], [], 0
+    for row in rows:
+        prob = predicted.get(row["game_id"])
+        if prob is None:
+            continue
+        # The model's side, and the line movement seen from it. Taking the
+        # other side of the same game flips the sign of the same movement.
+        model_took_home = float(prob) > 0.5
+        same = model_took_home == bool(row["_home"])
+        mine.append(row["clv"])
+        theirs.append(row["clv"] if same else -row["clv"])
+        agreed += 1 if same else 0
+
+    if not mine:
+        return {"n": 0}
+    yours = sum(mine) / len(mine)
+    model = sum(theirs) / len(theirs)
+    return {
+        "n": len(mine),
+        "yours": round(yours, 2),
+        "model": round(model, 2),
+        "difference": round(yours - model, 2),
+        "agreed": agreed,
+        "disagreed": len(mine) - agreed,
+    }
+
+
 def closing_line_value(season: int) -> dict:
     """Did the line move toward your picks after you made them?
 
@@ -451,6 +525,10 @@ def closing_line_value(season: int) -> dict:
         rows.append({
             "week": pick["week"], "game_id": pick["game_id"],
             "selection": pick["selection"],
+            # Which side you took, recorded rather than inferred from the
+            # sign of the line: a pick'em game has a line of zero and both
+            # sides would look identical. Stripped before the response.
+            "_home": home,
             "matchup": f"{pick['away']} @ {pick['home']}",
             "line_at_pick": round(mine_at_pick, 1),
             "line_at_close": round(mine_at_close, 1),
@@ -461,12 +539,20 @@ def closing_line_value(season: int) -> dict:
         return _no_clv()
     values = [r["clv"] for r in rows]
     beat = sum(1 for v in values if v > 0)
+    groups_week = _clv_groups(rows, "week")
+    groups_team = _clv_groups(rows, "selection")
+    versus = _clv_versus_model(rows)
+    for row in rows:                       # internal, not part of the response
+        row.pop("_home", None)
     return {
         "n": len(rows),
         "average": round(sum(values) / len(values), 2),
         "beat_rate": round(beat / len(rows), 4),
         "beat": beat,
         "picks": sorted(rows, key=lambda r: -abs(r["clv"]))[:20],
+        "by_week": groups_week,
+        "by_team": groups_team,
+        "versus_model": versus,
         "note": None,
     }
 

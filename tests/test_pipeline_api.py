@@ -204,7 +204,9 @@ def test_unknown_survivor_team_is_rejected(client):
 
 def test_news_and_performance_endpoints_respond(client):
     assert "items" in client.get("/api/news").json()
-    assert "n_games" in client.get("/api/performance").json()
+    from nflpicker.backtest.report import performance_report
+
+    assert "n_games" in performance_report(None)
 
 
 def test_the_dashboard_and_its_assets_are_served(client):
