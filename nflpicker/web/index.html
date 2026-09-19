@@ -68,64 +68,64 @@
       <div class="side-updated">
         <span id="refreshed"></span>
       </div>
-      <!-- The one feed that costs money, with its own button and its own
-           label, so a refresh of the scores can never spend a credit by
-           accident. -->
       <div class="build-line" id="build-line" title="Which build this is"></div>
-      <div class="odds-refresh">
-        <button class="btn odds-btn" id="refresh-odds"
-          title="Fetch the betting lines. Three requests from the monthly Odds API allowance.">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
-          <span>Update odds</span>
-        </button>
-        <span id="odds-when" class="tiny muted"></span>
-      </div>
     </div>
   </aside>
 
   <main class="main">
-    <!-- Shown only when a newer build has actually been published. An update
-         banner that is always there is an advert; one that appears when
-         something has changed is information. -->
-    <div class="update-bar" id="update-bar" hidden>
-      <span class="ub-dot"></span>
-      <span id="update-text"></span>
-      <a id="update-link" href="#" target="_blank" rel="noopener">Get it</a>
-      <button class="ub-close" id="update-dismiss" aria-label="Dismiss">&times;</button>
-    </div>
     <header class="hero">
       <!-- Four zones, left to right: what is live, what you are looking at,
            the time, and the controls. The time is in the middle because it is
            the one thing on this bar that is not about the app. -->
       <div class="hero-left">
+        <!-- The odds button sits here, where the general refresh used to.
+             Everything else in this app fetches itself on a minute and needs
+             no button at all; the betting lines are a metered allowance and
+             each press spends three of it, so the one control on this bar is
+             the one that costs something. The general refresh moved to
+             Settings, which is where you go when you want to make the app do
+             something rather than watch it. -->
         <div class="eyebrow"><span class="pulse"></span><span id="cadence">Live</span>
-          <button class="icon-btn tiny" id="refresh" title="Refresh everything now"
-            aria-label="Refresh everything now">
+          <button class="btn odds-btn" id="refresh-odds"
+            title="Fetch the betting lines. Three requests from the monthly Odds API allowance.">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+            <span>Update odds</span>
           </button>
         </div>
+        <div class="odds-when-row"><span id="odds-when" class="tiny muted"></span></div>
         <div class="when-row">
           <h1 id="whenline">Week 1</h1>
         </div>
       </div>
 
       <div class="hero-center">
-        <!-- The dial beside the time it is telling, which is the one place a
-             clock face is information rather than decoration. Same mark as the
-             logo, wearing a rim, its two strokes turning on the minute.
+        <!-- The mark itself, keeping the time. No rim.
+
+             The rim was there to say "this is a clock", and it was the one
+             part of this drawing that is not in the logo -- so the header
+             carried a circle the brand does not have, and the thing it was
+             explaining (two hands, moving) explains itself. Without it the
+             mark is the mark again: the flat line, the stroke climbing away
+             from it, the short one falling off the peak, and the dot where
+             they meet -- which is also, conveniently, the only point in the
+             drawing a pair of hands could sensibly pivot on.
+
+             So they pivot there. The silhouette is the logo's; the two green
+             strokes on top of it are the hour and the minute.
 
              It sits outside the stack rather than in it: the greeting, the
-             time and the date are one column centred on itself, and the dial
+             time and the date are one column centred on itself, and the mark
              stands to the left of that column instead of being one more thing
              the centring has to average. -->
         <div class="hero-time">
           <svg class="dialmark" viewBox="0 0 28 28" aria-hidden="true">
-            <circle class="bm-rim" cx="14" cy="14" r="11.5" />
+            <path class="bm-flat" d="M2 24h24" />
+            <path class="bm-rise" d="M2 24 L14 12 L26 17" />
             <line class="bm-hand bm-hour" id="bm-hour"
-                  x1="14" y1="14" x2="14" y2="7.1" transform="rotate(108.5 14 14)" />
+                  x1="14" y1="12" x2="14" y2="5.4" transform="rotate(108.5 14 12)" />
             <line class="bm-hand bm-minute" id="bm-minute"
-                  x1="14" y1="14" x2="14" y2="5.2" transform="rotate(222 14 14)" />
-            <circle class="bm-dot" cx="14" cy="14" r="1.5" />
+                  x1="14" y1="12" x2="14" y2="3.2" transform="rotate(222 14 12)" />
+            <circle class="bm-dot" cx="14" cy="12" r="2.1" />
           </svg>
           <div class="hero-stack">
             <div class="hero-greet" id="greeting"></div>

@@ -97,11 +97,19 @@ def test_an_unreachable_local_server_is_reported_as_unreachable(clean_env):
 # --------------------------------------------------------------- the prompt
 
 def test_the_model_is_told_not_to_talk_anyone_into_a_losing_bet():
-    """The app has measured its own ATS below break-even. An assistant that
-    enthused about its edges would contradict every other screen."""
+    """Still told not to sell an edge -- but no longer told what the rate is.
+
+    A hardcoded "51% against a 52.4% break-even" went stale the first time the
+    model was retrained, and an assistant reciting last season's figure at
+    someone looking at this season's Performance page is worse than one that
+    reads the number in front of it. So the rate comes out of the data and the
+    restraint stays in the prompt.
+    """
     prompt = assistant.SYSTEM_PROMPT
-    assert "51%" in prompt or "51" in prompt
-    assert "52.4%" in prompt
+    assert "Do not encourage betting on an edge" in prompt
+    assert "inside the noise" in prompt
+    assert "never recite a rate from memory" in prompt
+    assert "51%" not in prompt and "52.4%" not in prompt
     assert "Answer only from the data" in prompt
 
 

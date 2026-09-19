@@ -128,6 +128,33 @@ def mid_price(market: dict) -> float | None:
     return None
 
 
+def price_source(market: dict) -> str:
+    """Which field a price could be read from, or why none could.
+
+    Named rather than counted because the four answers need four different
+    responses. A two-sided book is the good case. One side is ordinary and
+    still gives a number. Only a last trade means nobody is quoting it right
+    now but somebody has, which is exactly what "which way people are betting"
+    asks for and is a perfectly good percentage. Nothing at all means either a
+    contract nobody has touched or -- far more likely when it is every
+    contract on the board -- a response that does not carry books.
+
+    That last distinction is the one that cost the most time: "no price" was
+    reported identically for a quiet Tuesday and for asking the wrong endpoint.
+    """
+    bid = _cents(market.get("yes_bid"))
+    ask = _cents(market.get("yes_ask"))
+    no_bid = _cents(market.get("no_bid"))
+    no_ask = _cents(market.get("no_ask"))
+    if (bid is not None and ask is not None) or (no_bid is not None and no_ask is not None):
+        return "book"
+    if bid is not None or ask is not None or no_bid is not None or no_ask is not None:
+        return "one_side"
+    if _cents(market.get("last_price")) is not None:
+        return "last_trade"
+    return "none"
+
+
 def team_from_market(market: dict) -> str | None:
     """Which team this contract pays out on.
 
@@ -295,6 +322,40 @@ class KalshiSource:
                     break   # this series answered; no need for the other status
         return attempts
 
+    def market_probe(self, *, limit: int = 1000) -> list[dict]:
+        """What /markets returned, per series, with the prices broken down.
+
+        The diagnostic used to report on /events, which is not the endpoint
+        the fetch reads any more -- so the panel could say "not one of them has
+        a price" about a response nothing was reading, while the thing that
+        actually failed said nothing at all. A diagnosis of the wrong endpoint
+        is worse than no diagnosis: it sends the next hour somewhere there is
+        nothing to find.
+
+        So this asks the question the fetch asks, and counts the answers by
+        where a price came from rather than only whether there was one.
+        """
+        out: list[dict] = []
+        for series in NFL_SERIES:
+            row: dict = {"series": series, "error": None, "markets": 0,
+                         "book": 0, "one_side": 0, "last_trade": 0, "none": 0,
+                         "sample": None}
+            try:
+                rows = self.fetch_markets(series, limit=limit)
+            except SourceError as exc:
+                row["error"] = str(exc)[:160]
+                out.append(row)
+                continue
+            row["markets"] = len(rows)
+            for market in rows:
+                row[price_source(market)] += 1
+                if row["sample"] is None:
+                    row["sample"] = market.get("ticker")
+            out.append(row)
+            if rows:
+                break
+        return out
+
     def fetch_markets(self, series: str, *, limit: int = 1000) -> list[dict]:
         """A series' contracts from /markets, which is the endpoint that owns
         their books.
@@ -382,6 +443,12 @@ class KalshiSource:
                 "; ".join(f"{a['series']}: {a['error']}" for a in attempts)[:300])
         return []
 
+    def markets_for_event(self, event_ticker: str, *, limit: int = 50) -> list[dict]:
+        """One event's contracts, asked for by name."""
+        payload = self._get("/markets", {"event_ticker": event_ticker, "limit": limit})
+        rows = (payload.get("markets") if isinstance(payload, dict) else payload) or []
+        return rows
+
     def events_from_markets(self, *, limit: int = 1000) -> list[dict]:
         """Build the events from /markets, which is where the books live.
 
@@ -410,15 +477,58 @@ class KalshiSource:
                 break
         return list(by_event.values())
 
+    def events_one_at_a_time(self, events: list[dict], *, cap: int = 40) -> list[dict]:
+        """Ask for each event's contracts by name, one request per event.
+
+        The slow way round, and the last one tried. A list endpoint decides for
+        itself how much of each row to send and can be narrowed without notice;
+        asking for a single event by its ticker is the narrowest question there
+        is, and the response to it has had a book in it every time the list has
+        not.
+
+        Capped, because thirty-one requests is a pause and three hundred would
+        be a hang -- and if forty events have not produced a price, the
+        forty-first will not either. Events that answer with nothing keep
+        whatever they arrived with.
+        """
+        out = []
+        for event in events[:cap]:
+            key = str(event.get("event_ticker") or event.get("ticker") or "")
+            if not key:
+                out.append(event)
+                continue
+            try:
+                rows = self.markets_for_event(key)
+            except SourceError:
+                out.append(event)
+                continue
+            out.append({**event, "markets": rows or event.get("markets") or []})
+        out.extend(events[cap:])
+        return out
+
     def fetch(self) -> list[KalshiQuote]:
         """Quotes, from whichever endpoint has the prices.
 
-        /markets first because it is the one that carries a book. The events
-        endpoint is kept as the fallback: it is a single request, it is what
-        works when the series is filed somewhere the markets query does not
-        reach, and having both means a change at either end is survivable.
+        Three ways of asking the same question, cheapest first, because each
+        one has been the only one that worked at some point in this adapter's
+        life:
+
+        1. /markets by series -- one request, the endpoint that owns books.
+        2. /events with markets nested -- one request, and what works when the
+           series is filed somewhere the markets query does not reach.
+        3. /markets for each event by name -- thirty-odd requests, and the
+           narrowest question the API takes. A list endpoint gets to decide how
+           much of each row to send; a single event by ticker does not.
+
+        Falling through costs a second or two on a board that is genuinely
+        empty, which is a fair price for never again reporting "this venue is
+        quoting nothing" about a venue that is quoting.
         """
         quotes = normalise(self.events_from_markets())
         if quotes:
             return quotes
-        return normalise(self.fill_prices(self.fetch_events()))
+        events = self.fetch_events()
+        quotes = normalise(self.fill_prices(events))
+        if quotes:
+            return quotes
+        return normalise(self.events_one_at_a_time(events))

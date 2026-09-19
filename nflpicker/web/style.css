@@ -163,9 +163,10 @@ a { color: var(--series-1); }
 
    Two marks share these classes. `.brandmark` in the sidebar is the logo: it
    is the mark on its own, it does not move, and a logo that is different
-   every minute is not one. `.dialmark` in the header is the same mark wearing
-   a dial, with its two strokes as hands, sitting beside the time it tells --
-   which is the one place a clock face is information rather than decoration.
+   every minute is not one. `.dialmark` in the header is the same mark with a
+   pair of hands on the dot its two strokes meet at, sitting beside the time
+   it tells. There is no rim around it: a circle is not in the mark, and two
+   hands moving already say the thing a rim was drawn to say.
 
    Drawn rather than lettered so both read at under 35px and at 16px in a tab.
    Nothing else is on the dial: ticks and a second hand turn to mush that
@@ -175,16 +176,22 @@ a { color: var(--series-1); }
 /* The climbing stroke, which only the sidebar's mark has -- in the header's
    dial the same two strokes are hands and are drawn as lines. */
 .bm-rise { stroke: var(--series-1); stroke-width: 2.6; }
-/* The dial is lighter than anything inside it: it is the frame, not the
-   subject. The flat line keeps the weight it always had. */
-.bm-rim { fill: none; stroke: var(--text-muted); stroke-width: 1.3; opacity: .42; }
 .bm-flat { stroke: var(--text-muted); stroke-width: 1.5; opacity: .55; }
+/* In the header the mark is the backdrop and the hands are the subject, so
+   the climbing stroke drops to the same muted ink as the flat line it rises
+   from. Green on green would have put two sets of identically coloured
+   strokes on one 42px drawing, and at that size the difference between "the
+   logo" and "twenty past four" is the only difference that matters. The
+   sidebar's logo keeps the green rise, which is the rule everywhere else:
+   what moves is green, what does not is not. */
+.dialmark .bm-rise { stroke: var(--text-muted); opacity: .55; stroke-width: 2.2; }
 .bm-hand {
   stroke: var(--series-1);
   stroke-linecap: round;
-  /* Rotated about the dial's centre in user units, which is what makes the
-     angle in the markup and the angle app.js writes mean the same thing. */
-  transform-origin: 14px 14px;
+  /* Rotated about the dot the two strokes meet at, in user units, which is
+     what makes the angle in the markup and the angle app.js writes mean the
+     same thing. */
+  transform-origin: 14px 12px;
   transition: transform .45s cubic-bezier(.34, 1.3, .64, 1);
 }
 /* Both hands are the edge, so both are green; short and heavy against long
@@ -192,9 +199,8 @@ a { color: var(--series-1); }
 .bm-hour { stroke-width: 2.4; }
 .bm-minute { stroke-width: 2; }
 .bm-dot { fill: var(--series-1); stroke: var(--surface-sunken); stroke-width: 1; }
-/* The sidebar's mark is drawn on a 28-unit grid at full size, the header's
-   dial on the same grid shrunk inside a rim, so the same classes want
-   different weights in the two places. */
+/* Both marks are drawn on the same 28-unit grid but land at different sizes,
+   so the same classes want different weights in the two places. */
 .brandmark .bm-flat { stroke-width: 2; }
 .brandmark .bm-dot { stroke-width: 1.5; }
 @media (prefers-reduced-motion: reduce) {
@@ -1017,7 +1023,15 @@ td.team { font-weight: 600; }
    start }` is declared further down this file, so an unqualified `.pick-split`
    loses to it on source order and the column was sized to its content -- which
    is exactly the overflow this section exists to stop. */
-.grid-2.pick-split { align-items: stretch; }
+/* A third to the picks, two thirds to survivor.
+
+   They are not two equal halves of the same job. The pick'em board is a list
+   you read top to bottom once and act on; survivor is a choice this week plus
+   the sixteen weeks that choice commits you to, and it is the half anyone
+   spends time in. Even columns gave the list acres of empty space to the
+   right of a team abbreviation while the run underneath it showed four rows
+   at a time. */
+.grid-2.pick-split { align-items: stretch; grid-template-columns: 1fr 2fr; }
 .pick-split > .panel, .pick-col > .panel {
   display: flex; flex-direction: column; min-height: 0;
 }
@@ -1035,9 +1049,19 @@ td.team { font-weight: 600; }
 }
 /* The two lists that can outgrow the screen. Their panels hold the tiles and
    the notes still, so what scrolls is only the part that is a list. */
+/* Vertical only, explicitly. Left to itself the other axis computes to `auto`
+   the moment this one is not `visible`, so any child a pixel too wide grows a
+   horizontal scrollbar inside a panel that is already scrolling -- a bar
+   nobody wants under a list of sixteen rows, stealing height from the list it
+   is under. Rows are laid out to fit the column instead. */
 .pickem-list, .survivor-run .table-scroll, .alt-list {
   overflow-y: auto; min-height: 0;
 }
+/* These two lay their rows out to fit the column, so the other axis is pinned
+   shut rather than left to compute to `auto`. The run's table keeps `auto`
+   from `.table-scroll`: four columns of real data are better reached by a
+   scrollbar than clipped at the edge of a panel. */
+.pickem-list, .alt-list { overflow-x: hidden; }
 .pickem-list { flex: 1; }
 /* No floor here, deliberately. There used to be a `min-height: 120px`, and it
    was the whole bug: the run panel had 116px to work with, its header took
@@ -1227,13 +1251,54 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .grid-2 > * { min-width: 0; }
 .pickem-list { display: grid; gap: 4px; }
 .pick-row {
-  display: grid; grid-template-columns: 40px 1fr auto auto; gap: 12px; align-items: center;
-  padding: 8px 12px; border-radius: var(--radius-sm); background: var(--surface-sunken);
-  transition: transform var(--fast) var(--ease);
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px;
+  align-items: center;
+  padding: 7px 10px; border-radius: var(--radius-sm); background: var(--surface-sunken);
+  transition: box-shadow var(--fast) var(--ease), background var(--fast) var(--ease);
 }
-.pick-row:hover { transform: translateX(2px); }
+/* Hover changes ink, never geometry.
+
+   It used to be `transform: translateX(2px)`, and that one line was the
+   glitchy scrolling on this page. The list is an `overflow-y: auto` box, and
+   the moment one axis scrolls the other computes to `auto` too -- so nudging
+   a row two pixels right pushed it two pixels past the container's edge, a
+   horizontal scrollbar appeared, the scrollbar ate height off the list, and
+   the rows below the pointer jumped. Moving the mouse down the list flickered
+   the bar on and off and the wheel fought it the whole way.
+
+   An inset shadow paints inside the border box and takes no space, so the
+   highlight lands and nothing moves. */
+.pick-row:hover {
+  background: var(--surface);
+  box-shadow: inset 2px 0 0 var(--series-1);
+}
 .pick-row .conf { font-weight: 600; font-variant-numeric: tabular-nums;
   color: var(--text-secondary); text-align: center; }
+/* Stacked, so the row narrows instead of lengthening when the column does. */
+.pick-body { display: grid; gap: 1px; min-width: 0; }
+.pick-who { display: flex; gap: 5px; align-items: baseline; flex-wrap: wrap;
+  font-size: 13px; }
+.pick-nums { display: flex; gap: 8px; align-items: baseline;
+  font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.pick-prob { font-weight: 650; color: var(--text-primary); }
+.pick-note { font-size: 10.5px; }
+/* One above the other, and much smaller than a tile usually is.
+
+   Two abreast in a third of the page left each too narrow for its own number;
+   stacked at full tile size they took two hundred pixels off the top of the
+   list and left six picks visible out of sixteen. These two figures are
+   context for the list, not the point of the page, so they get a line each. */
+.pick-tiles { grid-template-columns: 1fr; gap: 6px; margin-bottom: 10px; }
+.pick-tiles .tile {
+  display: grid; grid-template-columns: 1fr auto; align-items: baseline;
+  gap: 8px; padding: 7px 11px;
+}
+.pick-tiles .tile:hover { transform: none; box-shadow: none; }
+.pick-tiles .value { font-size: 17px; grid-column: 2; grid-row: 1; }
+.pick-tiles .label { grid-column: 1; grid-row: 1; }
+.pick-tiles .sub { grid-column: 2; grid-row: 2; justify-self: end; font-size: 10px; }
+.pick-mode { margin-bottom: 10px; }
+.pick-mode select { width: 100%; }
 .muted { color: var(--text-muted); }
 .empty { color: var(--text-muted); padding: 34px 22px; text-align: center; font-size: 13px; }
 .hidden { display: none !important; }
@@ -1728,24 +1793,29 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    the point of the colour is that something is happening now. */
 .side-game.on .sg-when { color: var(--series-1); font-weight: 650; }
 .side-updated { display: flex; align-items: center; gap: 8px; }
-/* The refresh button moved up beside LIVE, where the thing it refreshes is. */
 .icon-btn.tiny { width: 22px; height: 22px; padding: 0; margin-left: 2px; }
 .icon-btn.tiny svg { width: 13px; height: 13px; }
 .eyebrow { gap: 7px; }
 
 /* ------------------------------------------------------- the metered feed */
-/* Its own button, saying what it is. Everything else in this app is free to
-   fetch; the betting lines are a monthly allowance and each press spends three
-   of it, so the spend is a decision rather than a side effect of pressing
-   refresh. */
-.odds-refresh { display: grid; gap: 4px; margin-top: 10px; }
+/* Beside LIVE, because it is the only fetch on this bar that is a decision.
+   Sized to its label rather than to a column, which is what it was when it
+   lived in the sidebar. */
 .odds-btn {
-  display: flex; align-items: center; justify-content: center; gap: 7px;
-  width: 100%; font-size: 12px; padding: 6px 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; padding: 3px 9px; margin-left: 4px;
+  text-transform: none; letter-spacing: 0; font-weight: 600;
 }
-.odds-btn svg { width: 13px; height: 13px; fill: currentColor; flex: none; }
+.odds-btn svg { width: 12px; height: 12px; fill: currentColor; flex: none; }
 .odds-btn.spinning svg { animation: spin 1s linear infinite; }
-#odds-when { font-size: 10.5px; }
+/* Under the button rather than beside it: "lines 4h ago · 412 left this
+   month" is longer than everything else on this side of the bar put
+   together, and on one line it pushed the clock off centre. */
+.odds-when-row { margin: 3px 0 1px; }
+#odds-when {
+  font-size: 10px; text-transform: none; letter-spacing: .01em;
+  font-weight: 500;
+}
 
 /* The mode you are in: a moon in the dark, a sun in the light. */
 #theme .i-sun, #theme .i-moon { display: none; }
@@ -1758,10 +1828,14 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   :root:not([data-theme="dark"]) #theme .i-sun { display: block; }
 }
 
-/* The live week and the live date read in the accent, so "this is now" is
-   answered by colour rather than by comparing two numbers. */
-.hero h1.live { color: var(--series-1); }
-.clock-date.live { color: var(--series-1); }
+/* The week line and the date stay in the body colour, always.
+
+   They were green when they described now, which is the state they are in
+   almost every time anyone looks at this app. An accent that fires on the
+   default reads as decoration rather than as information, and it was the
+   loudest thing on a page whose actual signals -- a live game, an edge worth
+   taking -- are further down and quieter. `.past` still dims the line when you
+   are browsing another week, which is the state that is worth marking. */
 
 /* ------------------------------------------- the assistant's own markdown */
 /* It writes bold, headings and lists whether asked to or not, so they are
@@ -1821,32 +1895,6 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   font-size: 10px; color: var(--text-muted); margin-top: 8px;
   font-variant-numeric: tabular-nums; letter-spacing: .02em;
 }
-
-/* ------------------------------------------------------- a newer build */
-/* Only on screen when there is actually one to get. A banner that is always
-   there is an advert; one that appears when something has changed is
-   information, and gets read. */
-.update-bar {
-  display: flex; align-items: center; gap: 10px;
-  margin: 0 -30px 14px; padding: 9px 30px;
-  background: color-mix(in srgb, var(--series-1) 12%, var(--surface-sunken));
-  border-bottom: 1px solid color-mix(in srgb, var(--series-1) 35%, transparent);
-  font-size: 13px; color: var(--text-primary);
-}
-.update-bar .ub-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--series-1);
-  flex: none; animation: live-pulse 2.4s var(--ease) infinite;
-}
-.update-bar a {
-  color: var(--series-1); font-weight: 650; text-decoration: none;
-  border-bottom: 1px solid currentColor;
-}
-.update-bar .ub-close {
-  margin-left: auto; appearance: none; border: 0; background: transparent;
-  color: var(--text-muted); font-size: 17px; line-height: 1; cursor: pointer;
-  padding: 0 2px;
-}
-.update-bar .ub-close:hover { color: var(--text-primary); }
 
 /* The wagering notice. Muted but not hidden: it has to be readable where a
    number could be mistaken for a recommendation, and it names the app's own

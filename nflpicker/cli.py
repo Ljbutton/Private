@@ -210,13 +210,11 @@ def cmd_teasers(args) -> int:
     return 0
 
 
-# Printed above anything that names a stake. The app's own measured record is
-# that it does not beat the closing line, so a table headed "Best bets" without
-# this is making a claim its own backtest contradicts.
+# Printed above anything that names a stake. How the model measures up against
+# the closing line is a real number and belongs on the Performance report,
+# where the sample size is beside it -- not in a footnote under every table.
 WAGER_NOTICE = (
-    "Not betting advice. Model output only. This model does not beat the "
-    "closing line — about 51% against the spread, where 52.4% is break-even —\n"
-    "so an edge here is inside the noise more often than not. "
+    "Not betting advice. Model output only, and no model is a sure thing.\n"
     "Never stake what you cannot afford to lose. US helpline: 1-800-GAMBLER.\n"
 )
 

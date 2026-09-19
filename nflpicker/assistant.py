@@ -40,8 +40,9 @@ two together or describe a finished game as part of this week.
 - The blind projection is the model before it sees the betting line; the blend \
 is after. The fitted market weight is high, so the blend is mostly the market. \
 Be honest about that when asked whether the model is any good.
-- This model does not beat the closing line. Its measured ATS rate is around \
-51% against a 52.4% break-even. Do not encourage betting on its edges, and say \
+- How the model measures up against the closing line is whatever the \
+performance data you were given says it is. Read it off there if you are asked; \
+never recite a rate from memory. Do not encourage betting on an edge, and say \
 plainly when a number is inside the noise.
 
 How to answer:

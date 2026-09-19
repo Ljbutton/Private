@@ -1314,7 +1314,8 @@ class Pipeline:
             "SELECT * FROM games WHERE season = ? ORDER BY week, kickoff", (season,)
         )
 
-    def recompute(self, result: RefreshResult | None = None) -> dict:
+    def recompute(self, result: RefreshResult | None = None, *,
+                  force: bool = False) -> dict:
         """Ratings → predictions → simulation → picks. The analytical core."""
         start = time.monotonic()
         season = self.season()
@@ -1323,6 +1324,15 @@ class Pipeline:
         if not games:
             if result:
                 result.record("recompute", False, "no games in database")
+            return {}
+
+        # Nothing new to think about. See recompute_fingerprint.
+        mark = self.recompute_fingerprint(season)
+        if not force and mark == db.get_meta("recompute_mark", None):
+            if result:
+                result.record("recompute", True,
+                              "nothing has changed since the last pass",
+                              skipped=True)
             return {}
 
         consensus = self.latest_consensus(season)
@@ -1497,6 +1507,20 @@ class Pipeline:
         # results. A ranking for week N is the state going into week N; it is
         # the same rule the backfill has always used for earlier weeks, and
         # the current week had simply been exempt from it.
+        # Bad cuts go first, before anything asks whether this week is held.
+        #
+        # They used to be cleared afterwards, which made the repair a round
+        # late and, for the week being played, permanently late: `cut_due`
+        # saw the broken row, decided the week was already taken, and skipped
+        # it; the repair then deleted that row; and the next recompute took
+        # the cut properly. One wasted cycle for a past week, and none at all
+        # for the current one -- because the very next thing that runs after
+        # the delete is the reconstruction, which writes the week back as
+        # 'rebuilt', and a week that holds a rebuilt row is no longer missing.
+        # The live cut it should have had was never taken.
+        with contextlib.suppress(Exception):
+            self.repair_power_cuts(season)
+
         if self.ranking_cut_due(season, week):
             with contextlib.suppress(Exception):
                 before = [g for g in completed
@@ -1514,10 +1538,6 @@ class Pipeline:
         # already held, so the work is done once and every later recompute
         # finds nothing to do. Suppressed because a ranking history is not
         # worth failing a recompute over.
-        # Cuts an earlier build wrote that it should not have. Removed rather
-        # than corrected: the reconstruction below builds the week properly.
-        with contextlib.suppress(Exception):
-            self.repair_power_cuts(season)
         with contextlib.suppress(Exception):
             self.rebuild_power_history(season, completed=completed)
 
@@ -1530,6 +1550,12 @@ class Pipeline:
         graded = grade_completed_games(season)
 
         db.set_meta("last_recompute", stamp)
+        # Recorded after the pass rather than before it, so a run that throws
+        # halfway is retried on the next refresh instead of being remembered
+        # as done. Recorded from the fingerprint taken on the way in, not a
+        # fresh one: this pass writes rows of its own, and re-reading now
+        # would store a mark for work that has not been checked.
+        db.set_meta("recompute_mark", mark)
         # Alerts are derived from the same cards the dashboard renders, rather
         # than from a second set of queries, so an alert can never describe
         # something the board disagrees with.
@@ -1701,25 +1727,44 @@ class Pipeline:
     def repair_power_cuts(season: int) -> list[int]:
         """Drop live cuts that could not have been taken when they say.
 
-        A database written by an earlier build holds two kinds of bad cut, and
-        neither can be corrected in place -- only removed, so the backfill can
-        reconstruct the week properly.
+        A database written by an earlier build holds three kinds of bad cut,
+        and none can be corrected in place -- only removed, so the week is
+        taken again properly.
 
         A week-one cut is invalid by definition: nothing had been played.
 
-        A cut is also invalid when the records frozen into it show more games
-        than the week before it had. Week two's ranking recording a 2-0 team is
-        a ranking that saw the Thursday night game of the week it was supposed
-        to precede.
+        A cut is invalid when the records frozen into it show more games than
+        the week before it had. Week two's ranking recording a 2-0 team is a
+        ranking that saw the Thursday night game of the week it was supposed to
+        precede.
+
+        And a cut with no projection on it was ordered by the rating alone,
+        because that is what `_rank_for_snapshot` falls back to when the
+        simulation is not passed. That is the failure that kept coming back
+        looking like a weighting problem. Projected finish, the floor of the
+        win range and the title odds carry seventy-two per cent of the blend
+        between them; a cut written before those were stored has none of them,
+        so it is a pure Elo table wearing the blend's name -- and because a
+        live cut is never rewritten, every later fix to the weights sailed
+        straight past it. The ranking was not being re-ranked. It was being
+        re-read, off a row frozen by an older build.
+
+        Removing it is right rather than merely convenient: the ordering it
+        holds is not the one this version of the app would have taken, so it
+        is a stand-in, and a stand-in gives way to the real thing.
         """
         dropped = []
         rows = db.query(
-            "SELECT week, MAX(wins + losses + ties) AS played FROM power_snapshots "
+            "SELECT week, MAX(wins + losses + ties) AS played, "
+            "       SUM(projection IS NULL OR projection IN ('', '{}')) AS blind, "
+            "       COUNT(*) AS n "
+            "FROM power_snapshots "
             "WHERE season = ? AND source = 'live' GROUP BY week", (season,),
         )
         for row in rows:
             week = int(row["week"])
-            if week < 2 or (row["played"] or 0) > week - 1:
+            unprojected = (row["blind"] or 0) == (row["n"] or 0)
+            if week < 2 or (row["played"] or 0) > week - 1 or unprojected:
                 db.execute(
                     "DELETE FROM power_snapshots WHERE season = ? AND week = ? "
                     "AND source = 'live'", (season, week))
@@ -2119,6 +2164,14 @@ class Pipeline:
             try:
                 if stage.name == "odds":
                     method(result, force=force_odds)
+                elif stage.name == "recompute":
+                    # Same rule as everything else on this list: naming a stage
+                    # forces it. `always` means the recompute is never skipped
+                    # for being recent -- it is what turns newly fetched rows
+                    # into numbers, so it has to follow whatever just ran --
+                    # but "never skipped for being recent" is not the same as
+                    # "re-run when nothing has arrived".
+                    method(result, force=explicit)
                 else:
                     method(result)
             except Exception as exc:  # noqa: BLE001 - one stage must not stop the rest
@@ -2128,9 +2181,43 @@ class Pipeline:
         db.set_meta("last_refresh", result.to_dict())
         return result
 
-    def refresh_recompute(self, result: RefreshResult) -> None:
+    def refresh_recompute(self, result: RefreshResult, *, force: bool = False) -> None:
         """Registry-facing name for the analytical pass."""
-        self.recompute(result)
+        self.recompute(result, force=force)
+
+    def recompute_fingerprint(self, season: int) -> str:
+        """Everything the analytical pass reads, reduced to one string.
+
+        The recompute is the expensive half of a refresh by a wide margin --
+        the model over every game in the database, then the season replayed
+        two and twenty thousand times -- and it ran on every single refresh,
+        including the automatic one a minute. Most of those minutes nothing
+        had arrived for it to think about: no score had moved, no line had
+        been fetched, no injury had been filed. It was re-deriving the same
+        numbers from the same rows and writing them back on top of themselves.
+
+        That was most of what "you can tell when it refreshes" was made of.
+
+        So: a cheap summary of every table it reads. When it has not moved,
+        neither has anything the pass would produce, and the pass is skipped.
+        `last_recompute` then does not move either -- which is what the page
+        watches to decide whether to redraw, so a quiet minute costs one
+        scoreboard request and no repaint at all.
+
+        Deliberately blunt. Each term is a max or a count, so it is one index
+        lookup rather than a scan, and it errs towards recomputing: a
+        timestamp that moves without the data changing wastes a pass, while
+        anything that changes the data moves a timestamp.
+        """
+        row = db.query_one(
+            "SELECT (SELECT MAX(updated_at) FROM games WHERE season = ?) AS games,"
+            "       (SELECT COUNT(*) FROM games WHERE season = ? AND status = 'final') AS final,"
+            "       (SELECT MAX(captured_at) FROM consensus) AS lines,"
+            "       (SELECT MAX(updated_at) FROM injuries) AS injuries",
+            (season, season),
+        ) or {}
+        return "|".join(str(row.get(k)) for k in ("games", "final", "lines", "injuries")) \
+            + f"|{getattr(self.predictor, 'version', '?')}"
 
     def purge_demo_data(self) -> int:
         """Remove synthetic games left behind by a previous demo run.

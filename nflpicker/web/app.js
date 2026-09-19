@@ -61,19 +61,23 @@ function modelLineText(card) {
    the only channel. */
 /* Shown wherever a number could be read as "bet this".
 
-   Not boilerplate anybody asked for -- the app's own measured record is that
-   it does not beat the closing line, and a page that prints an edge without
-   saying so is making a claim the Performance tab contradicts. It names the
-   actual number rather than gesturing at risk in general, which is the only
-   version of this worth reading. */
+   What it does not do any more is quote the backtest at the reader. It used
+   to lead with the model's measured rate against the closing line, which was
+   accurate and was the wrong place for it: a line that sits under every
+   number on the page and argues with them is a footnote picking a fight with
+   the product. That measurement has a home -- the Performance page, in
+   context, with the sample size beside it -- and anyone who wants to know how
+   the model does against the market can read it there.
+
+   What stays is the part that is actually a duty of care: these are outputs
+   and not recommendations, do not stake what you cannot lose, and the number
+   to call if it stops being a game. */
 function wagerNotice() {
   return `<p class="note wager-note">
-    <b>Not betting advice.</b> These are model outputs, not recommendations.
-    This model does not beat the closing line: its measured rate against the
-    spread is about 51%, and 52.4% is break-even at standard juice — so an
-    "edge" here is inside the noise more often than not. Never stake money you
-    cannot afford to lose. If gambling stops being fun, stop: in the US, call
-    or text 1-800-GAMBLER.</p>`;
+    <b>Not betting advice.</b> These are model outputs, not recommendations,
+    and no model is a sure thing. Never stake money you cannot afford to lose.
+    If gambling stops being fun, stop: in the US, call or text
+    1-800-GAMBLER.</p>`;
 }
 
 function edgePill(edge) {
@@ -264,13 +268,20 @@ function renderHero(meta) {
   const line = $("#whenline");
   line.textContent = `Week ${week} · ${season} season`;
   line.classList.toggle("past", !live);
-  // Green for the week that is actually on. Reading a week number and
-  // comparing it to the one in the selector is work; a colour is not.
-  line.classList.toggle("live", live);
+  // No colour on the current week, and none on the date.
+  //
+  // Green was meant to save the reader comparing a week number against the
+  // selector. It did, and it cost more than it saved: this line sits directly
+  // under the wordmark, so the one green thing on the page was not the pick,
+  // the edge or the live game -- it was a label saying today is today. An
+  // accent that fires on the default state is not an accent, it is the body
+  // colour with extra steps, and it made every genuinely green thing further
+  // down the page read as less urgent than the header.
+  //
+  // The past week keeps its dimming. That one earns its ink: it says you are
+  // looking at something other than now, which is the state you can be in
+  // without meaning to be.
   line.title = live ? "The current week" : "Not the current week";
-  // The date is today's either way -- the clock is a clock -- so it reads live
-  // whenever the week beside it does.
-  $("#clockdate").classList.toggle("live", live);
 }
 
 /* How serious an injury status is, for colour. Out and IR are settled; a
@@ -986,14 +997,25 @@ async function openGame(gameId) {
   $(".dialog-title", dlg).textContent = "Loading…";
   body.innerHTML = '<div class="empty">Loading…</div>';
   dlg.showModal();
-  /* Alerts for this game have now been seen, because they are on the screen.
-     Nothing marked them, so every alert this app ever raised stayed unread for
-     ever -- which makes the unread count a running total of the season rather
-     than a thing to act on. */
-  api("/api/alerts/seen", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: (alertsFor.alerts || []).map((a) => a.id).filter(Boolean) }),
-  }).catch(() => { /* a badge that stays lit is not worth an error */ });
+  /* Anything that goes wrong from here has to end up on screen.
+
+     The dialog is shown before its contents are fetched, which is right --
+     a click should do something immediately -- but it means the failure mode
+     of everything below is an open dialog reading "Loading…" for ever, with
+     the actual error in a console nobody has open. That is precisely what
+     happened, and from the outside "clicking a game does nothing" gives no
+     clue where to look. An error in the dialog names the game and the
+     problem, and the close button still works. */
+  try {
+    await fillGame(dlg, body, gameId);
+  } catch (err) {
+    $(".dialog-title", dlg).textContent = "Could not open this game";
+    body.innerHTML = `<div class="empty">${esc(err && err.message
+      ? err.message : String(err))}</div>`;
+  }
+}
+
+async function fillGame(dlg, body, gameId) {
 
   const [d, alertsFor] = await Promise.all([
     api(`/api/game/${encodeURIComponent(gameId)}`),
@@ -1001,6 +1023,26 @@ async function openGame(gameId) {
     // cost the dialog everything else it was going to show.
     api(`/api/alerts?game_id=${encodeURIComponent(gameId)}`).catch(() => ({ alerts: [] })),
   ]);
+
+  /* Alerts for this game have now been seen, because they are on the screen.
+     Nothing marked them, so every alert this app ever raised stayed unread for
+     ever -- which makes the unread count a running total of the season rather
+     than a thing to act on.
+
+     After the fetch, and that is the whole of a bug that stopped every game
+     opening. This block used to sit above the `const [d, alertsFor] = await`
+     below it and read `alertsFor` to decide what to mark. A `const` is not
+     hoisted the way a `var` is -- it is in scope from the top of the block but
+     unreadable until its own line runs -- so touching it early does not read
+     undefined, it throws. The throw landed one line after `showModal()`, which
+     is why the dialog opened, said "Loading…", and then stopped: the dialog was
+     already on screen and everything that would have filled it was on the far
+     side of the exception. */
+  api("/api/alerts/seen", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: (alertsFor.alerts || []).map((a) => a.id).filter(Boolean) }),
+  }).catch(() => { /* a badge that stays lit is not worth an error */ });
+
   const g = d.game;
   $(".dialog-title", dlg).textContent = `${g.away_name} at ${g.home_name}`;
 
@@ -1330,12 +1372,24 @@ async function renderPicks(ticket) {
          how it went is on Home and Performance.`
       : `Week ${state.week} has not come round yet. Picks are made for the
          current week, which is week ${liveWeek}.`;
+  /* Two lines to a row rather than four columns across.
+     This panel is a third of the page now, and "PHI over WAS  74.2%  +1.8pp
+     vs mkt" laid out in one line either wrapped in the middle of a number or
+     pushed a horizontal scrollbar under the list. Stacked, the pick and its
+     opponent read on the top line and the two numbers sit under them, and the
+     row gets narrower instead of longer. */
   const pickRows = (board.picks || []).map((p) => `<div class="pick-row">
     <span class="conf">${p.confidence}</span>
-    <span><strong>${esc(p.pick)}</strong> <span class="muted">over ${esc(p.opponent)}</span>
-      ${p.note ? `<div class="muted" style="font-size:11px">${esc(p.note)}</div>` : ""}</span>
-    <span>${pct(p.win_prob, 1)}</span>
-    <span class="muted">${p.edge === null ? "" : `${signed(p.edge * 100, 1)}pp vs mkt`}</span>
+    <span class="pick-body">
+      <span class="pick-who"><strong>${esc(p.pick)}</strong>
+        <span class="muted">over ${esc(p.opponent)}</span></span>
+      <span class="pick-nums">
+        <span class="pick-prob">${pct(p.win_prob, 1)}</span>
+        ${p.edge === null ? ""
+          : `<span class="muted">${signed(p.edge * 100, 1)}pp vs mkt</span>`}
+      </span>
+      ${p.note ? `<span class="pick-note muted">${esc(p.note)}</span>` : ""}
+    </span>
   </div>`).join("");
 
   const path = (survivor.path || []).map((s) => `<tr>
@@ -1366,15 +1420,16 @@ async function renderPicks(ticket) {
   root.innerHTML = `
   <div class="grid-2 pick-split">
   <div class="panel">
-    <header><h2>ESPN pick'em</h2>
+    <header><h2>Picks</h2>
       <span class="hint" title="Confidence points are assigned highest-to-most-likely, which maximises expected score. Leverage mode deliberately gives some of that up to differentiate from a field that picks close to the market — the right trade only when finishing first is what pays.">most confident first</span>
-      <div class="controls" style="margin-left:auto">
-        <select id="pickem-mode">
-          <option value="ev">Maximise expected points</option>
-          <option value="leverage">Leverage (large pools)</option>
-        </select>
-      </div></header>
-    ${(board.picks || []).length ? `<div class="tiles" style="margin-bottom:12px">
+    </header>
+    <div class="controls pick-mode">
+      <select id="pickem-mode">
+        <option value="ev">Maximise expected points</option>
+        <option value="leverage">Leverage (large pools)</option>
+      </select>
+    </div>
+    ${(board.picks || []).length ? `<div class="tiles pick-tiles">
       <div class="tile"><div class="label">Expected correct</div>
         <div class="value">${num(board.expected_correct, 1)}<span class="sub"> of ${board.n_games ?? 0}</span></div></div>
       <div class="tile"><div class="label">Expected points</div>
@@ -1837,6 +1892,18 @@ async function renderSettings(ticket) {
     <div class="tool-out"><span id="backup-result" class="muted"></span>
       <div id="backup-list" class="backup-list"></div></div>
   </div>
+
+  <div class="panel tool-panel">
+    <header><h2>Refresh everything</h2>
+      <span class="hint">scores, schedule, injuries and news — free, and
+        already automatic</span>
+      <button class="why" type="button" aria-label="About refreshing"
+        title="The app fetches all of this on its own once a minute, so this button is for when you do not want to wait for the next one — after fixing a connection, say, or on opening a laptop that has been shut. It does not touch the betting lines: those are metered and have their own button beside LIVE.">?</button>
+      <div class="controls" style="margin-left:auto">
+        <button class="btn" id="refresh">Refresh now</button>
+      </div></header>
+    <div class="tool-out"><span id="refresh-result" class="muted"></span></div>
+  </div>
   </div>`;
 
   /* A refresh re-renders this whole page, which used to close every section
@@ -1884,7 +1951,16 @@ async function renderSettings(ticket) {
         <span class="nm">${esc(a.series)}</span>
         <span class="muted">${a.error
           ? esc(a.error)
-          : `${a.events} events · ${a.markets} markets${
+          /* A /markets row counts prices rather than events, because on that
+             endpoint "how many contracts came back" was never the question --
+             the question is how many of them carry a book. A row reading "62
+             markets" beside a message saying nothing has a price was the most
+             confusing thing on this panel. */
+          : a.priced !== undefined
+            ? `${a.markets} contracts · ${a.priced} priced (${a.book} with a
+               book, ${a.last_trade} last trade)${
+               a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`
+            : `${a.events} events · ${a.markets} markets${
               a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`}</span>
       </div>`).join("")}`).join("");
     } catch (err) {
@@ -2262,7 +2338,7 @@ const VIEWS = { home: renderHome, teams: renderTeams,
    has been overtaken and says nothing. */
 let renderTicket = 0;
 
-async function render() {
+async function render({ keepPlace = false } = {}) {
   const ticket = ++renderTicket;
   // Connections show on Settings and the game everywhere else, so this follows
   // the tab rather than the data.
@@ -2274,17 +2350,94 @@ async function render() {
   // The hero reports which season and week are on screen, so it has to follow
   // the selectors rather than only the last state load.
   if (state.meta) renderHero(state.meta);
+  const place = keepPlace ? capturePlace() : null;
   try {
     await view(renderTicket);
     if (ticket !== renderTicket) return;
     foldPanels($("#view"));
     measureFit();
     markScrollFades($("#view"));
+    restorePlace(place);
   } catch (err) {
     if (ticket !== renderTicket) return;
     $("#view").innerHTML = `<div class="panel"><div class="empty">
       Could not load this view: ${esc(err.message)}</div></div>`;
   }
+}
+
+/* Putting the reader back where they were, after a refresh they did not ask
+   for.
+
+   Every minute this app fetches, recomputes and rebuilds the whole view from
+   its innerHTML. That is a fine way to keep numbers current and a terrible
+   way to be read over: the survivor run scrolled back to week two under the
+   pointer, a half-read injury list jumped to the top, and whatever was
+   focused stopped being focused. A refresh you can feel is a refresh that
+   interrupts, and there is nothing on this page urgent enough to be worth
+   interrupting for.
+
+   So the automatic path records where everything was, lets the rebuild
+   happen, and puts it back in the same frame -- the browser paints once, at
+   the end, so none of it is visible. A refresh the reader asked for restores
+   nothing: pressing the button is a request for a fresh page, and landing
+   back at the top is the right answer to it.
+
+   Keyed by id where there is one and by position among the page's own scroll
+   boxes where there is not. Both are stable across a re-render of the same
+   view, and that is the only case this runs in -- a tab or week change is not
+   a refresh and does not keep its place. */
+function scrollBoxes() {
+  return $$("*", $("#view")).filter(
+    (el) => el.scrollHeight - el.clientHeight > 2);
+}
+
+function placeKey(el, index) {
+  return el.id ? `#${el.id}` : `${el.className || el.tagName}@${index}`;
+}
+
+function capturePlace() {
+  const boxes = {};
+  scrollBoxes().forEach((box, i) => {
+    if (box.scrollTop > 0) boxes[placeKey(box, i)] = box.scrollTop;
+  });
+  const active = document.activeElement;
+  return {
+    page: window.scrollY,
+    boxes,
+    // Only by id: an element matched by position could be a different control
+    // after a rebuild, and moving focus somewhere the reader did not put it is
+    // worse than dropping it.
+    focus: active && active.id && $("#view").contains(active) ? active.id : null,
+  };
+}
+
+function restorePlace(place) {
+  if (!place) return;
+  scrollBoxes().forEach((box, i) => {
+    const at = place.boxes[placeKey(box, i)];
+    if (at) box.scrollTop = at;
+  });
+  if (place.page) window.scrollTo(0, place.page);
+  if (place.focus) {
+    const el = document.getElementById(place.focus);
+    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+  }
+}
+
+/* Whether an automatic refresh should redraw at all.
+
+   Rebuilding the page under an open dialog or under someone typing is not
+   something restoring a scroll position can paper over: the dialog is built
+   from the row it was opened on, and a half-typed question in the assistant
+   box is not in any state the server knows about. The numbers wait a minute;
+   the reader does not have to. */
+function busyBeingRead() {
+  if ($$("dialog[open]").length) return true;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = active.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
+    || active.isContentEditable;
 }
 
 /* How much of the window the chrome above and below the view is using.
@@ -2521,14 +2674,18 @@ async function main() {
   });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
 
-  const refreshBtn = $("#refresh");
-  refreshBtn.addEventListener("click", async () => {
-    if (state.busy) return;
+  /* The general refresh lives on the Settings page now, so it is wired up
+     there on each render of that page rather than once at start-up -- the
+     button does not exist until Settings is open. Delegated from the document
+     so there is nothing to re-bind and nothing to leak. */
+  document.addEventListener("click", async (ev) => {
+    const refreshBtn = ev.target.closest("#refresh");
+    if (!refreshBtn || state.busy) return;
+    const out = $("#refresh-result");
     state.busy = true;
-    // The button is an icon now, so progress is shown by spinning it rather
-    // than by replacing its label -- writing text into it would delete the SVG.
     refreshBtn.disabled = true;
-    refreshBtn.classList.add("spinning");
+    const label = refreshBtn.textContent;
+    refreshBtn.textContent = "Refreshing…";
     try {
       // full=1: the button means "do it now", not "do whatever is due". A
       // stage inside its own polling interval is exactly the stage a person
@@ -2536,12 +2693,18 @@ async function main() {
       await api("/api/refresh?full=1", { method: "POST" });
       await loadState();
       await render();
+      const done = $("#refresh-result");
+      if (done) {
+        done.textContent = "Up to date.";
+        done.className = "pos";
+      }
     } catch (err) {
-      alert(`Refresh failed: ${err.message}`);
+      if (out) { out.textContent = `Refresh failed: ${err.message}`; out.className = "neg"; }
     } finally {
       state.busy = false;
-      refreshBtn.disabled = false;
-      refreshBtn.classList.remove("spinning");
+      // render() has rebuilt the page, so this is a different button by now.
+      const live = $("#refresh");
+      if (live) { live.disabled = false; live.textContent = label; }
     }
   });
 
@@ -2571,26 +2734,10 @@ async function main() {
   });
   paintOdds();
 
-  /* Is there a newer build. Asked once on open and then left alone -- the
-     server caches the answer for a day, and an app that nags about updates
-     every minute teaches people to close the bar without reading it.
-     Dismissing hides that version until another one ships. */
-  api("/api/updates").then((u) => {
-    if (!u.newer || !u.latest) return;
-    let hidden = null;
-    try { hidden = localStorage.getItem("theedge-skip-update"); } catch { /* blocked */ }
-    if (hidden === u.latest) return;
-    const bar = $("#update-bar");
-    const when = u.published_at ? ` · published ${ago(u.published_at)}` : "";
-    $("#update-text").textContent =
-      `A newer version of The Edge is available (${u.latest})${when}.`;
-    $("#update-link").href = u.url;
-    $("#update-dismiss").addEventListener("click", () => {
-      bar.hidden = true;
-      try { localStorage.setItem("theedge-skip-update", u.latest); } catch { /* blocked */ }
-    });
-    bar.hidden = false;
-  }).catch(() => { /* offline is not an error worth showing */ });
+  /* The update banner is not wired up. `/api/updates` still answers and the
+     build stamp is still on the Settings page, so the app can say which
+     version it is when asked -- it just does not say it unprompted. Coming
+     back to this properly is a job of its own. */
 
   // The clock is the one thing on the page that must not wait for a refresh --
   // including the one in the logo, which is why it ticks whether or not there
@@ -2613,19 +2760,35 @@ async function main() {
   await loadState();
   setTab(state.tab, { fromHash: true });
 
-  /* Everything except the odds, once a minute.
-     This is a real fetch now rather than a poll for someone else's work: the
+  /* Everything that is due, once a minute.
+     This is a real fetch rather than a poll for someone else's work: the
      scheduler is off by default, so if this tab does not ask, nothing does.
      It can run this often precisely because the metered feed is not in it --
      scores, the schedule and the news are free, and a minute is about how long
-     a score is worth being wrong for. */
+     a score is worth being wrong for.
+
+     Due, not everything. It used to send full=1, which is the flag that means
+     "run every stage regardless of its own interval" -- and that is the whole
+     reason a refresh was something you noticed. Once a minute the app was
+     rebuilding the model's predictions and replaying the season twenty
+     thousand times, which takes the better part of half a minute; the page
+     then redrew off the back of it. A scoreboard that changes every few
+     seconds and a season simulation that changes when a game ends were being
+     fetched on the same clock, at the speed of the faster one.
+
+     Each stage already carries an interval saying how often it is worth
+     redoing. Left to them, the minute tick costs a scoreboard request and
+     nothing else on most minutes. full=1 belongs to the button, which is the
+     one place someone has actually asked for all of it. */
   setInterval(async () => {
-    if (state.busy || document.hidden) return;
+    if (state.busy || document.hidden || busyBeingRead()) return;
     const before = state.meta?.last_recompute;
     try {
-      await api("/api/refresh?full=1", { method: "POST" });
+      await api("/api/refresh", { method: "POST" });
       await loadState();
-      if (state.meta?.last_recompute !== before) await render();
+      // keepPlace: this refresh is the app's idea, not the reader's, so it
+      // has no business moving anything they were looking at.
+      if (state.meta?.last_recompute !== before) await render({ keepPlace: true });
     } catch { /* transient: the next tick retries */ }
   }, 60000);
 }

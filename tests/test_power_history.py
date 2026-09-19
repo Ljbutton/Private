@@ -277,14 +277,72 @@ def test_a_cut_that_saw_too_much_is_dropped_on_upgrade(four_weeks):
             " wins, losses, ties, source, captured_at) "
             "VALUES(2025, ?, 'KC', 1, 0, 1500, 0.5, ?, 0, 0, 'live', 'then')",
             (week, played))
+    # With a projection on it, so the only thing this week could be dropped
+    # for is the rule under test.
     db.execute(
         "INSERT OR REPLACE INTO power_snapshots"
         "(season, week, team, rank, power, elo, pythagorean,"
-        " wins, losses, ties, source, captured_at) "
-        "VALUES(2025, 3, 'KC', 1, 0, 1500, 0.5, 2, 0, 0, 'live', 'then')")
+        " wins, losses, ties, source, captured_at, projection) "
+        "VALUES(2025, 3, 'KC', 1, 0, 1500, 0.5, 2, 0, 0, 'live', 'then',"
+        " '{\"exp_wins\": 11.2}')")
 
     assert sorted(four_weeks.repair_power_cuts(2025)) == [1, 2]
     left = [r["week"] for r in db.query(
         "SELECT DISTINCT week FROM power_snapshots WHERE season = 2025 "
         "AND source = 'live' ORDER BY week")]
     assert left == [3], "a 2-0 record in week 3 is exactly right"
+
+
+def test_a_cut_taken_without_its_projection_is_dropped(four_weeks):
+    """The bug that kept coming back looking like a weighting problem.
+
+    `_rank_for_snapshot` orders by the blend when the simulation is passed and
+    by the bare rating when it is not, and a build before the projection was
+    stored passed nothing. So the cut was a pure Elo table -- and because a
+    live cut is never rewritten, every later change to the weights sailed
+    straight past the row anyone was actually reading. The ranking was not
+    being re-ranked; it was being re-read.
+    """
+    for week in (2, 3):
+        db.execute(
+            "INSERT OR REPLACE INTO power_snapshots"
+            "(season, week, team, rank, power, elo, pythagorean,"
+            " wins, losses, ties, source, captured_at, projection) "
+            "VALUES(2025, ?, 'KC', 1, 0, 1500, 0.5, ?, 0, 0, 'live', 'then', ?)",
+            (week, week - 1, None if week == 2 else '{"exp_wins": 11.2}'))
+
+    assert four_weeks.repair_power_cuts(2025) == [2]
+    left = [r["week"] for r in db.query(
+        "SELECT DISTINCT week FROM power_snapshots WHERE season = 2025 "
+        "AND source = 'live' ORDER BY week")]
+    assert left == [3], "the cut that knew what it was ranking on survives"
+
+
+def test_an_empty_projection_object_counts_as_none(four_weeks):
+    """`json.dumps({})` is '{}', not NULL, so the check has to read the value
+    rather than only test for a missing column."""
+    db.execute(
+        "INSERT OR REPLACE INTO power_snapshots"
+        "(season, week, team, rank, power, elo, pythagorean,"
+        " wins, losses, ties, source, captured_at, projection) "
+        "VALUES(2025, 2, 'KC', 1, 0, 1500, 0.5, 1, 0, 0, 'live', 'then', '{}')")
+    assert four_weeks.repair_power_cuts(2025) == [2]
+
+
+def test_the_repair_runs_before_the_week_is_checked(four_weeks):
+    """Order matters, and it used to be the wrong way round.
+
+    With the repair afterwards, the cut check saw the broken row, decided the
+    week was already held and skipped it; the repair then deleted that row;
+    and the reconstruction immediately wrote the week back as 'rebuilt'. A
+    week holding a rebuilt row is not missing, so the live cut it should have
+    had was never taken at all.
+    """
+    db.execute(
+        "INSERT OR REPLACE INTO power_snapshots"
+        "(season, week, team, rank, power, elo, pythagorean,"
+        " wins, losses, ties, source, captured_at, projection) "
+        "VALUES(2025, 2, 'KC', 1, 0, 1500, 0.5, 1, 0, 0, 'live', 'then', NULL)")
+    assert not four_weeks.ranking_cut_due(2025, 2), "the broken row hides the week"
+    four_weeks.repair_power_cuts(2025)
+    assert four_weeks.ranking_cut_due(2025, 2), "once it is gone the week is due"

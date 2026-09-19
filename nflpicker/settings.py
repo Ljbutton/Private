@@ -451,7 +451,7 @@ def _prune_backups() -> int:
     return removed
 
 
-def _pairing_message(seen: int, found: list[dict]) -> str:
+def _pairing_message(seen: int, found: list[dict], markets: list[dict]) -> str:
     """Why the events that came back produced no quotes.
 
     "None survived pairing" is a true sentence that names four different bugs,
@@ -459,6 +459,13 @@ def _pairing_message(seen: int, found: list[dict]) -> str:
     price on any contract is the wrong endpoint or a board nobody has quoted
     yet; both contracts resolving to the same team is a ticker whose shape has
     changed under us; no team at all is an abbreviation we do not know.
+
+    `markets` is what /markets answered, which is the endpoint the fetch
+    actually reads. This used to report only on /events, and that was its own
+    small disaster: the panel confidently said "not one of them has a price"
+    about a response nothing was looking at, while the request that really
+    failed was not mentioned. Both are reported now, and where they disagree
+    the one the fetch uses wins.
     """
     from .sources.kalshi import KalshiSource, pairing_report
 
@@ -469,14 +476,40 @@ def _pairing_message(seen: int, found: list[dict]) -> str:
     with contextlib.suppress(Exception):
         rows = KalshiSource().fill_prices(rows)
     counts = pairing_report(rows)
+
+    # /markets first: it is the endpoint with the books on it, so what it says
+    # is the diagnosis and /events is the corroboration.
+    live = next((m for m in markets if m["markets"]), None)
+    if live:
+        priced = live["book"] + live["one_side"] + live["last_trade"]
+        if not priced:
+            return (f"/markets returned {live['markets']} contracts for "
+                    f"{live['series']} and every one of them is unpriced — no "
+                    f"bid, no ask, no last trade (sample: "
+                    f"{live['sample'] or 'none'})")
+        if not counts["paired"]:
+            return (f"/markets has prices on {priced} of {live['markets']} "
+                    f"contracts ({live['book']} with a book, {live['last_trade']} "
+                    f"on a last trade) but they are not pairing into games — "
+                    f"{counts['same_team']} events resolve both sides to one "
+                    f"team, {counts['no_team']} name a team we do not know "
+                    f"(sample: {live['sample'] or 'none'})")
+    errored = [m for m in markets if m["error"]]
+    if errored and not live:
+        return (f"/markets could not be reached, so there are no books to read "
+                f"— {errored[0]['series']}: {errored[0]['error']}")
+    if markets and not live:
+        return ("/markets answered with no contracts at all, under any known "
+                "series ticker — Kalshi has likely renamed the NFL series again")
+
+    sample = found[0].get("sample") or "none"
     if counts["paired"]:
         return (f"{counts['paired']} of {seen} events do pair once the books "
                 f"are fetched separately — this reads as a stale cache rather "
                 f"than a broken feed; try again in a minute")
-    sample = found[0].get("sample") or "none"
     if counts["markets"] == 0:
         return f"{seen} events came back carrying no contracts at all"
-    if counts["no_price"] and not counts["paired"]:
+    if counts["no_price"]:
         return (f"{seen} events, {counts['markets']} contracts, and not one of "
                 f"them has a price — either nobody has quoted this board yet or "
                 f"the book is not in this response (sample: {sample})")
@@ -540,16 +573,28 @@ def test_prediction_markets() -> dict:
             # the rows it had just removed, found none, and reported "31
             # events carrying no contracts at all" on the same screen as a row
             # saying "31 events · 62 markets".
-            probed = KalshiSource().probe()
+            source = KalshiSource()
+            probed = source.probe()
+            markets = source.market_probe()
             kalshi["attempts"] = [
                 {k: v for k, v in a.items() if k != "rows"} for a in probed
             ]
+            # The /markets rows go in the same table, labelled, because the
+            # question "which endpoint did we actually ask" is the one this
+            # panel exists to answer and it was not answering it.
+            kalshi["attempts"] += [
+                {"series": f"{m['series']} /markets", "error": m["error"],
+                 "events": 0, "markets": m["markets"], "sample": m["sample"],
+                 "priced": m["book"] + m["one_side"] + m["last_trade"],
+                 "book": m["book"], "last_trade": m["last_trade"]}
+                for m in markets
+            ]
             found = [a for a in probed if a["events"]]
-            if found:
-                seen = sum(a["events"] for a in found)
-                kalshi["message"] = _pairing_message(seen, found)
+            seen = sum(a["events"] for a in found)
+            if found or any(m["markets"] or m["error"] for m in markets):
+                kalshi["message"] = _pairing_message(seen, found, markets)
             else:
-                asked = ", ".join(a["series"] for a in kalshi["attempts"])
+                asked = ", ".join(a["series"] for a in probed)
                 kalshi["message"] = (
                     f"no events under any known series ticker ({asked}) — "
                     "Kalshi has likely renamed the NFL series again")

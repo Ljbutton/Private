@@ -158,9 +158,9 @@ def test_recompute_is_never_skipped(pipeline, temp_env):
     assert STAGES_BY_NAME["recompute"].always is True
 
     called: list[str] = []
-    pipeline.refresh_recompute = lambda result: called.append("recompute")
+    pipeline.refresh_recompute = lambda result, force=False: called.append("recompute")
     pipeline.refresh()
-    assert called == ["recompute"]
+    assert called == ["recompute"], "a recent run does not excuse it"
 
 
 def test_no_network_stage_is_marked_always(temp_env):
@@ -171,3 +171,59 @@ def test_no_network_stage_is_marked_always(temp_env):
 
     always = {s.name for s in STAGES if s.always}
     assert always == {"recompute"}, f"unexpected always-on stages: {always}"
+
+
+def test_the_recompute_stops_when_nothing_has_arrived(pipeline, temp_env):
+    """`always` means "not skipped for being recent". It does not mean
+    "re-derive the same numbers from the same rows every minute".
+
+    This was the bulk of what made a refresh something you could feel: the
+    model over the whole database and twenty thousand replays of the season,
+    once a minute, on minutes where no score had moved and no line had been
+    fetched.
+    """
+    from nflpicker import db
+    from nflpicker.pipeline import RefreshResult
+
+    season = pipeline.season()
+    db.execute(
+        "INSERT INTO games(game_id, season, week, season_type, kickoff, home, away,"
+        " home_score, away_score, status, updated_at) "
+        "VALUES('skip-1', ?, 1, 'REG', '2026-09-10T00:00:00+00:00', 'KC', 'BUF',"
+        " 21, 17, 'final', '2026-09-10T04:00:00+00:00')", (season,))
+    db.set_meta("recompute_mark", pipeline.recompute_fingerprint(season))
+
+    result = RefreshResult()
+    pipeline.recompute(result, force=False)
+    row = result.to_dict()["stages"]["recompute"]
+    assert row["ok"] and row["skipped"]
+    assert "nothing has changed" in row["detail"]
+
+
+def test_naming_the_recompute_still_forces_it(pipeline, temp_env):
+    """The same rule as every other stage on the list, and what the button
+    in Settings relies on."""
+    from nflpicker import db
+
+    ran: list[bool] = []
+    pipeline.refresh_recompute = lambda result, force=False: ran.append(force)
+    pipeline.refresh()
+    assert ran == [False], "the automatic pass leaves the decision to the mark"
+    pipeline.refresh(["recompute"])
+    assert ran == [False, True], "naming it forces it"
+    assert db  # the module the stage writes its mark through
+
+
+def test_a_changed_score_moves_the_fingerprint(pipeline, temp_env):
+    """The skip has to be safe in exactly one direction: anything that
+    changes what the pass would produce must change the mark."""
+    from nflpicker import db
+
+    season = pipeline.season()
+    before = pipeline.recompute_fingerprint(season)
+    db.execute(
+        "INSERT INTO games(game_id, season, week, season_type, kickoff, home, away,"
+        " home_score, away_score, status, updated_at) "
+        "VALUES('fp-1', ?, 1, 'REG', '2026-09-10T00:00:00+00:00', 'KC', 'BUF',"
+        " 21, 17, 'final', '2099-01-01T00:00:00+00:00')", (season,))
+    assert pipeline.recompute_fingerprint(season) != before
