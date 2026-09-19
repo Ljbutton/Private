@@ -454,7 +454,25 @@ jobs:
   # what it is -- the head of a working branch, not a version anyone promised.
   release:
     needs: build
-    if: always() && needs.build.result == 'success'
+    # Only the branch customers are actually served from.
+    #
+    # The `latest` tag is the link in everybody's copy of the app, in the
+    # install guide and in the update check, and it moves with every build
+    # that reaches this job. With the job open to every branch the trigger
+    # covers, a test build pushed to a scratch branch would quietly replace
+    # the installer that paying customers download -- unreviewed work shipped
+    # to everyone, by a push that was never meant to release anything.
+    #
+    # Other branches still build and still attach their artifacts to the run,
+    # which is the whole point of a test build: the binaries are there to
+    # download from the Actions tab. They just do not touch the release.
+    #
+    # Written as one exact ref rather than a pattern, because a pattern is how
+    # this goes wrong a second time. If the release branch is ever renamed,
+    # this line is the one to change.
+    if: >-
+      always() && needs.build.result == 'success'
+      && github.ref == 'refs/heads/claude/nfl-sports-picker-spl083'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
