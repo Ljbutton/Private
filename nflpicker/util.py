@@ -59,6 +59,19 @@ def iso(value: Any) -> str | None:
     return parsed.replace(microsecond=0).isoformat() if parsed else None
 
 
+def seconds_since(value: Any) -> float | None:
+    """Seconds between a stored timestamp and now, or None if unparseable.
+
+    Never negative: a timestamp from the future -- a clock adjustment, a row
+    written by a machine an hour ahead -- would otherwise read as "due in the
+    past" and make a scheduled thing run every time it was asked.
+    """
+    when = to_utc(value)
+    if when is None:
+        return None
+    return max(0.0, (now() - when).total_seconds())
+
+
 def hours_between(a: Any, b: Any) -> float | None:
     da, db_ = to_utc(a), to_utc(b)
     if not da or not db_:
@@ -119,9 +132,14 @@ def prob_to_american(prob: float | None) -> int | None:
 
 
 def american_to_decimal(odds: float | None) -> float | None:
+    """Decimal payout for American odds. Zero is not a price, so it is None —
+    the same guard ``american_to_prob`` already applies, without which a
+    malformed feed sending 0 crashes rather than being ignored."""
     if odds is None:
         return None
     odds = float(odds)
+    if odds == 0:
+        return None
     return 1.0 + (odds / 100.0 if odds > 0 else 100.0 / -odds)
 
 

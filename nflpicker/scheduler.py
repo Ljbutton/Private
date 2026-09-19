@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
@@ -54,18 +55,29 @@ class Scheduler:
     _lock: asyncio.Lock | None = None
 
     def __post_init__(self) -> None:
+        # Jobs come from the stage registry, so a newly registered source is
+        # polled without touching this file.
+        from .stages import STAGES
+
         cfg = get_config()
         self.jobs = {
-            "scores": Job("scores", cfg.refresh_scores, ["schedule"]),
-            "odds": Job("odds", cfg.refresh_odds, ["odds"]),
-            "news": Job("news", cfg.refresh_news, ["news"]),
-            "stats": Job("stats", cfg.refresh_stats, ["stats"]),
+            stage.name: Job(stage.name, stage.interval(cfg), [stage.name])
+            for stage in STAGES
+            if stage.scheduled and stage.enabled(cfg)
         }
 
     # ------------------------------------------------------------- intervals
     def odds_interval(self) -> float:
-        """Stretch odds polling to fit the remaining monthly request budget."""
+        """Stretch odds polling to fit the remaining monthly request budget.
+
+        With one exception: when games have appeared on the schedule but have no
+        line yet, poll at the floor. Opening numbers are the softest of the week
+        and they exist only once — a budget-stretched interval can miss the open
+        entirely, and the open is precisely what the movement test needs.
+        """
         cfg = get_config()
+        if self._awaiting_opening_lines():
+            return max(300.0, min(cfg.refresh_odds, 600.0))
         if self.pipeline.demo or not cfg.has_odds_key:
             return cfg.refresh_odds
         try:
@@ -78,6 +90,30 @@ class Scheduler:
             )
         except Exception:  # noqa: BLE001
             return cfg.refresh_odds
+
+    # Books post lines about a week out. Beyond that a game having no price is
+    # the normal state of the world, not a market we are waiting on.
+    OPENING_LINE_HORIZON_DAYS = 8
+
+    @classmethod
+    def _awaiting_opening_lines(cls) -> bool:
+        """Are there *imminent* games the market has not priced for us yet?
+
+        The horizon is the whole point. Without it this asked whether any game
+        in the rest of the season lacked a line, which in week 2 is most of the
+        season and stays true until December -- so the budget-aware interval
+        was bypassed essentially always and odds polled at the floor for
+        months. The exception exists to catch an opening number the week it
+        appears, and a game sixteen weeks out has no opening number to miss.
+        """
+        horizon = (now() + dt.timedelta(days=cls.OPENING_LINE_HORIZON_DAYS)).isoformat()
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM games g WHERE g.status = 'scheduled' "
+            "AND g.kickoff IS NOT NULL AND g.kickoff > ? AND g.kickoff <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM consensus c WHERE c.game_id = g.game_id)",
+            (now_iso(), horizon),
+        )
+        return bool(row and row["n"])
 
     def scores_interval(self) -> float:
         """Poll scores hard while games are live, gently otherwise."""
@@ -100,7 +136,7 @@ class Scheduler:
     def interval_for(self, job: Job) -> float:
         if job.name == "odds":
             return self.odds_interval()
-        if job.name == "scores":
+        if job.name == "schedule":
             return self.scores_interval()
         return job.interval
 
@@ -121,12 +157,28 @@ class Scheduler:
             await asyncio.sleep(max(30.0, self.interval_for(job)))
 
     async def run_once(self, job: Job) -> None:
-        """Run a job's stages then recompute, serialised against other jobs."""
+        """Run a job's stages, then let the recompute decide for itself.
+
+        The recompute is the expensive half of a refresh -- it retrains
+        nothing, but it does replay twenty thousand seasons and rewrite every
+        projection -- and it used to run after *every* job on *every* tick.
+        Six jobs on their own timers meant the app was recomputing several
+        times an hour to reach the same answer, which is what "refreshing more
+        often than it should" looked like from outside: fans, a busy status
+        line, and numbers that never actually changed.
+
+        The test for that lived here, and here was the wrong place. This loop
+        is off by default; the browser drives refreshes itself through
+        /api/refresh, which never reaches this function -- so the guard
+        protected a path almost nobody was on while the path everybody was on
+        recomputed every single minute. It has moved into `recompute` itself,
+        which every caller goes through, and this now just asks for the stage
+        and lets it make its own decision.
+        """
         assert self._lock is not None
         async with self._lock:
-            result = await asyncio.to_thread(
-                self.pipeline.refresh, [*job.stages, "recompute"]
-            )
+            result = await asyncio.to_thread(self.pipeline.refresh, list(job.stages))
+            await asyncio.to_thread(self.pipeline.recompute)
         stage = result.stages.get(job.stages[0], {})
         job.last_run = now_iso()
         job.last_ok = bool(stage.get("ok"))
@@ -151,12 +203,42 @@ class Scheduler:
                 await task
         self._tasks = []
 
-    async def refresh_now(self, stages: list[str] | None = None) -> dict:
-        """Manual refresh, sharing the lock so it cannot overlap a scheduled run."""
+    # The season-long play-by-play download, which is most of a slow refresh
+    # and cannot have changed since this morning. Left to its own interval even
+    # on a forced run.
+    SLOW_STAGES = ("stats",)
+
+    # The one stage that costs money. Every other source here is free and can
+    # be asked as often as you like; the Odds API is a monthly allowance of a
+    # few hundred requests, and each poll spends three of them. So it is never
+    # part of "refresh everything" -- it has its own button, which says what it
+    # is about to spend, and nothing else can reach it by accident.
+    METERED_STAGES = ("odds",)
+
+    async def refresh_now(self, stages: list[str] | None = None, *,
+                          full: bool = False) -> dict:
+        """Manual refresh, sharing the lock so it cannot overlap a scheduled run.
+
+        `full` is what the button in the corner asks for. Without it a refresh
+        means "catch up on whatever is due", and each stage that was polled
+        inside its own interval is skipped -- which is right for a timer and
+        wrong for a person who has just pressed refresh. Pressing the button
+        *is* the request to spend an Odds API credit.
+
+        Everything except the play-by-play download, which is most of the wait
+        and is a season's worth of history that has not changed since this
+        morning. It keeps its own interval.
+        """
+        from .stages import stage_names
+
+        if full and not stages:
+            stages = [n for n in stage_names(get_config())
+                      if n not in self.SLOW_STAGES + self.METERED_STAGES]
         lock = self._lock or asyncio.Lock()
         async with lock:
             result = await asyncio.to_thread(
-                self.pipeline.refresh, stages, force_odds=bool(stages and "odds" in stages)
+                self.pipeline.refresh, stages,
+                force_odds=bool(full or (stages and "odds" in stages)),
             )
         return result.to_dict()
 

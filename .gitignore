@@ -7,9 +7,26 @@ venv/
 .ruff_cache/
 .env
 data/*.db
+# The migrator's own copies. Five of these were committed and came to 59MB --
+# a database is not source, and a backup of one is the least source-like thing
+# in the tree.
+data/*.backup
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
 data/cache/
-data/models/
+# Contents, not the directory itself: git cannot re-include a file whose parent
+# directory is excluded, so a `data/models/` line would make the negations below
+# silently do nothing.
+data/models/*
+# A trained bundle is checked in so the app arrives usable. It is a pickle of
+# fitted estimators, so it only loads back under the scikit-learn that wrote it
+# (recorded in the report beside it); if it does not, the app logs why and falls
+# back to power ratings until `make train` rebuilds it.
+!data/models/models.joblib
+!data/models/training_report.json
 .DS_Store
+build/
+dist/
+*.spec.bak
+nflpicker/_build.py

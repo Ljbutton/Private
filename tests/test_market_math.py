@@ -79,3 +79,13 @@ def test_january_games_belong_to_the_previous_season():
 
     assert util.current_season(dt.date(2027, 1, 10)) == 2026
     assert util.current_season(dt.date(2026, 10, 1)) == 2026
+
+
+def test_zero_is_not_a_price():
+    """A malformed feed sending 0 must be ignored, not raise. Both converters
+    have to agree on that, since callers use them interchangeably."""
+    assert util.american_to_prob(0) is None
+    assert util.american_to_decimal(0) is None
+    assert util.american_to_decimal(None) is None
+    assert util.expected_value(0.5, 0) is None
+    assert util.kelly_fraction(0.6, 0) == 0.0

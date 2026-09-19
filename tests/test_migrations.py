@@ -1,0 +1,201 @@
+"""Upgrading the app must not cost the user their history.
+
+Line movement and closing-line value accumulate only while the app is running
+and cannot be backfilled from anywhere, so an upgrade that drops a table is not
+a bug you fix next release — the data is gone.
+"""
+
+import sqlite3
+
+import pytest
+
+from nflpicker import db
+
+
+@pytest.fixture
+def old_db(tmp_path):
+    """A database as an earlier version left it: real rows, a stale version."""
+    path = tmp_path / "nflpicker.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(db.SCHEMA)
+    conn.execute(
+        "INSERT INTO games(game_id, season, week, home, away, updated_at) "
+        "VALUES('2026_01_KC_BUF', 2026, 1, 'KC', 'BUF', '2026-09-01T00:00:00Z')"
+    )
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '1')")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_upgrading_keeps_the_rows(old_db):
+    conn = sqlite3.connect(old_db)
+    conn.executescript(db.SCHEMA)
+    was = db.migrate(conn, old_db)
+
+    assert was == 1
+    rows = conn.execute("SELECT game_id FROM games").fetchall()
+    assert [r[0] for r in rows] == ["2026_01_KC_BUF"]
+    assert db._stored_version(conn) == db.SCHEMA_VERSION
+
+
+def test_upgrading_backs_the_database_up_first(old_db):
+    conn = sqlite3.connect(old_db)
+    conn.executescript(db.SCHEMA)
+    db.migrate(conn, old_db)
+
+    backup = old_db.with_name(old_db.name + ".v1.backup")
+    assert backup.exists(), "an upgrade must leave a copy of what it started from"
+    saved = sqlite3.connect(backup).execute("SELECT game_id FROM games").fetchall()
+    assert [r[0] for r in saved] == ["2026_01_KC_BUF"]
+
+
+def test_a_fresh_database_is_not_backed_up(tmp_path):
+    """There is nothing to lose yet, and a .backup beside a new install is noise."""
+    path = tmp_path / "new.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(db.SCHEMA)
+    assert db.migrate(conn, path) == 0
+    assert not list(tmp_path.glob("*.backup"))
+
+
+def test_migrating_twice_changes_nothing(old_db):
+    conn = sqlite3.connect(old_db)
+    conn.executescript(db.SCHEMA)
+    db.migrate(conn, old_db)
+    assert db.migrate(conn, old_db) == db.SCHEMA_VERSION
+
+
+def test_a_column_added_later_reaches_an_existing_table(tmp_path):
+    """The failure this guards against: CREATE TABLE IF NOT EXISTS does nothing
+    to a table that exists, so a column added to SCHEMA never appears in a
+    database created before it — and the upgraded app queries a column the
+    user's file has never had."""
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE games (game_id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO games VALUES('g1')")
+    conn.commit()
+
+    assert db.ensure_column(conn, "games", "kickoff", "TEXT") is True
+    assert db.ensure_column(conn, "games", "kickoff", "TEXT") is False   # idempotent
+
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(games)")}
+    assert "kickoff" in columns
+    assert conn.execute("SELECT game_id FROM games").fetchone()[0] == "g1"
+
+
+def test_every_declared_column_addition_applies_cleanly(tmp_path):
+    """Guards the registry itself: a typo in COLUMN_ADDITIONS would otherwise
+    only surface on a real user's database during an upgrade."""
+    path = tmp_path / "reg.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(db.SCHEMA)
+    for table, column, decl in db.COLUMN_ADDITIONS:
+        db.ensure_column(conn, table, column, decl)
+        columns = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        assert column in columns, f"{table}.{column} ({decl}) did not apply"
+
+
+def test_data_survives_closing_and_reopening(tmp_path, monkeypatch):
+    """The machine gets turned off. Everything captured so far must still be
+    there when it comes back."""
+    monkeypatch.setenv("NFLPICKER_DATA_DIR", str(tmp_path))
+    from nflpicker.config import reset_config
+
+    reset_config()
+    db.close_all()
+
+    db.set_meta("captured", {"lines": 41})
+    conn = db.connect()
+    conn.execute(
+        "INSERT INTO games(game_id, season, week, home, away, updated_at) "
+        "VALUES('g', 2026, 2, 'KC', 'BUF', '2026-09-15T00:00:00Z')"
+    )
+    conn.commit()
+
+    db.close_all()                      # as if the machine were switched off
+    reset_config()
+
+    assert db.get_meta("captured") == {"lines": 41}
+    assert db.query("SELECT game_id FROM games")[0]["game_id"] == "g"
+    db.close_all()
+
+
+def test_a_packaged_app_can_be_configured_from_its_data_directory(tmp_path, monkeypatch):
+    """A frozen build's __file__ lives in PyInstaller's temp extraction dir,
+    which is recreated every launch — so a .env beside the "repo root" can
+    never be read or written. The data directory is the only place that
+    survives, and without this there is no way to give the .app an API key
+    short of launching it from a terminal."""
+    (tmp_path / ".env").write_text("ODDS_API_KEY=from-data-dir\n")
+    monkeypatch.setenv("NFLPICKER_DATA_DIR", str(tmp_path))
+
+    import importlib
+
+    from nflpicker import config as config_module
+
+    importlib.reload(config_module)
+    assert config_module.get_config().odds_api_key == "from-data-dir"
+
+
+def test_a_real_environment_variable_beats_the_file(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("ODDS_API_KEY=from-file\n")
+    monkeypatch.setenv("NFLPICKER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ODDS_API_KEY", "from-environment")
+
+    import importlib
+
+    from nflpicker import config as config_module
+
+    importlib.reload(config_module)
+    assert config_module.get_config().odds_api_key == "from-environment"
+
+
+def test_a_listed_column_is_added_even_at_the_current_version(tmp_path):
+    """The version gate must not decide whether columns get added.
+
+    This is the bug that took /api/teams down: a column was added to
+    COLUMN_ADDITIONS and SCHEMA_VERSION was not bumped with it, so every
+    database already stamped at that version returned early from migrate() and
+    never got the column -- and the app then queried a column its own schema
+    declared and the user's database had never had. Remembering to bump a
+    constant is not a migration strategy.
+    """
+    import sqlite3
+
+    from nflpicker import db
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA)
+    # Stamped current, and missing a column the current code selects.
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+                 (str(db.SCHEMA_VERSION),))
+    conn.execute("ALTER TABLE power_snapshots DROP COLUMN projection")
+    conn.commit()
+    assert "projection" not in {
+        r[1] for r in conn.execute("PRAGMA table_info(power_snapshots)")}
+
+    db.migrate(conn, path)
+
+    assert "projection" in {
+        r[1] for r in conn.execute("PRAGMA table_info(power_snapshots)")}
+    conn.close()
+
+
+def test_every_listed_column_exists_after_a_plain_connect(tmp_path, monkeypatch):
+    """Whatever is in the list is in the database, on any database."""
+    import sqlite3
+
+    from nflpicker import db
+
+    path = tmp_path / "fresh.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(db.SCHEMA)
+    db.migrate(conn, path)
+    for table, column, _ in db.COLUMN_ADDITIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        assert not cols or column in cols, f"{table}.{column} is missing"
+    conn.close()

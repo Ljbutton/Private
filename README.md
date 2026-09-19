@@ -1,4 +1,16 @@
-# NFL Picker
+# The Edge
+
+**Installing the app?** See **[INSTALL.md](INSTALL.md)** — download, install,
+first run and the optional betting-lines key. This file is about running it
+from source.
+
+> **Not betting advice.** The Edge is a projection tool. Its own measured
+> record, shown in the app, is about 51% against the spread where 52.4% is
+> break-even — an "edge" here is inside the noise more often than not. Never
+> stake money you cannot afford to lose. US helpline: 1-800-GAMBLER.
+
+---
+
 
 A self-hosted NFL projection and pick engine. It pulls schedules, scores, odds
 from multiple sportsbooks, play-by-play efficiency data and news; projects every
@@ -11,10 +23,12 @@ Runs locally. One command, one page, no cloud services.
 
 ```bash
 make demo      # runs immediately on a synthetic season — no keys, no network
-make run       # live sources
+make run       # live sources, in your browser
+make desktop   # live sources, in a native window
 ```
 
-Then open <http://127.0.0.1:8000>.
+`make run` serves <http://127.0.0.1:8000>. `make desktop` opens the same app in
+a real application window instead — see [Running it as an app](#running-it-as-an-app).
 
 ---
 
@@ -35,6 +49,13 @@ available* number at any single book, which is the one you would actually bet.
 **Remembers.** Every refresh snapshots both the market and our own prediction,
 so each game has a movement chart showing the consensus, the individual books,
 and our number over time — plus a full prediction history.
+
+**Tracks games while they are being played.** In-progress games sort to the top
+with the clock, down and distance, who has the ball, and a live win probability
+that updates as the scoreboard does. The live model is a time-decay
+approximation: the pregame projection dominates early and fades as the game
+resolves it, and uncertainty shrinks with the square root of time remaining. It
+is display only — nothing there feeds a pick or a stake.
 
 **Flags news that matters.** Aggregates ESPN, ProFootballTalk, CBS, Yahoo and
 NFL.com, classifies each item (QB / injury / suspension / transaction /
@@ -93,7 +114,7 @@ make train                                        # full training, a few minutes
 .venv/bin/python -m nflpicker.cli train --no-epa  # skip play-by-play
 ```
 
-This downloads every NFL game since 1999 with its historical closing line, plus
+This downloads every NFL game since 2002 with its historical closing line, plus
 play-by-play for every training season (~430 MB, and it fetches in well under a
 minute), builds features, runs walk-forward validation and saves the models to
 `data/models/`.
@@ -118,14 +139,22 @@ final scores *and* historical closing spread and total, rest days, roof, surface
 and starting quarterbacks, so the market history needed for supervision comes
 with it. Play-by-play parquet (optional) adds EPA.
 
-### Features (~35)
+Three more nflverse releases feed the availability features: **weekly injury
+reports** (2009+), **depth charts** (who the actual backup is) and **snap
+counts** (2012+, how much of the offence or defence a missing player was
+playing). Together they give 9,122 team-weeks of historical injury cost, which
+is what lets availability be a *trained* feature rather than a post-hoc nudge.
+
+### Features (79)
 
 | Group | Features |
 |---|---|
 | Power | Elo (MOV-adjusted, season-regressed), rolling EPA per play for offence and defence, pass/rush splits, success rate |
 | Quarterback | starter's shrunk EPA per dropback, career dropbacks, starter-changed flag |
+| Availability | injury cost in points for each side and the difference, weighted by each missing player's prior snap share |
 | Efficiency | opponent-adjusted offensive and defensive EPA (exponentially weighted) |
 | Hidden components | special-teams EPA, turnover luck (margin minus its fumble-recovery-neutral expectation) |
+| Situational | third-down conversion and allowed, red-zone touchdown rate, explosive-play rate and allowed, sack rate taken and forced, penalty yards |
 | Situation | rest days, short week, off bye, travel miles, time-zone shift, divisional, week, neutral site |
 | Environment | roof, surface, temperature, wind |
 | Form | rolling points for/against, decayed scoring margin, Pythagorean win expectation |
@@ -141,6 +170,56 @@ before that game* — moving the ball on a good defence counts for more.
 turnover margin is part skill and part luck. Recording the gap between the
 actual margin and a recovery-neutral expectation lets the model treat the lucky
 part as the noise it is rather than projecting it forward.
+
+**Situational rates, not counts.** A count of third-down conversions mostly
+measures how many possessions a team got. The rate is the property of the team.
+Honest note on these: an A/B test over the full walk-forward history moved
+margin error by **0.002 points** — essentially nothing — while nudging
+straight-up accuracy from 64.2% to 64.6% and improving Brier slightly. They are
+kept because they cost nothing extra to compute, help calibration a little, and
+are genuinely worth reading on the Teams tab. They are not why the model works.
+
+**Availability.** Every player, not just the quarterback. Each name on the
+weekly injury report is costed by position value scaled by that player's snap
+share *before* the week in question — a starting corner missing 85% of snaps
+costs more than a rotational one, and a quarterback's backup is read from the
+depth chart rather than guessed from who has started before. The snap share has
+to come from prior weeks specifically: an injured player has no snap row for the
+week he is out, so keying on his own week silently returns nothing for exactly
+the players the feature exists to price. An A/B test over 2012+ (98% coverage)
+moved margin error **-0.013 points**, straight-up accuracy **+0.12%** and Brier
+**-0.0012** — six times the effect of the situational rates, and the best recent
+addition to the model.
+
+**Announced starters.** The schedule feed records a starter only *after* a game
+is played, so for an upcoming game the builder used to fall back to whoever
+started last week.
+
+*Measured*, on 2,011 team-games across 2021–2024 (`nflpicker starters`):
+
+| Naming the starter correctly | All team-games | When the two rules disagree |
+|---|---|---|
+| Last week's starter | 88.1% | 42.1% |
+| Announced starter | **88.9%** | **50.3%** |
+
+So it helps, and less than the first draft of this paragraph claimed. The two
+rules agree on 90% of team-games, where the substitution is a no-op; the 195
+where they disagree are the whole feature. There it is right half the time
+against last week's four-in-ten — a real gain on the cases that move a line, and
+a reminder that *neither* rule is good at them. A headline rate over all games
+would have diluted that to nothing and hidden both halves of it. Worse, it
+was wrong twice over: the model priced the game with the injured starter's rating
+*and* reported `qb_change = 0`, so nothing downstream knew the projection was
+stale. The expected starter is now resolved before inference by walking the depth
+chart past anyone the injury report has ruled out. Only unplayed games are
+touched — overwriting a final game's starter would rewrite history with
+information from the future.
+
+Because the replacement is now a *feature*, the quarterback half of the
+availability offset is suppressed for those teams. The downgrade is inside the
+model; charging it again would double-count the most expensive absence in the
+sport. Skill-position absences are still costed, since those have no equivalent
+feature.
 
 **Quarterback.** The largest week-to-week swing a power rating misses. Starter
 identity comes from one source only: the schedule feed records the *starter*
@@ -195,6 +274,33 @@ through the rolling features and produces flattering, meaningless scores.
 Reported metrics: margin MAE against the market's own MAE (the bar to beat),
 ATS rate against the closing number, Brier score and log loss, and CLV.
 
+### Do 6-point teasers beat their price?
+
+`nflpicker teasers --sweep` checks the Wong teaser against 7,292 games with a
+closing line and a result, 1999–2026. A two-leg 6-point teaser at −110 needs
+each leg to win **72.4%** of the time, because both must land:
+`p² = 1.1/2.1`.
+
+| window | record | win rate | 95% CI | verdict at −110 |
+|---|---|---|---|---|
+| Underdogs +1.5 to +2.5 | 682/904 | **75.4%** | 72.5–78.1% | clears it, ROI +8.7% |
+| Favourites −8.5 to −7.5 | 360/493 | 73.0% | 68.9–76.8% | inside the noise |
+| Both windows | 1042/1397 | 74.6% | 72.2–76.8% | inside the noise |
+
+The effect is real and sits where the theory says it should — a sweep of every
+window puts `+1 to +2` (74.3%) and `−8 to −7` (74.2%) at the top of 24 windows,
+and the reason is visible in the margin distribution: **15.1% of games land on
+exactly 3** and 9.0% on 7, so teasing across both numbers buys far more than six
+points of ordinary probability. It has not been priced away either: 2014+ scores
+75.5%, *better* than pre-2014's 73.4%.
+
+**The price is what kills it.** The same 74.6% is worth +6.2% ROI at −110, +2.0%
+at −120, and **−1.6% at −130** — and most books now price a two-team six-point
+teaser at −120 or worse. So the honest summary is that the bet is real, the
+edge is small, and whether it exists at all depends entirely on a number the
+book chooses. That is why the finding lives in a CLI command and the README
+rather than in the dashboard: it is a fact about history, not a suggestion.
+
 ### What the model actually achieves — and what it does not
 
 Measured over 5,980 walk-forward games from 2002 to 2026:
@@ -224,6 +330,130 @@ history rather than 0.98 — but that is a dead inefficiency, not a live edge. O
 only**: a weight fitted across twenty years bakes a 2005-era inefficiency into
 today's recommendations and manufactures edges from it.
 
+#### The power rating was worse than using Elo alone
+
+A power rating is a forecast, not a summary, so the test it has to pass is:
+freeze it after week W, predict every remaining game of that season, and see
+how close you get. Measured that way over **20,007 rest-of-season games from
+2006 to 2025**:
+
+| rating | margin MAE | corr | straight-up |
+|---|---|---|---|
+| Elo + EPA blend (what was here) | 11.145 | 0.320 | 62.3% |
+| Elo alone | 10.903 | 0.327 | 62.5% |
+| **0.50 × Elo + 3 × Pythagorean** | **10.930** | **0.335** | 62.2% |
+
+The EPA blend was the problem. It ramped to 60% weight by week 10, and net EPA
+turns out to carry almost nothing about the *rest of the season* once Elo and
+point differential are in — adding it to the pair above moves MAE from 10.8350
+to 10.8341. Four decimal places, for most of the rating's weight.
+
+Two changes replace it:
+
+- **Elo is shrunk by half.** Regressing rest-of-season margin on the Elo
+  difference gives a slope near 0.56, not 1.0. Elo is an excellent ordering and
+  an overconfident spread, and it was being quoted at full strength.
+- **Pythagorean expectation is added.** Points scored and allowed predict future
+  results better than the results do, which is the actual complaint a power
+  ranking answers: a 1-1 team that won by 20 and lost by 2 is not the same as
+  one that did the reverse. It is faded in by games played, so one blowout does
+  not rank a team.
+
+The gain grows through the season, which is what you would expect from a term
+that needs games: correlation is 0.007 *worse* at week 2, then +0.012 by week 4,
++0.018 by week 8 and +0.021 by week 12. On a fully held-out sample (coefficients
+chosen on 2006–2015, tested on 2016+) MAE goes 10.840 → 10.594 and correlation
+0.308 → 0.316. Straight-up accuracy is a shade worse, 61.7% → 61.3%: the rating
+orders teams better and calls individual winners very slightly less often.
+
+EPA has not gone away — it still drives `off_rating` and `def_rating`, which
+project **totals**. It simply does not belong in the margin forecast.
+
+Known gain not taken: quarterback value is the second-strongest predictor here
+(1.23 points of spread, behind Elo's 2.77), and adding it reaches MAE 10.845 and
+correlation 0.343. It needs the quarterback tracker from the feature pipeline,
+which the ratings module cannot currently reach.
+
+The **Teams** page is ranked by projected finish rather than by rating or
+record, since expected wins already carries both the rating and who is left to
+play. The ▲▼ beside a team is how far it sits from where its record alone would
+put it — a team five places higher is one the model thinks has been unlucky, and
+that gap is the one thing a table sorted by record can never show.
+
+#### Ours against everybody else's
+
+The **Teams** page opens with the importer across the top, then two full
+rankings side by side: ours on the left, the average of published top-32s on the
+right. Both list all thirty-two teams without a scroll box, and both end level —
+a comparison you have to scroll one side of, then scroll the other side of to
+find the same team again, is not one.
+
+Both carry the same signed gap, so a team can be followed across. **+4** on the
+left means the published lists put that team four places lower than we do; the
+same team reads **−4** on the right. **=** means the two rankings agree exactly,
+written that way because a `0` in a column of signed numbers reads as a missing
+value rather than as agreement.
+
+Our rank is the same number in both panels, which sounds obvious and briefly was
+not: the page ranked by projected finish while the comparison ranked by rating,
+so the "ours" column disagreed with the rank printed beside it and nothing said
+why. One ordering now serves both.
+
+Those lists are editorial opinion, so the consensus is not a scoreboard and
+agreeing with it is not a goal. What it is good for is finding outliers: where
+our rating and a *tight* consensus differ by a dozen places, one of the two has
+found something. The spread between sources is shown on every row, because
+disagreeing with a team the sources themselves cannot place is not evidence of
+anything — that is why a row is only flagged when the gap is eight or more
+places **and** the sources are within eight of each other.
+
+Rankings are pasted in rather than scraped. They are articles, not APIs: the URL
+shape changes every season and the markup changes more often, and a parser that
+half-works would store eleven teams and quietly drag the average toward whoever
+it managed to read. Everything — paste or fetch — goes through a validator that
+demands exactly 32 distinct teams ranked 1 to 32, and refuses the lot otherwise
+with a message naming what is missing. Copy the list straight off the page;
+numbering, full team names and trailing commentary are all handled.
+
+#### The blind projection is compressed, and that is not a bug
+
+The blind column on the board never predicts a blowout. Measured out-of-sample
+over the same 5,981 walk-forward games:
+
+| | SD of the number | over 7 pts | over 10 pts | largest |
+|---|---|---|---|---|
+| Actual margin | 14.61 | 53.0% | 42.2% | 59 |
+| Closing line | 6.01 | 23.9% | 9.7% | 27 |
+| **Blind model** | **4.40** | 16.1% | 4.3% | **16.6** |
+
+It is smaller than the market's number on **69% of games**, and lands on the
+other side of the line on 16%. The compression is worst exactly where the
+market is most confident:
+
+| market's number | market says | blind says | actually was |
+|---|---|---|---|
+| 0–3 | 1.70 | 2.16 | 10.19 |
+| 3–7 | 4.21 | 3.27 | 10.78 |
+| 7–10 | 7.86 | 5.59 | 13.07 |
+| 10+ | 12.23 | **7.87** | 14.55 |
+
+This is what a squared-error model does when the signal is weak relative to the
+noise: shrinking toward the mean is the *correct* response to uncertainty under
+that loss, and the regression of outcomes on the blind number has a slope of
+1.21, so it is under-scaled by about a fifth.
+
+Rescaling it is tempting and does not help. Multiplying every blind projection
+by that fitted 1.21 moves MAE from 10.584 to **10.611** — slightly worse, because
+scaling up a weakly-correlated signal adds more variance than it removes bias.
+The number is honest as it stands: it is small because the model does not know
+much, and `corr(blind, actual)` is 0.364 against the line's 0.434.
+
+The consequence to watch is that an under-dispersed projection will
+*systematically* appear to like the underdog on every big favourite — on 10+
+point lines it is four points short by construction. That is a fake signal, and
+it is precisely why the app bets the blended number rather than the raw gap, and
+why `spread_edge` and `raw_spread_edge` are kept apart.
+
 So the honest summary is that a public model built from box scores, EPA and
 quarterback data lands within about a third of a point of the NFL closing line
 and carries no information the line does not already have. Closing that last gap
@@ -245,6 +475,269 @@ weight.
 - **In-sample honesty.** Backfilled grades (replaying the model over games
   already played) are labelled, and the walk-forward figure is displayed
   alongside every affected number.
+
+---
+
+## Running it as an app
+
+`make desktop` runs the dashboard in a native window rather than a browser tab.
+It uses the platform's own engine — WebView2 on Windows, WebKit on macOS,
+WebKitGTK on Linux — so nothing ships a second browser: no tab, no address bar,
+no localhost URL to remember. The server still runs underneath, bound to
+loopback only, which matters because the app has no authentication.
+
+If no webview runtime is present it falls back to opening your browser rather
+than failing.
+
+### Getting the executable
+
+**Without installing anything:** every build is published to the
+[**Latest build**](../../releases/tag/latest) release — that is the link to
+use. Release assets come off GitHub's CDN; the same file fetched from the
+Actions artifact store crawls at around 100 KB/s, which turns a hundred-megabyte
+download into most of an hour. The artifacts are still attached to each run,
+but only because that is what the run's own page shows.
+
+The `latest` tag moves with every build, so the link never goes stale. The
+release notes say which platforms that particular run rebuilt: a push builds
+Windows only, and the Mac builds are started by hand from the Actions tab, so
+assets are replaced one at a time rather than all together.
+
+- **Windows** — take `TheEdge-windows-setup.exe`. Double-click it; it installs
+  per user into `%LOCALAPPDATA%\Programs\TheEdge`, needs no administrator
+  rights, and puts The Edge in the Start menu.
+
+  The installer is not ceremony, it is the fix for a real problem. Windows tags
+  anything downloaded from the internet, Explorer copies that tag onto every
+  file it extracts from a zip, and **.NET refuses to load a tagged assembly**.
+  The app reaches WebView2 through pythonnet, which is .NET, so on a zip
+  install the tag stopped the app opening its own window and it fell back to a
+  browser tab — nothing corrupt, nothing missing, and reinstalling did not
+  help. With an installer the tag lands on `setup.exe` and is never read again;
+  the files it writes carry none, because the installer wrote them.
+
+  The one-file build never needed any of this, which is why the problem only
+  appeared when the build became a folder: a one-file build unpacks its own
+  payload at runtime, and files a process writes itself are not tagged. That
+  was the part of the one-file-to-folder trade nobody had priced.
+
+  `TheEdge-windows.zip` is still published for anyone who wants it without an
+  installer. It unzips to a folder — run `TheEdge.exe` *inside* it, and clear
+  the tag once, in PowerShell:
+
+  ```powershell
+  Get-ChildItem -Recurse "$HOME\Downloads\TheEdge-windows" | Unblock-File
+  ```
+
+  It is a folder rather than a single file deliberately. A one-file build
+  unpacks its whole payload — scipy, scikit-learn, pandas and pyarrow, a
+  quarter of a gigabyte — to a temporary directory on *every* launch, which
+  stalls the app before the window appears; and an executable that writes a
+  large payload somewhere and runs it is the behaviour heuristic antivirus
+  exists to notice. macOS never had the choice, because a `.app` is already a
+  folder the system shows as one icon.
+- **macOS** — `TheEdge-macos-arm.tar.gz`, for Macs with Apple silicon (M1 and
+  later). `uname -m` says `arm64` on one of those. There is no Intel build: a
+  Mac binary built for the wrong architecture does not warn, it simply refuses
+  to open, so shipping one costs a second runner on every macOS build and
+  offers a second file to pick the wrong one of.
+
+  It is a tarball rather than a zip because a zip carries neither the executable
+  bit nor a code signature — an `.app` unzipped from one would not launch. The
+  tar preserves both. (Downloading from the Actions tab instead adds a second
+  layer, since an artifact is always a zip; `unzip -o TheEdge-macos-arm-full.zip`
+  first in that case.)
+
+  ```bash
+  cd ~/Downloads                           # where the browser put it
+  tar -xzf TheEdge-macos-arm.tar.gz
+  xattr -dr com.apple.quarantine TheEdge.app   # it was downloaded, so Gatekeeper
+  open TheEdge.app
+  ```
+
+  Run those from Terminal rather than double-clicking in Finder. Both reach the
+  same `.app`, but Finder's Archive Utility copies the download's quarantine
+  flag onto everything it extracts, while `tar` does not — so the Terminal
+  route usually needs no `xattr` line at all. It is listed anyway because it is
+  harmless when there is nothing to remove, and it is the whole fix when there
+  is.
+
+  Lost track of where it landed? `find ~ -maxdepth 3 -name "TheEdge-macos*"`.
+
+  Without the `xattr` line macOS says the app "is damaged and can't be opened".
+  It is not damaged — that is what Gatekeeper says about anything unsigned that
+  arrived over the network. Signing it properly needs an Apple Developer
+  account; building it yourself avoids the question entirely, because a locally
+  built app is never quarantined.
+
+  The bundle *is* ad-hoc signed, which is a different thing and not optional:
+  an arm64 binary with no signature at all will not execute on Apple silicon
+  under any circumstances. That signature is what makes the code loadable; it
+  does nothing for Gatekeeper, which is what the `xattr` line is for.
+
+  The macOS app is a folder inside the `.app`, not a single packed file like
+  the Windows build. That is deliberate — a `.app` is already one icon to drag,
+  and a single-file build would re-extract a quarter of a gigabyte of scipy and
+  pyarrow to a temporary directory on every single launch, which reads as a
+  hung app rather than a slow one.
+
+GitHub's free macOS runners are Apple silicon by default, which is what the
+macOS build asks for (`macos-14`). Worth knowing if that ever has to change: a
+job asking for a retired runner label does not fail — it queues forever with
+nothing assigned to it, which reads as a slow build rather than an impossible
+one.
+
+The build runs the test suite first and then boots the frozen binary with
+`--selftest`, because PyInstaller exiting 0 only means the bundle was written.
+The usual packaging failure is a hidden import that was never collected, and
+that stays invisible until someone double-clicks the icon.
+
+**Building it yourself:**
+
+```bash
+make exe                 # full build
+make exe PROFILE=lite    # smaller, no training
+```
+
+This produces a self-contained folder under `dist/` — no Python install needed
+on the target machine. Measured on Linux: **≈138 MB** for the full profile.
+
+Two things to know:
+
+- **PyInstaller cannot cross-compile.** Run `make exe` on the platform you want
+  the build for; a Windows `.exe` has to be built on Windows.
+- **The `lite` profile drops pyarrow.** It runs the dashboard, fetches odds,
+  scores and news, and uses a model you trained earlier — but it cannot read
+  nflverse parquet, so no training and no EPA refresh on that build. Train with
+  the full install and copy `data/models/` across if you want both.
+
+- **Windows will not trust it, and that is expected.** The build is unsigned, so
+  SmartScreen shows "Windows protected your PC" on first run — *More info* →
+  *Run anyway*. Code signing needs a certificate (a few hundred dollars a year),
+  which is not worth it for something only you run. Two packaging choices lean
+  against that starting position rather than into it: UPX compression is off,
+  because packed executables are a known false-positive trigger, and the build
+  is one folder rather than one file, because a self-extracting executable is
+  the shape antivirus heuristics are looking for.
+
+Windows needs the Microsoft Edge WebView2 runtime, which ships with Windows 11
+and most Windows 10 installs.
+
+---
+
+## Prediction markets
+
+Polymarket and Kalshi run the same games with a different crowd than the
+sportsbooks. Their prices are shown on the Picks tab beside the book consensus
+and our own number, de-vigged and expressed as a home-team probability.
+
+**It is a display, not a recommendation.** Nothing there changes a suggestion,
+sizes a stake, or feeds a model. A gap is worth a second look — it may mean the
+thinner venue is lagging the books, or that it has priced news the books have
+not — but which of those it is depends on the game, and the app does not pretend
+to know. Games are sorted by disagreement, and one is only marked as leaning
+once the venues sit five percentage points from the books.
+
+The separation is enforced rather than assumed. Prediction venues never enter
+the sportsbook consensus and are never used for best-available pricing; mixing
+them in would move the benchmark toward the number being judged, and would quote
+a model edge at a venue that never offered it. That bug has been found twice —
+once for Polymarket, once when Kalshi was added — so the venue list now lives in
+one registry (`nflpicker/venues.py`) and a test fails the build if an adapter
+forgets to register.
+
+Kalshi prices are read from the bid/ask mid rather than the last trade: on a
+thin market the last trade can be hours old and several points from anything
+transactable.
+
+**Check whether trading on either venue is available to you where you live**
+before acting on anything shown here. Access for US persons has differed between
+the two and the regulatory picture has been changing; this project reads public
+market data only and does not track it. Resolution rules also differ from a
+sportsbook's on ties, postponements and voids.
+
+Set `PREDICTION_MARKETS_ENABLED=0` to turn the panel off.
+
+---
+
+## The Edge tab: does the line move toward us?
+
+Everything measured so far compares our number to the **closing** line, and the
+answer is that we do not beat it. But the closing line is the end of a week-long
+process — lines open on Sunday night and are softest before the market has
+chewed on them.
+
+That makes a sharper question available, and the Edge tab is built around it:
+**does our number predict which way the line moves?** If the model holds
+information the opening market lacks, the line should drift toward us more often
+than away.
+
+It is a better test than an ATS record for two reasons. It needs no opinion
+about the final score — only how the market revised. And line movement is far
+less noisy than game outcomes, so it reaches significance on a fraction of the
+sample. A 50% agreement rate is the baseline: the line was always going to move
+one way or the other.
+
+The tab also breaks results down by how far ahead of kickoff the view was
+formed, because if an edge exists anywhere it should be largest early, before
+the market has done its work.
+
+**This cannot be backfilled.** Nobody publishes a history of intraday NFL line
+movement, so it accumulates only while the app is running before kickoff — which
+is the practical argument for leaving it on rather than starting it on Sunday
+morning. The tab shows exactly how much it has witnessed so you can see whether
+a number is a verdict or a small slice.
+
+To make sure openers are actually captured, odds polling drops to its floor
+whenever scheduled games have no line yet, overriding the budget-stretched
+interval. Opening numbers exist once, and a stretched interval can miss them
+entirely.
+
+---
+
+## Teasers: a real edge, mostly eaten by the price
+
+`nflpicker teasers` backtests 6-point teasers through the key numbers over every
+game since 1999. This is the one strategy in the project that needs nothing from
+our model — only closing spreads and final scores.
+
+The mechanism is real. NFL margins are not smooth: **3 happens in 15.0% of games
+and 7 in 9.1%**, more than any other margin. Teasing a 7.5-to-8.5-point
+favourite down through both, or a 1.5-to-2.5-point underdog up through both, is
+a bet on that lumpiness.
+
+Over 1,396 qualifying legs:
+
+| Window | Win rate | 95% CI | vs 72.4% break-even |
+|---|---|---|---|
+| Underdogs +1.5 to +2.5 | 75.5% | 72.6–78.2% | clears it |
+| Favourites −8.5 to −7.5 | 73.0% | 68.9–76.8% | inside the noise |
+| Both | 74.6% | 72.3–76.9% | inside the noise |
+
+It has *not* been arbitraged away on the field: 2014 onward is 75.6%, better
+than the 73.4% before it.
+
+**The price is what kills it.** A two-leg teaser needs each leg at 72.4% to break
+even at −110, and ten cents of extra juice moves that bar by a full point:
+
+| Price | Need | Got | ROI |
+|---|---|---|---|
+| −110 | 72.4% | 74.6% | **+6.4%** |
+| −120 | 73.9% | 74.6% | +1.0% |
+| −130 | 75.2% | 74.6% | −2.5% |
+| −140 | 76.4% | 74.6% | −5.6% |
+
+Most books now price a two-team 6-point teaser at −120 or worse, which is
+precisely because this was well known. **So: worth playing only if you can find
+−110, marginal at −120, and a losing bet at −130.** Shopping the teaser price
+matters more than picking the legs.
+
+Two honest caveats. The underdog half carries the result — the favourite half is
+not distinguishable from break-even at all. And a blind sweep of every spread
+window finds *zero* windows whose whole confidence interval clears break-even;
+the Wong windows survive only because they were specified in advance by the
+key-number argument rather than discovered by searching. Reassuringly, the two
+best windows in that blind sweep are the two the theory names.
 
 ---
 
@@ -270,6 +763,7 @@ noise.
 
 ```bash
 nflpicker serve                  # dashboard + background refresher
+nflpicker desktop                # the same app in a native window
 nflpicker refresh                # fetch everything once
 nflpicker refresh --stages odds  # just one source
 nflpicker picks                  # this week's recommendations, as a table
@@ -277,8 +771,49 @@ nflpicker picks --contest survivor
 nflpicker teams                  # power ratings and projections
 nflpicker train                  # train and evaluate
 nflpicker backtest --backfill    # grade history
+nflpicker teasers --sweep        # backtest key-number teasers
+nflpicker sources                # what data sources exist and how often they run
 nflpicker status                 # what's stored, which sources are healthy
 ```
+
+---
+
+## Adding a data source
+
+Sources are declared once, in `nflpicker/stages.py`, and both the refresh
+pipeline and the background scheduler read from that list. `nflpicker sources`
+prints what exists:
+
+```
+stage               enabled  every      feeds model  what it is
+schedule            yes      5m         yes          Games, scores and live in-game state
+odds                yes      15m        yes          Sportsbook lines across every book
+prediction_markets  yes      10m        -            Polymarket and Kalshi prices, shown for comparison
+weather             yes      180m       yes          Forecast at kickoff for outdoor games
+news                yes      15m        yes          Headlines and injury reports
+stats               yes      360m       yes          Play-by-play efficiency, team detail and depth charts
+train               yes      1440m      -            Refit the model as results come in
+recompute           yes      on refresh -            Ratings, projections, picks and grading
+```
+
+To add one:
+
+1. **Write an adapter** in `nflpicker/sources/` that returns plain dicts and
+   never touches the database. That is what makes it testable against a
+   recorded response instead of the live network.
+2. **Add `refresh_<name>(self, result)` to the pipeline** to fetch and store it.
+   Catch its own failures and record them — a dead feed must not cost you odds.
+3. **Register a `Stage`** with an interval and a one-line description.
+
+That is the whole wiring. Nothing else needs editing.
+
+**If it feeds the model, there is a fourth step, and it is the one that gets
+missed:** merge the values into the game rows in `recompute`, and write a test
+asserting the feature is actually populated. This project has shipped
+trained-on columns that arrived as NaN in production twice — once for the
+play-by-play features, once for temperature and wind — and in both cases
+everything upstream looked healthy. The registry gets the data in; only that
+test proves it is used.
 
 ---
 
@@ -289,7 +824,9 @@ Each source has its own interval, because they age at very different rates:
 | Source | Default | Adaptive behaviour |
 |---|---|---|
 | Scores | 5 min | 60s while games are in progress; hourly when the next kickoff is over a day away |
+| Weather | 3 h | forecasts move slowly and only matter near kickoff |
 | Odds | 15 min | stretched to fit the remaining monthly API budget |
+| Prediction markets | 10 min | Polymarket and Kalshi, fetched independently so one being down costs only its column |
 | News | 15 min | — |
 | EPA / stats | 6 h | — |
 
@@ -321,7 +858,7 @@ a failure — and it is the behaviour you want when it is your money.
 ## Testing
 
 ```bash
-make test     # 121 tests, fully offline
+make test     # 226 tests, fully offline
 make lint
 ```
 
@@ -340,7 +877,318 @@ easy to get silently wrong:
   feeds routinely omit.
 - **Feature wiring.** That inference actually supplies the per-game detail the
   model was trained on. Training with columns that silently arrive as NaN in
-  production is invisible without a test for it.
+  production is invisible without a test for it — it has now happened twice, to
+  the play-by-play features and to temperature and wind.
+- **Venue separation.** That a prediction market never reaches the sportsbook
+  consensus or the best-available price, in either direction.
+
+---
+
+## Reading the pages
+
+Home is a board of cards, one per game. It was an eleven-column table, which fit
+the whole slate on one screen but gave both teams a single shared row: no number
+on it could be attributed to a side by position, so reading one game meant
+counting columns across to find whose 62% that was.
+
+A card splits the line in half instead. The left half says which team — mark,
+name, score; the right half is the same three sources the rest of the app uses,
+one column each, so a game is read by looking *down* a column rather than across
+a row:
+
+```
+ FINAL · 9/17                                     View game info ›
+                           BLIND    BLEND    BOOK    MARKET
+  ✕  Packers  Green Bay 17  −6.4     +1.3    +1.5
+                            68% ✓     46%     46%       –
+  ○  Vikings  Minnesota 24  +6.4     −1.3    −1.5
+                            32%      54% ✓   54% ✓      –
+ TOTAL POINTS               44.3     44.7    44.8
+```
+
+Four sources, and the first two are the same model:
+
+- **Blind** — the projection before it is ever shown the line. The only column
+  on the board that is independent of the market.
+- **Blend** — that same model blended with the line. What the app actually
+  claims, and what every probability and edge elsewhere is built from.
+- **Book** — the sportsbook consensus, de-vigged.
+- **Market** — Kalshi and Polymarket contract prices.
+
+Blind sits next to blend deliberately. The fitted market weight is 0.98, so
+the distance between those two columns is almost entirely the market's
+contribution — and in the row above, it is the difference between picking
+Green Bay and picking Minnesota. Seeing that gap is the point of showing both.
+
+The prediction-market column carries a win probability only. Kalshi and
+Polymarket quote who wins, not a line or a total, so that column has no spread
+and no total to show — those slots are empty by nature rather than by oversight,
+and stay empty however much data you have.
+
+The tick marks the side each source picked, which is what makes a card
+scannable: ticks in a line is agreement, a split is a game worth opening. It
+stays the source's own colour until the game is decided and turns green or red
+after — green means *was right* here, the same as everywhere else in the app, so
+a pick is never dressed as a result.
+
+**Team marks** come from ESPN's logo CDN. If that is unreachable — no network, a
+firewall, a machine that has never been online — each mark falls back to the
+team's abbreviation on its own colour rather than to a broken image, and nothing
+else about the board changes.
+
+The Scoreboard is a board too: everything on both is meant to be taken in at
+once, so nothing on them folds. Every other page is reference material you
+consult one question at a time, and four full tables stacked down a page turns
+finding the one you came for into a scrolling exercise — so those pages open to
+their headings, with the first section expanded. What you open stays open for
+the session, per page.
+
+**News** is the exception among those: it is read by scanning rather than by
+looking one thing up — "has anything changed before I pick" — so it stays open
+and splits left to right, the injury report on one side and everything else on
+the other. One scan covers both; behind summaries it took two clicks to learn
+there was nothing new.
+
+## Seasons
+
+The season selector sits beside the week. It lists the seasons the app has games
+for, not a range of years that mostly lead to empty boards — a season it was
+never running for is simply absent until you pull it in:
+
+```bash
+curl -X POST localhost:8000/api/backfill -H 'Content-Type: application/json' \
+     -d '{"season": 2024}'
+```
+
+Results only, and that limit is real: a line is a snapshot of what was on offer
+at a moment, and nobody sells the past. A backfilled season gets schedules and
+scores, never the odds history — so its Edge tab stays empty by nature rather
+than by oversight.
+
+Switching season reloads the week list rather than carrying the current one
+across, since week numbers only mean something within a season, and the header
+names the season being viewed so a past board cannot be mistaken for this one.
+
+**Where the model has no pick on a finished game** — anything from before the
+app was running — the board shows the sportsbook's pick instead of a blank,
+dimmed and marked with an asterisk, and the scoreboard says how many were
+inherited. Only the pick is borrowed: the spread and total stay blank rather
+than being copied across, because a duplicate of the book's number sitting in
+the model's column would read as the model agreeing on it. On those games the model and the
+book agree by construction, so a record that is mostly borrowed should not read
+as one the model earned. This applies only to games already played: for an
+upcoming game the model has its own view, and lending it the book's would be
+inventing an opinion rather than filling in a missing one.
+
+## Your picks, and who is actually right
+
+The circle beside each team, under the **You** heading, is your own pick and
+nothing else — it is not a marker for who won. Click it to pick that team, click
+it again to clear it, or click the other team to switch. It is blue while the
+game is undecided and becomes a green tick or a red cross once it is settled.
+Who actually won is shown by the score, and by the losing team's line dimming.
+The point of the column is to be able to disagree: with the model, with the
+book, or with both.
+
+The **Scoreboard** then scores everyone on straight-up winners, which is the one
+question all five can be asked without a spread or a price to argue about. The
+blind model and the blend are scored as separate pickers from the same
+prediction row — the blind margin's sign against the blended probability —
+because whether the blend is adding anything or the market is simply carrying
+it cannot be asked while one column is both. Two
+columns, and the second is the honest one:
+
+- **All their picks** — each picker's record over the games it had a view on.
+- **Same games** — only games where *every* picker had a view. Without it a
+  source can look good by having an opinion about the easy games and staying
+  quiet on the rest.
+
+**Your closing-line value** sits beneath the table and is the one honest early
+read on whether *you* are any good. A win rate needs hundreds of games to say
+anything and you will get a few dozen a season; the market's own revision is far
+less noisy, and it answers a question results cannot — whether you saw something
+before the price did. Positive means you took a better number than the one that
+closed: you backed a team at −3 and it closed −5, so you hold two points of value
+whether or not they covered. It is scored against the line that was on the board
+when you picked, not the opening number, so a late pick cannot collect credit for
+a move it missed.
+
+A source with no opinion is not scored as wrong, a tie is a push for everyone,
+an exact 50% is not a pick, and neither is a blind margin of exactly zero.
+
+**A source with no record at all says why, instead of showing a dash.** This
+matters more than it sounds: the commonest case is not a bug but a limit. A
+sportsbook line is a snapshot of what was on offer at a moment, and nobody
+sells the past — so a week that finished before this app was running, or
+before an Odds API key was configured, has no odds and never will, and
+backfilling a season brings in schedules and scores only. The same goes for
+prediction-market prices: a contract price exists while the contract is open.
+An empty sportsbook column on an old week is therefore permanent and expected,
+and a bare dash was indistinguishable from a failed fetch.
+
+That also explains an empty *blend* column on those weeks. The blend inherits
+the book's pick when it has none of its own, so where there is no book there is
+nothing to inherit. The blind model never inherits at all — lending it the
+book's pick would make three columns identical and destroy the only comparison
+they exist for.
+
+**By team** asks a different question: of the games each team played, how often
+did each picker call them right? A team everybody keeps missing is either
+genuinely volatile or priced on a reputation nobody has updated. Sorted by the
+model's accuracy, best first; teams it has no opinion on sort last rather than
+to the bottom of the scale, where a missing rate would read as a score of zero.
+
+Once a game is final the board marks every number right or wrong — green or red
+on each percentage, and on your own pick, which is blue until the game is
+decided. Each picker is judged on **its own** call, and because each source has
+its own column read down both teams, a book that disagreed with us shows its
+tick on the other team and is green there when we are red.
+
+## Alerts
+
+In-app only, deliberately — nothing is pushed anywhere, and they live inside a
+game's own dialog rather than in a strip over the board. They are something you
+go looking for once a game has your attention, not a queue demanding to be
+cleared: a banner that pushed sixteen rows off the screen was charging the whole
+board for news about two games.
+
+It raises a starter being ruled out, a line crossing 3 or 7, a steam move, and a
+disagreement of two points or more against the **opening** line. Two rules keep
+it from becoming noise: every alert is about a *change* rather than a state, and
+each distinct event fires once — recompute runs every few minutes, so anything
+keyed on current state would re-raise the same alert until kickoff.
+
+## The opener
+
+The model does not beat the closing line, and the app says so. The opener is a
+different question: it is the same market before it has been corrected, and it is
+the only place a disagreement is worth a second look.
+
+So the opener is **not** a training target and not what the app recommends on.
+It is reported separately — `opener_edge` on each game, and an alert past two
+points — which keeps that distinction visible instead of quietly blending two
+different claims into one number.
+
+---
+
+## Turning on real data
+
+Demo mode is off unless you ask for it, so a normal launch is already live. Most
+of what the app reads needs no account at all:
+
+| Source | Needs a key? | What it gives you |
+|---|---|---|
+| ESPN | no | schedule, scores, live in-game state, one consensus line |
+| nflverse | no | play-by-play, EPA, injuries, depth charts, snap counts |
+| News RSS | no | headlines and injury reports |
+| Open-Meteo | no | kickoff weather |
+| Polymarket, Kalshi | no | prediction-market prices, shown for comparison |
+| **The Odds API** | **yes** | **every sportsbook separately** |
+
+Without an Odds API key the app still works and says so — it falls back to
+ESPN's single consensus line. What you lose is the spread *between* books, which
+is what best-available pricing and closing-line value are computed from. The
+free tier is 500 requests a month; at the default 15-minute cadence that is
+comfortably inside it.
+
+Get a key at [the-odds-api.com](https://the-odds-api.com/), then:
+
+```bash
+# from source
+echo "ODDS_API_KEY=your-key-here" >> .env
+
+# packaged app, macOS
+echo "ODDS_API_KEY=your-key-here" >> ~/Library/Application\ Support/TheEdge/.env
+
+# packaged app, Windows
+echo ODDS_API_KEY=your-key-here >> %LOCALAPPDATA%\TheEdge\.env
+```
+
+Restart the app, then hit refresh. The Connections list in the sidebar will show
+`Odds API` with your month's usage instead of `no key`.
+
+**The model.** A trained bundle ships in `data/models/`, so the sidebar should
+read `1.0@<date>` rather than `power-only` on a fresh clone. It is a pickle of
+fitted estimators and therefore only loads back under the scikit-learn version
+that wrote it, which is recorded in `training_report.json` beside it. If it will
+not load, the app says so in the log and falls back to power ratings — retrain
+and it is fixed:
+
+```bash
+make refresh    # pull real data first
+make train      # walk-forward fit, ~25 seasons, a few minutes
+```
+
+**It retrains itself as the season goes on.** The scheduler checks daily and
+refits once a week of results has landed, so the cadence follows the season
+rather than the clock. `make train` is still there for an immediate rebuild, and
+it prints a validation report worth reading.
+
+Three guards, because an unattended fit is the one scheduled job that can make
+the app *worse*:
+
+- **Nothing live.** Training holds the refresh lock for minutes; doing that
+  during a game would stall the score poll exactly when it matters, so a live
+  slate defers to the next check.
+- **Enough new evidence.** A week of results moves the weights; two or three
+  games spend minutes of CPU to move them by nothing.
+- **No regression.** The fit happens in a scratch directory and is promoted only
+  if its walk-forward error is not materially worse than the model already in
+  place. An upstream schema change or a feature that quietly went empty would
+  otherwise replace a good model with a broken one overnight, with the app
+  reporting nothing but a new timestamp. A rejected fit says so in the log and
+  changes nothing.
+
+The comparison has a caveat worth knowing: walk-forward MAE is computed over all
+history each run, and one week moves the sample by about a third of a percent, so
+runs are comparable in practice but not identical. The tolerance
+(`NFLPICKER_TRAIN_MAX_REGRESSION`, 0.15 points) is sized to catch a genuine
+break, not to arbitrate noise.
+
+Turn it off with `NFLPICKER_TRAIN_AUTO=0`.
+
+---
+
+## Updating, and where your data lives
+
+Everything the app has learned is one SQLite file. Nothing is held in memory
+between runs, so switching the machine off loses nothing — on the next start the
+scheduler runs every due job immediately and carries on from the last snapshot.
+
+| | Path |
+|---|---|
+| From source | `data/nflpicker.db` |
+| Packaged, macOS | `~/Library/Application Support/TheEdge/` |
+| Packaged, Windows | `%LOCALAPPDATA%\TheEdge\` |
+
+Installed before the rename? Those are the paths for a *new* install. An
+existing `NFLPicker` directory keeps being read exactly where it is — the app
+was renamed, the picks were not, and moving a live database on first launch is
+a worse bet than leaving it alone. Nothing is ever written to the old location
+that a new install would then fail to find.
+
+The database is deliberately **outside** the application. Updating means
+replacing code, never touching that file:
+
+```bash
+make update      # from source: pull, reinstall, migrate, done
+```
+
+For a packaged build, replace the executable. The data directory is untouched
+because it was never inside it.
+
+**Schema changes migrate forward.** `CREATE TABLE IF NOT EXISTS` handles a new
+table, but does nothing to a table that already exists — so a column added later
+would never appear in your database, and the new code would query a column your
+file has never had. Columns are therefore also declared in `COLUMN_ADDITIONS`
+and applied on open, and a copy of the database is written beside it
+(`nflpicker.db.v4.backup`) before anything changes.
+
+That caution is specifically about the data that cannot be rebuilt. Scores,
+schedules and play-by-play can all be re-fetched. **Line movement and closing-line
+value cannot** — they exist only because the app was running and recorded them at
+the time. That is also why the sooner it runs continuously, the sooner the Edge
+tab has anything to say.
 
 ---
 
@@ -348,15 +1196,18 @@ easy to get silently wrong:
 
 ```
 nflpicker/
-  sources/     espn, odds_api, nflverse, news_rss, weather, demo
+  sources/     espn, odds_api, polymarket, kalshi, nflverse, news_rss, weather, demo
   ratings/     elo, efficiency, power
   ml/          features (leak-free), train (walk-forward), predict
   sim/         season monte carlo + playoff bracket
-  market/      consensus, de-vigging, line movement
+  market/      consensus, de-vigging, line movement, openers, prediction markets
   picks/       edges, pickem, survivor
   news/        impact classification
-  backtest/    grading, CLV, calibration
+  live.py      in-game win probability
+  availability.py  injury-adjusted projections
+  backtest/    grading, CLV, calibration, teasers
   web/         dashboard (vanilla JS, no build step)
+  stages.py    the source registry both of the below read from
   pipeline.py  refresh orchestration
   scheduler.py background jobs
   api.py       FastAPI
@@ -378,9 +1229,11 @@ keyed by capture time, which is what makes the history views answerable.
 - The **news impact estimate** is a coarse prior from position and availability.
   It is a triage signal for what to look at, never a substitute for watching how
   the market actually reacts.
-- **Starting quarterbacks for upcoming games** fall back to whoever started last
-  week. The schedule feed only records a starter after the fact, so an announced
-  midweek change is not yet picked up automatically — the news feed flags it for
-  you, but the model does not consume that flag.
+- **Announced starters** are resolved from the injury report and the depth
+  chart, not from headline text. The news classifier reports a team and a
+  position but never a player name, so it cannot say *which* quarterback a
+  headline means — and a wrong identity here does not degrade gracefully, it
+  prices the wrong player. A starter who is only *questionable* is still treated
+  as starting; that is closer to a coin flip than to a change.
 - Nothing here is betting advice. The app's most useful habit is telling you
   when it has no edge, and it will do that often.

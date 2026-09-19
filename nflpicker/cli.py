@@ -9,9 +9,6 @@ import sys
 from . import db
 from .config import get_config
 
-# nflverse play-by-play starts in 1999.
-PBP_FIRST_SEASON = 1999
-
 
 def _print_table(rows: list[dict], columns: list[str]) -> None:
     if not rows:
@@ -55,6 +52,13 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_desktop(args) -> int:
+    """Run the dashboard in a native window rather than a browser."""
+    from .desktop import run
+
+    return run(width=args.width, height=args.height, debug=args.debug)
+
+
 def cmd_refresh(args) -> int:
     from .pipeline import Pipeline
 
@@ -70,71 +74,20 @@ def cmd_refresh(args) -> int:
 def cmd_train(args) -> int:
     import warnings
 
-    from .ml.features import build_features, epa_by_game_from_pbp
+    from .ml.dataset import from_database, from_nflverse
     from .ml.train import train
 
     warnings.filterwarnings("ignore")
     cfg = get_config()
 
-    if args.source == "auto":
-        source = "db" if cfg.demo else "nflverse"
-    else:
-        source = args.source
+    source = ("db" if cfg.demo else "nflverse") if args.source == "auto" else args.source
 
     if source == "nflverse":
-        from .sources.nflverse import NflverseSource
-
         print("downloading nflverse game history…")
-        nfl = NflverseSource()
-        games = nfl.games()
-        games = games[games["season"] >= args.since]
-        rows = games.to_dict("records")
-        for row in rows:
-            row["home"] = row.pop("home_team", None)
-            row["away"] = row.pop("away_team", None)
-            row["neutral_site"] = str(row.get("location", "")).lower() == "neutral"
-            row["season_type"] = "REG" if row.get("game_type") == "REG" else "POST"
-        print(f"  {len(rows)} games from {args.since}")
-
-        # Play-by-play for every training season by default. Partial coverage
-        # is worse than it sounds: if most rows lack these columns the model
-        # learns to ignore them, and the features look worthless when they are
-        # merely absent. It is roughly 20MB a season and downloads in seconds.
-        epa: dict = {}
-        team_stats: dict = {}
-        if not args.no_epa:
-            seasons = sorted(int(x) for x in games["season"].dropna().unique())
-            seasons = [s for s in seasons if s >= max(args.since, PBP_FIRST_SEASON)]
-            print(f"  loading play-by-play for {len(seasons)} seasons…", flush=True)
-            ok = 0
-            for season in seasons:
-                try:
-                    detail = nfl.game_team_stats(season)
-                    for row in detail.to_dict("records"):
-                        team_stats.setdefault(str(row["game_id"]), {})[row["team"]] = row
-                    epa.update(epa_by_game_from_pbp(
-                        nfl.play_by_play(season)))
-                    ok += 1
-                except Exception as exc:  # noqa: BLE001
-                    print(f"    skipped {season}: {exc}")
-            print(f"  play-by-play loaded for {ok}/{len(seasons)} seasons "
-                  f"({len(team_stats)} games)")
-        frame = build_features(rows, epa_by_game=epa, team_game_stats=team_stats)
+        frame = from_nflverse(args.since, with_epa=not args.no_epa,
+                              progress=lambda m: print(m, flush=True))
     else:
-        rows = db.query("SELECT * FROM games ORDER BY season, week, kickoff")
-        consensus = db.query(
-            "SELECT c.game_id, c.spread_home, c.total_points FROM consensus c "
-            "JOIN (SELECT game_id, MAX(captured_at) m FROM consensus GROUP BY game_id) x "
-            "ON x.game_id = c.game_id AND x.m = c.captured_at"
-        )
-        lines = {c["game_id"]: c for c in consensus}
-        for row in rows:
-            line = lines.get(row["game_id"])
-            if line:
-                row["spread_home"] = line["spread_home"]
-                row["market_total"] = line["total_points"]
-        print(f"training on {len(rows)} games from the local database")
-        frame = build_features(rows)
+        frame = from_database(progress=print)
 
     if frame.empty:
         print("no usable games — run `nflpicker refresh` first.")
@@ -177,6 +130,95 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_starters(args) -> int:
+    """Does resolving the announced starter beat assuming last week's?"""
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    from .backtest.starters import measure
+
+    seasons = list(range(args.since, args.until + 1)) if args.until else None
+    print("replaying injury reports and depth charts…", flush=True)
+    result = measure(seasons=seasons, progress=lambda m: print(m, flush=True))
+    payload = result.to_dict()
+    print(json.dumps(payload, indent=2))
+
+    if not payload["n"]:
+        print("\nno team-games could be scored — check the seasons requested.")
+        return 1
+
+    print(f"\nnaming the starter correctly, {payload['n']} team-games:")
+    print(f"  last week's starter  {payload['last_week_rate']:.1%}")
+    print(f"  announced starter    {payload['announced_rate']:.1%}")
+    if payload["disagreed"]:
+        print(f"\nthe two rules disagreed on {payload['disagreed']} of them, "
+              "which is the only place the feature can change anything:")
+        print(f"  last week's starter  {payload['last_week_rate_when_disagreed']:.1%}")
+        print(f"  announced starter    {payload['announced_rate_when_disagreed']:.1%}")
+    return 0
+
+
+def cmd_teasers(args) -> int:
+    """Backtest 6-point teasers through the key numbers."""
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    from .backtest.teasers import (
+        by_era,
+        describe,
+        key_number_frequency,
+        price_sensitivity,
+        sweep,
+        wong_windows,
+    )
+    from .sources.nflverse import NflverseSource
+
+    print("downloading nflverse game history…")
+    games = NflverseSource().games()
+    usable = games.dropna(subset=["spread_line", "result"])
+    print(f"{len(usable):,} games with a closing line and a result "
+          f"({int(games.season.min())}-{int(games.season.max())})\n")
+
+    print("=== Wong windows: teasing through 3 and 7 ===")
+    for result in wong_windows(games, points=args.points):
+        print("  " + describe(result))
+
+    print("\n=== has it been priced away? ===")
+    for result in by_era(games, points=args.points, split=args.split):
+        print("  " + describe(result))
+
+    print("\n=== the same bet at prices books actually offer ===")
+    print("  (most books now price a 2-team 6-point teaser at -120 or worse)")
+    for row in price_sensitivity(games, points=args.points):
+        verdict = "playable" if row["roi_2leg"] > 0 else "not playable"
+        print(f"  {row['label']:>5}: need {row['break_even_2leg']:.1%}, "
+              f"got {row['win_rate']:.1%} → ROI {row['roi_2leg']:+.1%}  ({verdict})")
+
+    if args.sweep:
+        print("\n=== every window, not just the ones the theory names ===")
+        for result in sorted(sweep(games, points=args.points), key=lambda r: -(r.edge or -1)):
+            star = " *" if result.significant else ""
+            print(f"  {result.label:>14}: {result.win_rate:.1%} "
+                  f"[{result.ci_low:.1%}-{result.ci_high:.1%}] n={result.n:<5} "
+                  f"edge {result.edge:+.1%}{star}")
+
+    print("\n=== why it could work at all: where NFL margins land ===")
+    for row in key_number_frequency(games):
+        if row["share"] >= 0.04:
+            bar = "#" * int(row["share"] * 120)
+            print(f"  {row['margin']:>2}: {row['share']:>5.1%} {bar}")
+    return 0
+
+
+# Printed above anything that names a stake. How the model measures up against
+# the closing line is a real number and belongs on the Performance report,
+# where the sample size is beside it -- not in a footnote under every table.
+WAGER_NOTICE = (
+    "Not betting advice. Model output only, and no model is a sure thing.\n"
+    "Never stake what you cannot afford to lose. US helpline: 1-800-GAMBLER.\n"
+)
+
+
 def cmd_picks(args) -> int:
     from .pipeline import Pipeline
 
@@ -188,6 +230,7 @@ def cmd_picks(args) -> int:
     if args.contest in ("all", "ats"):
         payload = latest_pick("ats", season, week) or {}
         print(f"\n=== Best bets — {season} week {week} ===")
+        print(WAGER_NOTICE)
         _print_table(
             payload.get("edges", [])[:12],
             ["market", "selection", "book", "price", "win_prob", "expected_value",
@@ -236,6 +279,26 @@ def cmd_teams(args) -> int:
     return 0
 
 
+def cmd_sources(_args) -> int:
+    """What data sources exist, how often they run, and what they feed."""
+    from .stages import STAGES, describe
+
+    cfg = get_config()
+    rows = []
+    for stage, info in zip(STAGES, describe(), strict=True):
+        rows.append({
+            "stage": stage.name,
+            "enabled": "yes" if stage.enabled(cfg) else "no",
+            "every": f"{stage.interval(cfg) / 60:.0f}m" if stage.scheduled else "on refresh",
+            "feeds model": "yes" if info["feeds_model"] else "-",
+            "what it is": info["description"],
+        })
+    _print_table(rows, ["stage", "enabled", "every", "feeds model", "what it is"])
+    print("\nAdd one by writing an adapter in nflpicker/sources/, a refresh_<name>")
+    print("method on the pipeline, and a Stage entry in nflpicker/stages.py.")
+    return 0
+
+
 def cmd_status(_args) -> int:
     from .pipeline import Pipeline
 
@@ -269,6 +332,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reload", action="store_true")
     p.set_defaults(func=cmd_serve)
 
+    p = sub.add_parser("desktop", help="run as a native desktop window")
+    p.add_argument("--width", type=int, default=1400)
+    p.add_argument("--height", type=int, default=950)
+    p.add_argument("--debug", action="store_true")
+    p.set_defaults(func=cmd_desktop)
+
     p = sub.add_parser("refresh", help="fetch everything once and recompute")
     p.add_argument("--stages", help="comma separated: schedule,odds,news,stats,recompute")
     p.add_argument("--force", action="store_true", help="ignore the Odds API monthly budget")
@@ -297,19 +366,45 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=["ev", "leverage"], default="ev")
     p.set_defaults(func=cmd_picks)
 
+    p = sub.add_parser("teasers", help="backtest 6-point teasers through the key numbers")
+    p.add_argument("--points", type=float, default=6.0, help="teaser size in points")
+    p.add_argument("--split", type=int, default=2014, help="era split season")
+    p.add_argument("--sweep", action="store_true", help="also test every spread window")
+    p.set_defaults(func=cmd_teasers)
+
+    p = sub.add_parser("starters",
+                       help="measure whether the announced-starter rule beats last week's")
+    p.add_argument("--since", type=int, default=2021, help="earliest season")
+    p.add_argument("--until", type=int, default=0, help="latest season (0 = all available)")
+    p.set_defaults(func=cmd_starters)
+
     p = sub.add_parser("teams", help="power ratings and season projections")
     p.add_argument("--season", type=int)
     p.set_defaults(func=cmd_teams)
+
+    p = sub.add_parser("sources", help="list data sources and their refresh intervals")
+    p.set_defaults(func=cmd_sources)
 
     p = sub.add_parser("status", help="show what is stored and which sources are healthy")
     p.set_defaults(func=cmd_status)
     return parser
 
 
+# The two commands that start a server, and so leave a thread pool holding
+# an in-flight fetch when they stop. Everything else is one-shot and exits the
+# ordinary way. See nflpicker.desktop.leave.
+SERVER_COMMANDS = {"cmd_serve", "cmd_desktop"}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     get_config().ensure_dirs()
-    return args.func(args)
+    code = args.func(args)
+    if getattr(args.func, "__name__", "") in SERVER_COMMANDS:
+        from .desktop import leave
+
+        leave(code or 0)
+    return code
 
 
 if __name__ == "__main__":

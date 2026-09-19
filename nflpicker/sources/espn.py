@@ -101,8 +101,60 @@ def parse_scoreboard(payload: dict) -> list[dict]:
         odds = _parse_event_odds(comp, game)
         if odds:
             game["espn_odds"] = odds
+        if game["status"] == "in_progress":
+            live = _parse_live_state(comp, home["abbr"], away["abbr"])
+            if live:
+                game["live"] = live
         games.append(game)
     return games
+
+
+def _parse_live_state(comp: dict, home: str, away: str) -> dict | None:
+    """Down, distance, possession and clock for a game in progress.
+
+    Possession comes back as a team *id*, so it is resolved against this
+    event's own competitors rather than a global table — ESPN's ids are stable
+    but there is no reason to carry a second mapping when the answer is here.
+    """
+    from ..live import parse_clock, seconds_remaining
+
+    status = comp.get("status") or {}
+    period = status.get("period")
+    clock = parse_clock(status.get("displayClock")) or _num(status.get("clock"))
+
+    by_id: dict[str, str] = {}
+    for competitor in comp.get("competitors") or []:
+        team_id = str(_dig(competitor, "team", "id") or "")
+        abbr = try_resolve(_dig(competitor, "team", "abbreviation"))
+        if team_id and abbr:
+            by_id[team_id] = abbr
+
+    situation = comp.get("situation") or {}
+    possession = by_id.get(str(situation.get("possession") or ""))
+
+    return {
+        "period": int(period) if period else None,
+        "clock": status.get("displayClock"),
+        "seconds_left": seconds_remaining(int(period) if period else None, clock),
+        "possession": possession,
+        "down": _int_or_none(situation.get("down")),
+        "distance": _int_or_none(situation.get("distance")),
+        "yard_line": _int_or_none(situation.get("yardLine")),
+        "red_zone": bool(situation.get("isRedZone")),
+        "home_timeouts": _int_or_none(situation.get("homeTimeouts")),
+        "away_timeouts": _int_or_none(situation.get("awayTimeouts")),
+        "last_play": (_dig(situation, "lastPlay", "text") or "")[:300] or None,
+        "detail": _dig(status, "type", "detail"),
+        "home": home,
+        "away": away,
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_event_odds(comp: dict, game: dict) -> dict | None:
@@ -200,6 +252,15 @@ class EspnSource:
         return rows
 
     def injuries(self) -> list[dict]:
+        """The league injury report, grouped by team upstream.
+
+        ``covered_teams`` is recorded alongside the rows because the two are
+        not recoverable from each other: a team with nobody hurt produces no
+        rows and is indistinguishable, from the rows alone, from a team the
+        response left out. The caller needs that distinction to decide whose
+        absence from the list means "recovered" -- see refresh_news.
+        """
+        self.covered_teams: set[str] = set()
         try:
             payload = self.http.get_json(f"{WEB}/injuries", cache_ttl=900.0)
         except SourceError:
@@ -207,6 +268,8 @@ class EspnSource:
         rows: list[dict] = []
         for group in payload.get("injuries") or []:
             team = try_resolve(group.get("displayName") or group.get("abbreviation"))
+            if team:
+                self.covered_teams.add(team)
             for item in group.get("injuries") or []:
                 athlete = item.get("athlete") or {}
                 name = athlete.get("displayName") or item.get("displayName")
@@ -219,6 +282,8 @@ class EspnSource:
                         "position": _dig(athlete, "position", "abbreviation"),
                         "status": item.get("status") or _dig(item, "type", "description"),
                         "detail": (item.get("longComment") or item.get("shortComment") or "")[:400],
+                        "injury": _injury_label(item),
+                        "return_date": iso(_dig(item, "details", "returnDate")) or None,
                         "updated_at": iso(item.get("date")),
                     }
                 )
@@ -254,3 +319,32 @@ class EspnSource:
                 }
             )
         return items
+
+
+def _injury_label(item: dict) -> str | None:
+    """What is actually wrong, in two or three words.
+
+    The feed carries this twice: as structured fields under ``details``, and as
+    a paragraph of prose. Prefer the fields -- "Right Hamstring Strain" is a
+    column, and "Smith was limited in Wednesday's session and is considered
+    day-to-day with a hamstring issue" is not. The prose is still stored, it
+    just stops being the only place the injury is recorded.
+
+    Nothing here is guaranteed to be present, so every part is optional and an
+    entry with none of them returns None rather than an empty-looking string.
+    """
+    details = item.get("details")
+    if not isinstance(details, dict):
+        return None
+    parts = [
+        str(details.get(key)).strip()
+        for key in ("side", "location", "detail")
+        if details.get(key) and str(details.get(key)).strip().lower() != "not specified"
+    ]
+    # "Left Knee Knee" happens when location and detail agree; say it once.
+    seen: list[str] = []
+    for part in parts:
+        if part.lower() not in {p.lower() for p in seen}:
+            seen.append(part)
+    label = " ".join(seen).strip()
+    return label[:60] or None

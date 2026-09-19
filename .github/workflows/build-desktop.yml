@@ -1,0 +1,617 @@
+# Builds the desktop app.
+#
+# PyInstaller cannot cross-compile, so each target is built on its own runner.
+# Run it from the Actions tab ("Run workflow"), then download the artifact --
+# that is the whole point of this file: getting a binary without needing a
+# Python toolchain on the machine that will run it.
+name: Build desktop app
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "full (can train and read play-by-play) or lite (~40MB smaller, no pyarrow)"
+        type: choice
+        options: [full, lite]
+        default: full
+      targets:
+        description: "Which platforms to build"
+        type: choice
+        options: [windows, macos, both]
+        default: windows
+      mac_runner:
+        description: "Which Mac builds it — self-hosted is free, and has to be awake"
+        type: choice
+        options: [github, self-hosted]
+        default: github
+  push:
+    # A manual run is only offered for workflows that already exist on the
+    # default branch, so without this there is no way to get a binary out of a
+    # feature branch at all.
+    #
+    # The paths list used to name only the packaging files, on the reasoning
+    # that they are what "decides what the binary contains". That was wrong in
+    # the way that matters: the binary contains the application too. Eight
+    # commits of real work -- a new default view, the trained model, scheduled
+    # retraining -- produced no build, so the last downloadable executable was
+    # silently weeks of features out of date while looking current.
+    branches: ["main", "claude/**"]
+    paths:
+      - "nflpicker/**"
+      - "data/models/**"
+      - "nflpicker.spec"
+      - "scripts/desktop_entry.py"
+      - "pyproject.toml"
+      - ".github/workflows/build-desktop.yml"
+
+# Releases are how the builds are published (see the release job): creating
+# one and uploading its assets needs write access to the repository contents.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Selected here rather than filtered with a job-level `if`, because the
+        # matrix context is not available to one -- that combination is not a
+        # failing build, it is a workflow that never starts and reports no jobs
+        # at all. Inputs are null outside a manual run, so an automatic run
+        # falls through to Windows; macOS is one dropdown away rather than
+        # another runner on every commit.
+        #
+        # Apple silicon only. An Intel build was offered here until the last
+        # Mac it was for stopped being one anybody ran it on; Apple stopped
+        # selling Intel Macs in 2023 and the build is not free -- it is a
+        # second runner on every macOS request and a second file to pick the
+        # wrong one of.
+        target: >-
+          ${{ fromJSON(
+            inputs.targets == 'macos' && '["macos-arm"]'
+            || inputs.targets == 'both' && '["windows","macos-arm"]'
+            || '["windows"]') }}
+
+    # macos-14 is Apple silicon, which is the only Mac this builds for.
+    #
+    # A GitHub-hosted Mac bills at ten times wall clock, which makes the
+    # shortest job in this workflow the most expensive one in it by some
+    # distance -- two and a half minutes of Mac costs more than eight minutes
+    # of Windows. A Mac you already own costs nothing.
+    #
+    # Selectable rather than switched, because the failure mode of a
+    # self-hosted runner is not a failed build: it is a job that queues
+    # silently until the machine wakes up, which is harder to diagnose than an
+    # error. The default stays on GitHub's runner, and `self-hosted` is one
+    # dropdown away when the Mac is on. The label is set when the runner is
+    # registered; `mac-arm` is the one this expects.
+    runs-on: >-
+      ${{ matrix.target == 'windows' && 'windows-latest'
+          || (inputs.mac_runner == 'self-hosted' && 'mac-arm' || 'macos-14') }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # A GitHub-hosted runner is a fresh machine every time; a self-hosted one
+      # is the same folder it was last time. That is most of why it is fast,
+      # and the one way it can lie to you: PyInstaller's output from the last
+      # run is still sitting there, so a file that has since been deleted from
+      # the project can go on being shipped, and a build that would fail clean
+      # passes. Cheap to rule out, so it is ruled out.
+      - name: Clear the last build
+        if: runner.environment != 'github-hosted'
+        shell: bash
+        run: rm -rf build dist
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pywebview pyinstaller
+
+      # pywebview's macOS backend talks to the system frameworks through
+      # pyobjc, which it declares as a dependency but which nothing else in
+      # this project would notice the absence of until the window failed to
+      # open on someone's desk.
+      - name: Check the macOS webview backend is installed
+        if: startsWith(matrix.target, 'macos')
+        run: |
+          python - <<'PY'
+          import webview.platforms.cocoa   # noqa: F401
+          import AppKit, Foundation, WebKit, objc   # noqa: F401
+          print("cocoa backend importable; pyobjc", objc.__version__)
+          PY
+
+      # A build that ships a broken app is worse than no build, and the suite
+      # is fully offline, so there is no reason not to run it first.
+      - name: Test
+        run: python -m pytest -q
+
+      # The formatting layer is the part a screenshot sweep cannot check: a
+      # sweep proves a page renders, not that a missing probability renders as
+      # a dash rather than "NaN%". node:test is built in, so this needs no
+      # package.json and no install step.
+      - name: Test the browser code
+        shell: bash
+        run: node --test tests/js/*.test.mjs
+
+      # Stamp the build so the running app can say which one it is. Written
+      # here rather than committed: it is a fact about the packaging run, and
+      # a checked-in version string is a version string that goes stale.
+      - name: Stamp the build
+        shell: bash
+        run: |
+          {
+            echo "COMMIT = \"$GITHUB_SHA\""
+            echo "BUILT_AT = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+            # Subscription check and update notice. Set both as repository
+            # variables (Settings -> Secrets and variables -> Actions ->
+            # Variables). Left unset, the build runs unlicensed, as before.
+            echo "LICENSE_SERVER = \"${{ vars.LICENSE_SERVER_URL }}\""
+            echo "STORE_URL = \"${{ vars.WHOP_STORE_URL }}\""
+          } > nflpicker/_build.py
+          cat nflpicker/_build.py
+
+      - name: Build
+        run: pyinstaller nflpicker.spec --noconfirm -- --profile ${{ inputs.profile || 'full' }}
+
+      # An unsigned arm64 binary will not execute at all on Apple Silicon --
+      # not "warns", not "asks", refuses. PyInstaller ad-hoc signs what it
+      # writes, but assembling the bundle afterwards invalidates that, so the
+      # .app is signed once more as a whole. Ad-hoc ("-") is not a developer
+      # identity and does nothing for Gatekeeper; it is what makes the code
+      # loadable.
+      - name: Ad-hoc sign the bundle
+        if: startsWith(matrix.target, 'macos')
+        run: |
+          set -e
+          codesign --force --deep --sign - dist/TheEdge.app
+          codesign --verify --deep --strict --verbose=2 dist/TheEdge.app
+
+      # Confirms the frozen binary actually starts and serves, rather than
+      # only that PyInstaller exited 0 -- the failure this catches is a missing
+      # hidden import, which is invisible until first run. On macOS it runs the
+      # binary *inside the bundle*, which is the one that ships; the loose copy
+      # beside it can work while the bundled one does not.
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ matrix.target }}" = "windows" ]; then
+            BIN="dist/TheEdge/TheEdge.exe"
+          else
+            BIN="dist/TheEdge.app/Contents/MacOS/TheEdge"
+          fi
+          test -f "$BIN" || { echo "no binary at $BIN"; ls -R dist | head -50; exit 1; }
+          NFLPICKER_DEMO=1 "$BIN" --selftest
+
+      # The smoke test above can never catch a missing-stdout bug, and one
+      # shipped: a windowed build has sys.stdout set to None, uvicorn's default
+      # log formatter picks its colours with sys.stdout.isatty(), and the app
+      # died configuring logging before it ever opened a window. Capturing a
+      # subprocess's output *gives it* a stdout -- so reading the selftest's
+      # output, the only way to check it, was what made the failure disappear.
+      #
+      # This launches it the way a person does, with nothing listening, and
+      # reads only the exit code. The app's own console.log carries the detail.
+      - name: Smoke test with no stdout attached
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\nostdout-data"
+          $p = Start-Process -FilePath dist/TheEdge/TheEdge.exe `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          if ($p.ExitCode -ne 0) {
+            throw "selftest exited $($p.ExitCode) with no stdout attached"
+          }
+          Write-Host "ok: ran with no stdout attached"
+
+      # A GitHub artifact is a zip, and that zip does not carry the executable
+      # bit. On Windows that is harmless; on macOS it means the .app unzips
+      # without +x and simply will not launch, which looks like a broken build
+      # rather than a packaging detail. Tarring preserves the mode -- and the
+      # code signature, which a zip round-trip through the artifact store can
+      # also break.
+      - name: Package for macOS
+        if: startsWith(matrix.target, 'macos')
+        run: |
+          set -e
+          test -d dist/TheEdge.app || { echo "no .app bundle"; ls -R dist | head -50; exit 1; }
+          tar -czf TheEdge-${{ matrix.target }}.tar.gz -C dist TheEdge.app
+          shasum -a 256 TheEdge-${{ matrix.target }}.tar.gz
+          du -sh TheEdge-${{ matrix.target }}.tar.gz
+
+      # Windows is a folder now, so it is zipped here rather than handed to
+      # upload-artifact file by file. Zipping it ourselves also means the
+      # release asset and the artifact are the same object: one download that
+      # unpacks to one folder, instead of a zip of a zip.
+      - name: Package for Windows
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/TheEdge/TheEdge.exe)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 50
+            throw "no dist/TheEdge/TheEdge.exe"
+          }
+          Compress-Archive -Path dist/TheEdge -DestinationPath TheEdge-windows.zip
+          "{0:N0} MB" -f ((Get-Item TheEdge-windows.zip).Length / 1MB)
+
+      # The smoke tests above run dist/TheEdge/TheEdge.exe, which is the build
+      # and not the download. Everything between them -- the zip, and whatever
+      # it does or does not preserve -- shipped untested, and a build whose
+      # webview backend is intact in dist/ can still fall back to a browser
+      # tab once it has been through an archive. So this unpacks the artifact
+      # somewhere else entirely and runs *that*, which is the copy a person
+      # ends up with.
+      - name: Smoke test the zip we actually ship
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $out = "$PWD\shipped"
+          Expand-Archive -Path TheEdge-windows.zip -DestinationPath $out -Force
+          $exe = "$out\TheEdge\TheEdge.exe"
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem -Recurse $out | Select-Object -First 40
+            throw "the zip does not unpack to TheEdge\TheEdge.exe"
+          }
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\shipped-data"
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          if ($p.ExitCode -ne 0) {
+            throw "the shipped zip failed its selftest (exit $($p.ExitCode))"
+          }
+          # The selftest passes as long as the server answers; a browser
+          # fallback is a pass by that measure and a failure by every other.
+          # The whole point of shipping an app rather than a link is the window.
+          if (-not (Select-String -Path $log -Pattern "usable=True" -Quiet)) {
+            throw "the shipped build cannot open its own window — it would fall back to a browser"
+          }
+          Write-Host "ok: the shipped zip opens its own window"
+
+      # An installer, which is the actual fix for the tagging problem below.
+      #
+      # The tag lands on whatever was downloaded. When that is a zip, Explorer
+      # copies it onto every file it extracts and .NET then refuses to load
+      # pythonnet -- so the app cannot reach WebView2 and falls back to a
+      # browser tab. When it is an installer, the tag lands on setup.exe, and
+      # the files the installer writes are written by the installer process,
+      # which carry no tag at all. Same reason the old one-file build was never
+      # affected, except paid once at install rather than on every launch.
+      - name: Build the installer
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc /Qp packaging\windows-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          Move-Item packaging\TheEdge-windows-setup.exe . -Force
+          "{0:N0} MB" -f ((Get-Item TheEdge-windows-setup.exe).Length / 1MB)
+
+      # Installs it the way a person would, then runs what it installed. An
+      # installer that produces a file is not an installer that works, and the
+      # thing it is here to fix -- whether the installed copy can open its own
+      # window -- is only answerable by running the installed copy.
+      - name: Smoke test the installer
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $setup = "$PWD\TheEdge-windows-setup.exe"
+          # Tagged first, because that is the state it arrives in, and the tag
+          # is then cleared before launching it. That is not weakening the test
+          # -- it is the only way to run it here. Windows refuses to launch a
+          # tagged executable without a human to click through the security
+          # prompt, and there is nobody in CI to answer it. Clearing the tag
+          # stands in for the click a person makes, which is a thing that
+          # actually happens: this build is unsigned, so the first launch of
+          # setup.exe shows SmartScreen either way.
+          #
+          # What the test is actually for survives all of that untouched: the
+          # files the installer *writes* carry no tag regardless of what the
+          # installer itself arrived carrying, and that is asserted below.
+          Set-Content -Path $setup -Stream Zone.Identifier -Value @(
+            "[ZoneTransfer]", "ZoneId=3")
+          if (-not (Get-Content -Path $setup -Stream Zone.Identifier -ErrorAction SilentlyContinue)) {
+            throw "could not tag the installer, so this test proves nothing"
+          }
+          Unblock-File -Path $setup
+          $dir = "$PWD\installed"
+          Start-Process -FilePath $setup -Wait -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+            "/DIR=$dir", "/LOG=$PWD\install.log")
+          if (-not (Test-Path "$dir\TheEdge.exe")) {
+            Get-Content "$PWD\install.log" -Tail 40
+            throw "the installer did not produce $dir\TheEdge.exe"
+          }
+          # The point of the whole exercise: files the installer wrote carry no
+          # zone tag, whatever tag the installer itself arrived with.
+          $dll = "$dir\_internal\pythonnet\runtime\Python.Runtime.dll"
+          $zone = Get-Content -Path $dll -Stream Zone.Identifier -ErrorAction SilentlyContinue
+          if ($zone) { throw "the installed Python.Runtime.dll is still tagged" }
+          Write-Host "installed assemblies carry no zone tag"
+
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\installed-data"
+          $p = Start-Process -FilePath "$dir\TheEdge.exe" `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "installed copy failed its selftest" }
+          if (-not (Select-String -Path $log -Pattern "usable=True" -Quiet)) {
+            throw "the installed copy cannot open its own window"
+          }
+          Write-Host "ok: the installed copy opens its own window"
+
+      # The zip extracted the way Explorer extracts it, which is the case that
+      # actually bites.
+      #
+      # Windows writes a Zone.Identifier stream onto anything fetched from the
+      # internet, and Explorer's zip extractor copies it onto every file it
+      # writes. .NET refuses to load an assembly carrying it, and pywebview
+      # reaches WebView2 through pythonnet -- so the app cannot open its own
+      # window and falls back to a browser tab. The one-file build never hit
+      # this: it unpacks its own payload at runtime, and files a process writes
+      # itself are not tagged. Moving to a folder exposed it.
+      #
+      # The first version of this test tagged the zip and used Expand-Archive,
+      # and reported everything clean. That was the test being wrong rather
+      # than the theory: PowerShell's extractor does not propagate the tag,
+      # Explorer's does, and the person who hit this used Explorer. So the
+      # tags are written onto the extracted files directly, which is the state
+      # Explorer leaves behind and the state Unblock-File is known to fix.
+      - name: A downloaded zip, extracted by Explorer, still fails
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $out = "$PWD\marked"
+          Expand-Archive -Path TheEdge-windows.zip -DestinationPath $out -Force
+          # What Explorer would have left behind.
+          Get-ChildItem -Recurse -File "$out" | ForEach-Object {
+            Set-Content -Path $_.FullName -Stream Zone.Identifier -Value @(
+              "[ZoneTransfer]", "ZoneId=3")
+          }
+          # ...except the exe itself, which is cleared so it can be started at
+          # all. Windows will not launch a tagged executable unattended, and
+          # that is a different failure from the one under test: the person who
+          # hit this *did* start the app -- they clicked through the warning --
+          # and what broke afterwards was a tagged DLL the app tried to load.
+          # Leaving every other file tagged is exactly that state.
+          Unblock-File -Path "$out\TheEdge\TheEdge.exe"
+          $env:NFLPICKER_DEMO = "1"
+          $env:NFLPICKER_DATA_DIR = "$PWD\marked-data"
+          $p = Start-Process -FilePath "$out\TheEdge\TheEdge.exe" `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- console.log"; Get-Content $log }
+
+          $opened = Select-String -Path $log -Pattern "usable=True" -Quiet
+          Write-Host "RESULT tagged copy opens its own window: $opened"
+          # Confirmed on run 35180447121, which reproduced the reported error
+          # exactly: "Failed to resolve Python.Runtime.Loader.Initialize from
+          # ...\_internal\pythonnet\runtime\Python.Runtime.dll". So this is
+          # an assertion now rather than the warning it started as -- the
+          # behaviour is known, and a build where tagged assemblies stopped
+          # breaking the window would mean something changed underneath that
+          # everything written about this depends on.
+          if ($opened) {
+            throw ("Tagged DLLs no longer stop the native window. That is not " +
+              "good news by default: the README, the release notes and the " +
+              "app's own dialog all explain this failure, and if it has gone " +
+              "away those explanations are now wrong.")
+          }
+
+          # Then the documented fix, which must work -- it is what the README
+          # and the app's own dialog tell people to run.
+          Get-ChildItem -Recurse -File "$out" | Unblock-File
+          $env:NFLPICKER_DATA_DIR = "$PWD\unblocked-data"
+          $p = Start-Process -FilePath "$out\TheEdge\TheEdge.exe" `
+                 -ArgumentList "--selftest" -Wait -PassThru
+          $log = "$env:NFLPICKER_DATA_DIR\logs\console.log"
+          if (Test-Path $log) { Write-Host "--- after Unblock-File"; Get-Content $log }
+          if (-not (Select-String -Path $log -Pattern "usable=True" -Quiet)) {
+            throw "Unblock-File did not restore the native window — the advice in the README and the app dialog is wrong"
+          }
+          Write-Host "ok: Unblock-File restores the native window"
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.target == 'windows'
+        with:
+          name: TheEdge-windows-${{ inputs.profile || 'full' }}
+          path: |
+            TheEdge-windows-setup.exe
+            TheEdge-windows.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v7
+        if: startsWith(matrix.target, 'macos')
+        with:
+          name: TheEdge-${{ matrix.target }}-${{ inputs.profile || 'full' }}
+          path: TheEdge-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # Publishing the builds as a release, rather than leaving them as workflow
+  # artifacts.
+  #
+  # An artifact is only downloadable through the Actions API, which is not a
+  # CDN and does not behave like one: the same file that comes off a release at
+  # link speed crawls out of the artifact store at around 100 KB/s, so a
+  # hundred-megabyte build took the better part of half an hour to fetch.
+  # Release assets are served from the CDN. The artifacts are still uploaded
+  # above, because they are what the build's own page shows and they expire on
+  # their own; the release is what a person actually downloads from.
+  #
+  # One rolling prerelease rather than a tag per build: the point is a link
+  # that is always the newest build, and a version number on a branch that is
+  # rebuilt several times a day would be noise. `prerelease` is honest about
+  # what it is -- the head of a working branch, not a version anyone promised.
+  release:
+    needs: build
+    # Only the branch customers are actually served from.
+    #
+    # The `latest` tag is the link in everybody's copy of the app, in the
+    # install guide and in the update check, and it moves with every build
+    # that reaches this job. With the job open to every branch the trigger
+    # covers, a test build pushed to a scratch branch would quietly replace
+    # the installer that paying customers download -- unreviewed work shipped
+    # to everyone, by a push that was never meant to release anything.
+    #
+    # Other branches still build and still attach their artifacts to the run,
+    # which is the whole point of a test build: the binaries are there to
+    # download from the Actions tab. They just do not touch the release.
+    #
+    # Written as one exact ref rather than a pattern, because a pattern is how
+    # this goes wrong a second time. If the release branch is ever renamed,
+    # this line is the one to change.
+    if: >-
+      always() && needs.build.result == 'success'
+      && github.ref == 'refs/heads/claude/nfl-sports-picker-spl083'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: downloaded
+          merge-multiple: true
+
+      - name: Write version.json for the update notice
+        run: |
+          # Read by the license server's /v1/latest. Only the Windows build is
+          # made on every push, so this names the commit this run built.
+          printf '{"commit": "%s", "built_at": "%s", "notes": ""}\n' \
+            "${{ github.sha }}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > downloaded/version.json
+          cat downloaded/version.json
+      - name: Show what will be published
+        id: assets
+        run: |
+          ls -lh downloaded
+          # Which platforms *this* run rebuilt. A push builds Windows only, so
+          # without this the release body would date every asset to the newest
+          # commit while the Mac ones still came from whenever a macOS build
+          # was last asked for -- assets are replaced per file, not wiped.
+          {
+            echo "built<<EOF"
+            for f in downloaded/*; do echo "- \`$(basename "$f")\`"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          # Moved to whatever was built last, so the tag keeps pointing at the
+          # commit the assets actually came from rather than wherever it was
+          # first created.
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          # No files here on purpose. This step owns the release -- its tag,
+          # its name and its body -- and the step below owns the assets. See
+          # there for why.
+          body: |
+            **Rebuilt in this run**, from `${{ github.ref_name }}` at commit
+            ${{ github.sha }}:
+
+            ${{ steps.assets.outputs.built }}
+
+            Anything not listed there is still the file from the last run that
+            built it — assets are replaced one at a time, not wiped. A push
+            builds Windows only; the Mac builds are started by hand.
+
+            | File | For |
+            |---|---|
+            | `TheEdge-windows-setup.exe` | **Windows — use this one.** Double-click, done. |
+            | `TheEdge-windows.zip` | Windows, portable. Needs unblocking (below). |
+            | `TheEdge-macos-arm.tar.gz` | Macs with Apple silicon (M1 and later) |
+
+            Apple silicon only — `uname -m` says `arm64` on a Mac this runs on.
+
+            **The installer exists to avoid a real problem.** Windows tags
+            anything downloaded from the internet, Explorer copies that tag
+            onto every file it extracts from a zip, and .NET refuses to load a
+            tagged assembly — which stops the app opening its own window and
+            drops it to a browser tab. The installer sidesteps it entirely:
+            the tag lands on `setup.exe`, and the files the installer writes
+            carry none.
+
+            If you take the zip instead, unblock it after extracting:
+
+            ```powershell
+            Get-ChildItem -Recurse "$HOME\Downloads\TheEdge-windows" | Unblock-File
+            ```
+
+            Either way Windows warns on first run because the build is
+            unsigned — *More info* → *Run anyway*. On macOS, extract from
+            Terminal rather than Finder and see the README for the Gatekeeper
+            step.
+
+            This tag moves with every build, so the links above are always the
+            newest one.
+
+      # The assets, one at a time, retried until the release actually holds
+      # them.
+      #
+      # softprops/action-gh-release uploads them concurrently, and three files
+      # of 75-110 MB going up at once failed with a bare "Error saving asset"
+      # on three builds out of three -- once leaving the release with *no*
+      # assets at all. Uploading them one per call fixed that much: a failure
+      # now costs one file instead of the release.
+      #
+      # It did not fix the failure itself. The endpoint still answers 500
+      # ("Error saving asset", "Error creating asset temp dir") several times a
+      # run, and ten seconds is not long enough for it to come back -- one file
+      # burned all three tries inside forty seconds while the two either side
+      # of it went up fine. So the waits are long enough to outlast a bad
+      # minute, and every file gets its own round rather than its own moment.
+      #
+      # And the result is judged by what the release holds, not by exit codes,
+      # because --clobber deletes the old asset before writing the new one: a
+      # file that runs out of tries leaves a hole where somebody's download
+      # used to be, which is the one outcome worth failing the build over.
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+
+          pending=$(cd downloaded && ls)
+          for round in 1 2 3 4 5; do
+            [ -n "$pending" ] || break
+            [ "$round" = 1 ] || sleep $((round * 20))
+            next=""
+            for name in $pending; do
+              if gh release upload latest "downloaded/$name" --clobber \
+                   --repo "$GITHUB_REPOSITORY"; then
+                echo "uploaded $name"
+              else
+                echo "$name did not upload (round $round)"
+                next="$next $name"
+              fi
+            done
+            pending=$next
+          done
+
+          # The upload can report success and still not stick, so ask the
+          # release what it has rather than trusting the loop above.
+          on_release=$(gh release view latest --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name')
+          missing=""
+          for name in $(cd downloaded && ls); do
+            printf '%s\n' "$on_release" | grep -qxF "$name" \
+              || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the release is missing:$missing"
+            exit 1
+          fi
+          echo "the release holds every file this run built"

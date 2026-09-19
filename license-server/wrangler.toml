@@ -1,0 +1,16 @@
+name = "the-edge-license"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Fill these in (or set them in the Cloudflare dashboard instead).
+WHOP_PRODUCT_ID = "prod_VwekdA5QArKis"
+MAX_MACHINES = "2"
+ALLOWED_STATUSES = "active,trialing,canceling"
+GITHUB_REPO = "Ljbutton/Private"
+RELEASE_TAG = "latest"
+DOWNLOAD_PAGE = "https://whop.com/the-edge-ab78/the-edge-fd-e121"
+
+# Secrets are never written here. Set them with:
+#   npx wrangler secret put WHOP_API_KEY
+#   npx wrangler secret put GITHUB_TOKEN     (only once the repo is private)

@@ -1,44 +1,157 @@
-import { barChart, calibrationChart, lineChart, sparkline } from "./charts.js";
+import { barChart, condense, lineChart, sparkline } from "./charts.js";
+import {
+  advanceHand, ago, american, clockAngles, esc, greetingLine, kickoffShort,
+  liveLabel, markdown, num, pct,
+  signed, statusClass, when,
+} from "./format.js";
 
-const state = { season: null, week: null, weeks: [], tab: "games", meta: null, busy: false };
+const state = { season: null, week: null, weeks: [], tab: "home", meta: null,
+  busy: false, trackTeam: null };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 async function api(path, options) {
   const res = await fetch(path, options);
+  // The subscription lapsed while the app was open: stop and ask for a key
+  // rather than letting every panel fail one by one.
+  if (res.status === 402) {
+    const body = await res.json().catch(() => ({}));
+    showLicenseGate(body.license || {}).then(() => location.reload());
+    throw new Error("license required");
+  }
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
 
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* ------------------------------------------------------------- licensing */
 
-const pct = (v, d = 0) => (v === null || v === undefined || Number.isNaN(v))
-  ? "–" : `${(Number(v) * 100).toFixed(d)}%`;
-const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v))
-  ? "–" : Number(v).toFixed(d);
-const signed = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v))
-  ? "–" : `${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(d)}`;
-const american = (v) => (v === null || v === undefined) ? "–"
-  : `${Number(v) > 0 ? "+" : ""}${Math.round(Number(v))}`;
+let gatePromise = null;
 
-function when(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-    + ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+/* Full-screen activation form. Resolves once a key has been accepted. */
+function showLicenseGate(lic) {
+  if (gatePromise) return gatePromise;
+  const gate = $("#license-gate");
+  const form = $("#license-form");
+  const input = $("#license-key");
+  const msg = $("#license-msg");
+  const submit = $("#license-submit");
+  const store = $("#license-store");
+  if (lic.store_url) { store.href = lic.store_url; store.hidden = false; }
+  msg.className = "license-msg";
+  msg.textContent = lic.has_key ? (lic.message || "") : "";
+  gate.hidden = false;
+  setTimeout(() => input.focus(), 50);
+  gatePromise = new Promise((resolve) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      submit.disabled = true;
+      submit.textContent = "Checking…";
+      msg.className = "license-msg";
+      msg.textContent = "";
+      try {
+        const res = await fetch("/api/license/activate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: input.value.trim() }),
+        });
+        const out = await res.json();
+        if (out.valid) {
+          msg.className = "license-msg ok";
+          msg.textContent = "Activated. Loading The Edge…";
+          gate.hidden = true;
+          gatePromise = null;
+          resolve(out);
+          return;
+        }
+        msg.textContent = out.message || "That key didn't work.";
+      } catch {
+        msg.textContent = "Couldn't reach The Edge. Try again.";
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "Activate";
+      }
+    });
+  });
+  return gatePromise;
 }
 
-function ago(iso) {
-  if (!iso) return "never";
-  const secs = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (!isFinite(secs)) return "never";
-  if (secs < 90) return "just now";
-  if (secs < 5400) return `${Math.round(secs / 60)}m ago`;
-  if (secs < 172800) return `${Math.round(secs / 3600)}h ago`;
-  return `${Math.round(secs / 86400)}d ago`;
+async function ensureLicensed() {
+  const lic = await fetch("/api/license").then((r) => r.json())
+    .catch(() => ({ required: false, valid: true }));
+  if (lic.required && !lic.valid) await showLicenseGate(lic);
+  paintLicense();
+}
+
+/* The sidebar line and, when it matters, a banner: offline for days, or a
+   subscription that is winding down. */
+async function paintLicense() {
+  const lic = await fetch("/api/license").then((r) => r.json()).catch(() => null);
+  const line = $("#license-line");
+  const banner = $("#license-banner");
+  if (!lic || !lic.required) { line.hidden = true; banner.hidden = true; return; }
+  line.hidden = false;
+  line.className = "license-line";
+  line.textContent = `Subscription ${lic.valid ? "active" : "inactive"} · key ${lic.key_hint || ""}`;
+  let warn = "";
+  if (lic.offline && lic.grace_days_left !== null) {
+    line.className = "license-line warn";
+    const days = Math.max(0, Math.floor(lic.grace_days_left));
+    warn = `Can't reach the license server. The Edge keeps working offline for ${days} more day${days === 1 ? "" : "s"}.`;
+  } else if (lic.status === "canceling") {
+    warn = lic.message || "Your subscription ends at the close of this billing period.";
+  }
+  if (!warn) { banner.hidden = true; return; }
+  banner.innerHTML = `<span class="grow">${esc(warn)}</span>` +
+    (lic.store_url ? `<a class="pill" href="${esc(lic.store_url)}" target="_blank" rel="noopener">Manage subscription</a>` : "");
+  banner.hidden = false;
+}
+
+/* --------------------------------------------------------- update notice */
+
+function dismissedUpdate() {
+  try { return localStorage.getItem("edge.update.dismissed") || ""; } catch { return ""; }
+}
+
+async function checkForUpdate() {
+  const banner = $("#update-banner");
+  const up = await fetch("/api/updates").then((r) => r.json()).catch(() => null);
+  if (!up || !up.newer || !up.latest) { banner.hidden = true; return; }
+  if (dismissedUpdate() === up.latest) { banner.hidden = true; return; }
+  const day = (up.published_at || "").slice(0, 10);
+  banner.innerHTML =
+    `<span class="grow"><b>A new version of The Edge is available</b>` +
+    `${day ? ` (${esc(day)})` : ""}. ${up.notes ? esc(up.notes) + " " : ""}` +
+    `Install it over this one. Your picks and settings are kept.</span>` +
+    (up.url ? `<a class="pill" href="${esc(up.url)}" target="_blank" rel="noopener">Download update</a>` : "") +
+    `<button class="link" id="update-later" type="button">Later</button>`;
+  banner.hidden = false;
+  $("#update-later").addEventListener("click", () => {
+    try { localStorage.setItem("edge.update.dismissed", up.latest); } catch { /* fine */ }
+    banner.hidden = true;
+  });
+}
+
+
+/* A compact "Q3 · 4:05 · 2nd & 7 · red zone" for a game in progress. */
+/* `short` drops the down and distance. On the board the stamp shares one
+   narrow strip with the three totals, and a four-segment label is the thing
+   that pushed the totals out of it -- quarter and clock are what a card is
+   scanned for, and the situation is one click away in the game itself. */
+
+/* The diagnostic gap: what the edge would be if we quoted the market-blind
+   model straight against the line, with no shrinking toward the market.
+
+   It is derived here rather than read from the payload because it was read
+   from `components`, where it has never existed -- so the subtitle rendered
+   "raw gap – before shrinking" and the dash read as punctuation rather than as
+   a missing number. Deriving it needs no new column: it is exactly the model
+   margin plus the posted home line, the same arithmetic the predictor does. */
+function rawSpreadEdge(game) {
+  const model = game.prediction?.margin_home;
+  const spread = game.market?.spread_home;
+  if (model === null || model === undefined) return null;
+  if (spread === null || spread === undefined) return null;
+  return Number(model) + Number(spread);
 }
 
 /* The one place the sign convention is turned into words. A home line of -3.5
@@ -60,116 +173,990 @@ function modelLineText(card) {
 /* Edge colour is diverging: blue when it favours home, red when away, neutral
    when there is nothing there. The number is always shown, so colour is never
    the only channel. */
+/* Shown wherever a number could be read as "bet this".
+
+   What it does not do any more is quote the backtest at the reader. It used
+   to lead with the model's measured rate against the closing line, which was
+   accurate and was the wrong place for it: a line that sits under every
+   number on the page and argues with them is a footnote picking a fight with
+   the product. That measurement has a home -- the Performance page, in
+   context, with the sample size beside it -- and anyone who wants to know how
+   the model does against the market can read it there.
+
+   What stays is the part that is actually a duty of care: these are outputs
+   and not recommendations, do not stake what you cannot lose, and the number
+   to call if it stops being a game. */
+function wagerNotice() {
+  return `<p class="note wager-note">
+    <b>Not betting advice.</b> These are model outputs, not recommendations,
+    and no model is a sure thing. Never stake money you cannot afford to lose.
+    If gambling stops being fun, stop: in the US, call or text
+    1-800-GAMBLER.</p>`;
+}
+
 function edgePill(edge) {
   if (edge === null || edge === undefined) return '<span class="muted">no line</span>';
   const v = Number(edge);
   const strong = Math.abs(v) >= 1.5;
-  const bg = !strong ? "var(--div-mid)" : v > 0 ? "var(--div-pos)" : "var(--div-neg)";
-  const fg = strong ? "#fff" : "var(--text-secondary)";
-  return `<span class="edge-pill" style="background:${bg};color:${fg}">${signed(v)} pts</span>`;
+  if (!strong) {
+    return `<span class="edge-pill quiet">${signed(v)} pts</span>`;
+  }
+  // Tinted, not filled. A solid red block on a dark card reads as an error
+  // rather than as a number worth reading, and there are sixteen of them.
+  const hue = v > 0 ? "var(--div-pos)" : "var(--div-neg)";
+  return `<span class="edge-pill" style="color:${hue};` +
+    `background:color-mix(in srgb, ${hue} 14%, transparent);` +
+    `box-shadow:inset 0 0 0 1px color-mix(in srgb, ${hue} 30%, transparent)">` +
+    `${signed(v)} pts</span>`;
 }
 
 // ------------------------------------------------------------------ status
 function renderStatus(meta) {
-  const bar = $("#statusbar");
-  const chips = [];
-  chips.push(`<span class="chip ${meta.demo ? "warn" : "ok"}"><span class="dot"></span>` +
-    `${meta.demo ? "Demo data (synthetic)" : "Live sources"}</span>`);
-  chips.push(`<span class="chip"><span class="dot"></span>Model: ${esc(meta.model.version)}</span>`);
+  const rows = [];
+  const conn = (cls, name, status, title = "") =>
+    `<div class="conn ${cls}" title="${esc(title)}"><span class="dot"></span>` +
+    `<span class="nm">${esc(name)}</span><span class="st">${esc(status)}</span></div>`;
+
+  rows.push(conn(meta.demo ? "warn" : "ok", meta.demo ? "Demo data" : "Live sources",
+    meta.demo ? "synthetic" : "live"));
+  rows.push(conn(meta.model.trained ? "ok" : "warn", "Model", esc(meta.model.version)));
   for (const s of meta.sources || []) {
-    chips.push(`<span class="chip ${s.ok ? "ok" : "bad"}" title="${esc(s.detail || "")}">` +
-      `<span class="dot"></span>${esc(s.source)} ${ago(s.ts)}</span>`);
+    // Amber, not red, for a feed the app is built to run without: the Market
+    // column reads "–" and everything else is unaffected. Red should mean
+    // something is broken. The reason is on the tooltip either way.
+    const cls = s.ok ? "ok" : (s.optional ? "warn" : "bad");
+    const note = s.ok ? (s.detail || "")
+      : `${s.optional ? "Optional feed unavailable" : "Failed"} — ${s.detail || "no detail"}`;
+    rows.push(conn(cls, s.source, ago(s.ts), note));
   }
   if (meta.odds_usage) {
     const u = meta.odds_usage;
-    const low = u.remaining_budget < 40;
-    chips.push(`<span class="chip ${low ? "warn" : "ok"}"><span class="dot"></span>` +
-      `Odds API ${u.used}/${u.budget} used this month</span>`);
+    // All three windows, because which one is about to stop you is the only
+    // useful thing this line can say. The month is the bill; the day and week
+    // are burst ceilings. Whichever is tightest is the one worth warning on.
+    const tight = Math.min(
+      u.day_budget ? u.day_remaining / u.day_budget : 1,
+      u.week_budget ? u.week_remaining / u.week_budget : 1,
+      u.budget ? u.remaining_budget / u.budget : 1);
+    const perPoll = 3;   // h2h + spreads + totals, one credit each
+    rows.push(conn(tight < 0.15 ? "warn" : "ok", "Odds API",
+      `${u.used}/${u.budget}`,
+      `Today ${u.day_used ?? 0}/${u.day_budget ?? "–"} · `
+      + `week ${u.week_used ?? 0}/${u.week_budget ?? "–"} · `
+      + `month ${u.used}/${u.budget}. Each poll costs ${perPoll} credits `
+      + `(spread, total, moneyline), so the month allows about `
+      + `${Math.round(u.budget / 30 / perPoll)} polls a day.`));
   } else if (!meta.has_odds_key && !meta.demo) {
-    chips.push('<span class="chip warn"><span class="dot"></span>' +
-      "No ODDS_API_KEY — single consensus line only</span>");
+    rows.push(conn("warn", "Odds API", "no key", "single consensus line only"));
   }
-  bar.innerHTML = chips.join("");
+  $("#statusbar").innerHTML = rows.join("");
+  sideFoot(meta);
 }
 
-// ------------------------------------------------------------------- games
-async function renderGames() {
+/* What the bottom of the sidebar shows, which depends on where you are.
+
+   Connections only on Settings: everywhere else it was eight rows of green
+   dots reporting that nothing had happened, which is a lot of standing space
+   for a question you only ask when something is wrong. The game goes there
+   instead -- what is on now, or what is on next. */
+function sideFoot(meta) {
+  const conns = $("#side-conns");
+  const now = $("#side-now");
+  if (!conns || !now) return;
+  const onSettings = state.tab === "settings";
+  conns.hidden = !onSettings;
+  now.hidden = onSettings;
+  if (onSettings) return;
+
+  // The *current* week, not the week being browsed. Looking at week 3 in
+  // October does not mean there is no game on tonight, and the sidebar
+  // answering "what is on now" with "nothing" because you clicked back a week
+  // is the wrong answer to a question about the clock.
+  const games = state.liveSlate || [];
+  const live = games.filter((g) => g.status === "in_progress");
+  const next = games
+    .filter((g) => g.status === "scheduled" && g.kickoff)
+    .sort((a, b) => String(a.kickoff).localeCompare(String(b.kickoff)))[0];
+
+  const line = (g, kicking) => {
+    const score = (side) => {
+      const v = g[`${side}_score`];
+      return v === null || v === undefined ? "" : v;
+    };
+    return `<div class="side-game${kicking ? "" : " on"}">
+      <div class="sg-row"><span class="sg-team">${esc(g.away)}</span>
+        <span class="sg-score">${score("away")}</span></div>
+      <div class="sg-row"><span class="sg-team">${esc(g.home)}</span>
+        <span class="sg-score">${score("home")}</span></div>
+      <div class="sg-when">${kicking
+        ? esc(untilKickoff(g.kickoff))
+        : esc(g.clock || "in progress")}</div>
+    </div>`;
+  };
+
+  if (live.length) {
+    now.innerHTML = `<div class="side-label">
+      ${live.length > 1 ? `${live.length} games on now` : "On now"}</div>`
+      + live.slice(0, 3).map((g) => line(g, false)).join("");
+  } else if (next) {
+    now.innerHTML = '<div class="side-label">Next up</div>' + line(next, true);
+  } else {
+    now.innerHTML = '<div class="side-label">Next up</div>'
+      + '<div class="side-game"><div class="sg-when">No games scheduled.</div></div>';
+  }
+}
+
+/* "in 2h 14m", and it has to be recomputed rather than rendered once -- the
+   whole point of the line is that it counts down. */
+function untilKickoff(kickoff) {
+  const ms = new Date(kickoff).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "kicking off";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `in ${hours}h ${mins % 60}m`;
+  return `in ${Math.round(hours / 24)}d`;
+}
+
+/* ------------------------------------------------------------------ hero */
+
+
+/* The brandmark keeps the time.
+
+   Angles are written as CSS transforms rather than as the SVG attribute so
+   they can be transitioned, and they are remembered between calls because
+   `advanceHand` needs to know where the hand already was. */
+const handAt = { hour: null, minute: null };
+
+function setBrandClock(now) {
+  const want = clockAngles(now);
+  for (const hand of ["hour", "minute"]) {
+    const el = $(`#bm-${hand}`);
+    if (!el) continue;
+    handAt[hand] = advanceHand(handAt[hand], want[hand]);
+    el.style.transform = `rotate(${handAt[hand]}deg)`;
+  }
+}
+
+function renderHero(meta) {
+  const now = new Date();
+  setBrandClock(now);
+  $("#clock").textContent = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  $("#clockdate").textContent = now
+    .toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
+    .toUpperCase();
+  // The name comes off this computer's account unless Settings overrides it,
+  // and the tooltip says which -- a guessed name someone cannot see how to
+  // change is worse than no name at all.
+  const user = meta.user || {};
+  const greet = $("#greeting");
+  greet.textContent = greetingLine(now, user.name);
+  greet.title = user.name && user.source !== "settings"
+    ? "Read from this computer's account. Settings → Your name changes it."
+    : "";
+
+  /* Just "Live". The refresh cadence used to be spelled out beside it, which
+     is a fact about the app's plumbing rather than about the season, and it
+     made the top-left corner read like a status page. It moves to the tooltip,
+     still read from the scheduler so it cannot drift from what is actually
+     happening. */
+  const jobs = (meta.scheduler && meta.scheduler.jobs) || [];
+  const fastest = jobs.reduce((min, j) => {
+    const s = j.next_interval_seconds || j.interval_seconds;
+    return s && (!min || s < min) ? s : min;
+  }, 0);
+  const cadence = $("#cadence");
+  cadence.textContent = "Live";
+  cadence.title = fastest
+    ? `Updates every ${fastest >= 60 ? `${Math.round(fastest / 60)} min` : `${fastest}s`}`
+    : "";
+
+  // What you are looking at *is* the headline. The date used to sit here too
+  // and again in the clock two inches to the right, so it said nothing twice.
+  // Reads the viewed season rather than the current one, so browsing 2024 does
+  // not leave a line at the top insisting it is 2026.
+  const season = state.season || meta.season;
+  const week = state.week || meta.week;
+  const live = season === meta.season && week === meta.week;
+  const line = $("#whenline");
+  line.textContent = `Week ${week} · ${season} season`;
+  line.classList.toggle("past", !live);
+  // No colour on the current week, and none on the date.
+  //
+  // Green was meant to save the reader comparing a week number against the
+  // selector. It did, and it cost more than it saved: this line sits directly
+  // under the wordmark, so the one green thing on the page was not the pick,
+  // the edge or the live game -- it was a label saying today is today. An
+  // accent that fires on the default state is not an accent, it is the body
+  // colour with extra steps, and it made every genuinely green thing further
+  // down the page read as less urgent than the header.
+  //
+  // The past week keeps its dimming. That one earns its ink: it says you are
+  // looking at something other than now, which is the state you can be in
+  // without meaning to be.
+  line.title = live ? "The current week" : "Not the current week";
+}
+
+/* How serious an injury status is, for colour. Out and IR are settled; a
+   questionable is a coin flip that still moves a line by a point. */
+
+/* "Sun 1:00" — the board has sixteen rows and no width to spare for a date
+   that is the same on most of them. */
+
+/* Fold the panels on a page into collapsible sections.
+   Home and the Scoreboard are boards: everything on them is meant to be read
+   at once. Every other page is reference material you consult one question at
+   a time, and four full tables stacked down a page turns finding the one you
+   came for into a scrolling exercise.
+
+   Done to the rendered DOM rather than in each template. The panels are built
+   inside nested template literals, and rewriting those to emit <details> meant
+   re-quoting markup that already contains its own backticks -- a transformation
+   with nothing to catch a mistake except the page going blank. Restructuring
+   afterwards touches one function and cannot corrupt a template it never
+   parses. <details> is used so keyboard support, find-in-page and open state
+   all come for free. */
+// Picks is no longer folded: both contests are meant to be answered in one
+// look, and a collapsed Survivor panel is the opposite of putting them on one
+// page.
+// Teams no longer folds at all: its two panels are the page. Performance still
+// does, but only the closing-line value at the bottom -- the season table and
+// the by-team table are marked data-nofold, because folding the thing a page
+// exists to show is how a page ends up looking empty.
+const FOLDING_TABS = new Set(["performance"]);
+
+function foldPanels(root) {
+  if (!FOLDING_TABS.has(state.tab)) return;
+  const panels = $$(":scope > .panel, :scope > .grid-2 > .panel", root);
+  panels.forEach((panel, index) => {
+    const header = $("header", panel);
+    if (!header || panel.closest("details")) return;
+    // Some panels are the point of their page rather than reference material
+    // behind it. Folding the ranking comparison hid the comparison.
+    if (panel.closest("[data-nofold]")) return;
+
+    const details = document.createElement("details");
+    details.className = panel.className + " fold";
+    // The <details> replaces the panel, so it has to *be* the panel as far as
+    // the rest of the page is concerned. Without this the id went in the bin
+    // and anything that later looked the panel up by it -- a second fetch
+    // filling in a section, say -- silently found nothing.
+    if (panel.id) details.id = panel.id;
+    const summary = document.createElement("summary");
+    // The first section on a page opens; the rest are a click away. Reopening
+    // everything on each refresh would undo the point, so a section the reader
+    // has opened is remembered for the session.
+    const key = `${state.tab}:${index}`;
+    // Open the first section on a page the reader has not touched yet. Keyed
+    // per tab: a set shared across tabs meant opening something on one page
+    // left every other page fully closed.
+    details.open = openFolds.has(key)
+      || (index === 0 && !touchedTabs.has(state.tab));
+    // Recorded from the click rather than the toggle event, because setting
+    // `open` above fires toggle too -- the page would mark itself as read by
+    // the reader before they had done anything.
+    summary.addEventListener("click", () => {
+      touchedTabs.add(state.tab);
+      setTimeout(() => {
+        if (details.open) openFolds.add(key); else openFolds.delete(key);
+      }, 0);
+    });
+
+    summary.innerHTML =
+      '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M9 6l6 6-6 6"/></svg>';
+    while (header.firstChild) summary.appendChild(header.firstChild);
+    header.remove();
+
+    const body = document.createElement("div");
+    body.className = "fold-body";
+    while (panel.firstChild) body.appendChild(panel.firstChild);
+
+    details.append(summary, body);
+    panel.replaceWith(details);
+  });
+}
+
+/* Which sections the reader has opened, kept for the session so a refresh does
+   not fold the thing they are reading, and which tabs they have touched at all
+   -- an untouched page still opens its first section. */
+const openFolds = new Set();
+const touchedTabs = new Set();
+
+/* Settings opens with every section shut -- four headings you can read at a
+   glance beat two panels of fields you have to scroll past -- and remembers
+   what you opened, so a refresh mid-edit does not fold the box you are in. */
+const openSettings = new Set();
+
+// ------------------------------------------------------------------ alerts
+/* Alerts are per-game and live inside the game's own dialog rather than in a
+   strip over the board. They are something you go looking for once a game has
+   your attention, not a queue demanding to be cleared, and a banner that
+   pushed sixteen rows off the screen was charging the whole board for news
+   about two games. */
+function alertList(rows) {
+  if (!rows || !rows.length) return "";
+  return `<div class="panel">
+    <header><h2>What changed</h2>
+      <span class="hint">${rows.length} for this game</span></header>
+    ${rows.map((a) => `<div class="alert ${esc(a.severity)}">
+      <span class="dot"></span>
+      <div><b>${esc(a.title)}</b>${a.detail ? `<div class="sub">${esc(a.detail)}</div>` : ""}</div>
+      <span class="when">${ago(a.created_at)}</span>
+    </div>`).join("")}
+  </div>`;
+}
+
+/* Did the line move toward your picks after you made them?
+
+   A win rate needs hundreds of games before it says anything, and you will get
+   a few dozen a season. The market's own revision is far less noisy and answers
+   a question results cannot: whether you saw something before the price did.
+   It is also how a sportsbook decides you are sharp, and it does not care
+   whether the game then went your way. */
+function clvBlock(clv) {
+  if (!clv) return "";
+  if (!clv.n) {
+    return `<div class="panel">
+      <header><h2>Your closing-line value</h2></header>
+      <div class="empty">${esc(clv.note || "Nothing to measure yet.")}</div>
+    </div>`;
+  }
+  const good = clv.average > 0;
+  const vs = clv.versus_model;
+  /* A small table of the same number cut a different way. One season figure
+     says whether you are beating the line; it cannot say where. */
+  const cut = (rows, key, label) => !rows || rows.length < 2 ? "" : `
+    <div class="clv-cut">
+      <h3 class="sub-head">${esc(label)}</h3>
+      <div class="table-scroll"><table class="slate">
+        <thead><tr><th>${esc(key === "week" ? "Wk" : "Team")}</th>
+          <th class="num">Picks</th><th class="num">Beat</th>
+          <th class="num">Value</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr>
+          <td class="who">${key === "week" ? `Week ${r.week}` : esc(r.selection)}</td>
+          <td class="num muted">${r.n}</td>
+          <td class="num muted">${r.beat}</td>
+          <td class="num ${r.average > 0 ? "hit" : (r.average < 0 ? "miss" : "")}">${
+            signed(r.average, 2)}</td>
+        </tr>`).join("")}</tbody></table></div>
+    </div>`;
+
+  return `<div class="panel">
+    <header><h2>Your closing-line value</h2>
+      <span class="hint">${clv.n} pick${clv.n === 1 ? "" : "s"} the line moved after</span></header>
+    <div class="tiles">
+      <div class="tile"><div class="label">Points vs the close</div>
+        <div class="value ${good ? "pos" : "neg"}">${signed(clv.average, 2)}</div>
+        <div class="sub">per pick, averaged</div></div>
+      <div class="tile"><div class="label">Beat the close</div>
+        <div class="value ${clv.beat_rate > 0.5 ? "pos" : ""}">${pct(clv.beat_rate, 0)}</div>
+        <div class="sub">${clv.beat} of ${clv.n} picks</div></div>
+      ${vs && vs.n ? `<div class="tile" title="The same games at the same moment, the only difference being which side was taken. A game you both called the same way cancels out, which is right — you cannot claim credit for agreeing.">
+        <div class="label">You vs the model</div>
+        <div class="value ${vs.difference > 0 ? "pos" : (vs.difference < 0 ? "neg" : "")}">${
+          signed(vs.difference, 2)}</div>
+        <div class="sub">you ${signed(vs.yours, 2)} · model ${signed(vs.model, 2)}</div></div>
+      <div class="tile"><div class="label">Where you differed</div>
+        <div class="value">${vs.disagreed}</div>
+        <div class="sub">of ${vs.n} · agreed on ${vs.agreed}</div></div>` : ""}
+    </div>
+    ${vs && vs.disagreed === 0 && vs.n ? `<p class="note">You have taken the
+      model's side on every game it had a view on, so there is nothing yet to
+      separate your judgement from its own. The comparison starts saying
+      something the first time you disagree with it.</p>` : ""}
+    <div class="table-scroll"><table class="slate">
+      <thead><tr><th>Wk</th><th>Pick</th><th>Game</th>
+        <th class="num">You got</th><th class="num">Closed</th>
+        <th class="num">Value</th></tr></thead>
+      <tbody>${clv.picks.map((p) => `<tr>
+        <td class="num muted">${p.week}</td>
+        <td class="who">${esc(p.selection)}</td>
+        <td class="muted">${esc(p.matchup)}</td>
+        <td class="num">${signed(p.line_at_pick, 1)}</td>
+        <td class="num muted">${signed(p.line_at_close, 1)}</td>
+        <td class="num ${p.clv > 0 ? "hit" : (p.clv < 0 ? "miss" : "")}">${signed(p.clv, 1)}</td>
+      </tr>`).join("")}</tbody></table></div>
+    <div class="grid-2 clv-cuts">
+      ${cut(clv.by_week, "week", "By week")}
+      ${cut(clv.by_team, "selection", "By team · worst first")}
+    </div>
+    <p class="note">Positive means you took a better number than the one that closed —
+      you backed a team at &minus;3 and it closed &minus;5, so you have two points of value
+      whether or not they covered. This is the one honest early read on whether
+      <em>you</em> are any good: it needs a fraction of the sample a win rate does, because
+      it measures the market agreeing with you rather than the game going your way.</p>
+  </div>`;
+}
+
+// ------------------------------------------------------------- performance
+/* Who is actually picking these best. Straight-up winners only: every source
+   here names a favourite, so it is the one question all of them can be asked.
+
+   This was the Scoreboard tab, and there was a separate Performance tab
+   grading the model against the spread. Two pages answering "is this any
+   good" is one page too many, and of the two this is the one that answers it
+   in the terms a pool player thinks in: you, the model, the book, side by
+   side, on games everybody called. */
+async function renderPerformance(ticket) {
   const root = $("#view");
-  const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
-  if (!data.games.length) {
-    root.innerHTML = '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>';
+  const d = await api(`/api/scoreboard?season=${state.season}`);
+  if (stale(ticket)) return;
+  const pickers = d.pickers || [];
+  if (!d.weeks.length) {
+    paint(root, `<div class="panel"><div class="empty">
+      Nothing graded yet — this fills in as games finish and you record picks on the board.
+    </div></div>`);
     return;
   }
 
-  const cards = data.games.map((card) => {
-    const p = card.prediction;
-    const final = card.status === "final";
-    const movePoints = (card.movement.points || []).map((pt) => pt.value);
-    const spark = movePoints.length > 1 ? sparkline(movePoints) : "";
-    const homeProb = p ? p.home_win_prob : null;
+  const cell = (t) => (t.n
+    ? `<td class="num"><b>${pct(t.rate)}</b><span class="rec">${t.correct}-${t.wrong}</span></td>`
+    : '<td class="num muted">–</td>');
 
-    const teamRow = (side) => {
-      const isHome = side === "home";
-      const abbr = isHome ? card.home : card.away;
-      const name = isHome ? card.home_name : card.away_name;
-      const color = isHome ? card.home_color : card.away_color;
-      const score = isHome ? card.home_score : card.away_score;
-      const prob = homeProb === null ? null : (isHome ? homeProb : 1 - homeProb);
-      const right = final
-        ? `<span class="score">${score ?? "–"}</span>`
-        : `<span class="prob">${pct(prob)}</span>`;
-      return `<div class="row-team"><span class="swatch" style="background:${color}"></span>` +
-        `<span class="nm">${esc(abbr)}</span>` +
-        `<span class="rec">${esc(name.replace(abbr, "").trim())}</span>${right}</div>`;
+  /* A source with no record at all gets a reason rather than a dash. Empty
+     columns here are not a broken fetch: odds cannot be bought for a week that
+     has already been played, so any week that finished before this app was
+     running has none and never will. A dash says none of that. */
+  const cover = d.coverage || {};
+
+  const totalRow = (key, label) => {
+    const all = d.totals.all[key];
+    const common = d.totals.common[key];
+    const lead = common.rate !== null && common.rate === Math.max(
+      ...pickers.map((p) => d.totals.common[p].rate ?? -1));
+    // Games from before the app existed show the book's pick for the model.
+    // Saying how many keeps a record that is mostly borrowed from reading as
+    // one the model earned.
+    const borrowed = (d.totals.inherited || {})[key] || 0;
+    const note = (cover[key] || {}).note;
+    return `<tr class="${lead ? "lead" : ""}">
+      <td class="who">${esc(label)}${borrowed
+        ? `<span class="rec" title="games from before the model existed, shown with the sportsbook's pick">${borrowed} inherited</span>`
+        : ""}
+        ${note ? `<button class="why" type="button" title="${esc(note)}"
+          aria-label="${esc(note)}">?</button>` : ""}
+        <div class="who-sub">${esc((d.descriptions || {})[key] || "")}</div></td>
+      ${cell(all)}${cell(common)}
+    </tr>`;
+  };
+
+  /* Sorting the team table. Every column is a different question -- which
+     teams *we* read best, which ones the market reads best, where the two
+     disagree -- and the answer to each is one click, not a different page. */
+  const sort = state.sbSort && (state.sbSort.key === "team" || state.sbSort.key === "games"
+    || pickers.includes(state.sbSort.key))
+    ? state.sbSort
+    // Opens on the blend -- what the app actually claims -- rather than on the
+    // first column, which is "you" and is empty until picks have been graded.
+    : { key: ["model", "blind", "book"].find((k) => pickers.includes(k))
+             || pickers[0] || "team", dir: "desc" };
+
+  const sortValue = (t, key) => {
+    if (key === "team") return t.team;
+    if (key === "games") return t.games;
+    const v = t.tallies[key];
+    // A picker with no view on a team sorts last either way rather than
+    // landing at the top of an ascending sort as if it scored zero.
+    return v && v.n ? v.rate : null;
+  };
+  /* How many games are behind a rate, for breaking ties on it. Two perfect
+     records are not equally impressive: 2-0 has twice the evidence of 1-0 and
+     belongs above it. Applied as a tie-break rather than as a weighting,
+     because the column is a rate and re-ranking it by sample size would make
+     the numbers on screen stop explaining the order they are in. */
+  const sortWeight = (t, key) => {
+    if (key === "team" || key === "games") return 0;
+    const v = t.tallies[key];
+    return v && v.n ? v.n : 0;
+  };
+  const sortedTeams = [...(d.teams || [])].sort((a, b) => {
+    const av = sortValue(a, sort.key);
+    const bv = sortValue(b, sort.key);
+    if (av === null && bv === null) return a.team.localeCompare(b.team);
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    let cmp = typeof av === "string" ? av.localeCompare(bv) : av - bv;
+    // The deeper record first, in whichever direction the column is sorted:
+    // more evidence is better either way round, so this one does not flip.
+    if (cmp === 0 && typeof av !== "string") {
+      const byWeight = sortWeight(a, sort.key) - sortWeight(b, sort.key);
+      if (byWeight !== 0) return -byWeight;
+    }
+    if (cmp === 0) return a.team.localeCompare(b.team);
+    return sort.dir === "desc" ? -cmp : cmp;
+  });
+
+  const sortHead = (key, label, cls) => {
+    const on = key === sort.key;
+    return `<th class="${cls}${on ? " sorted" : ""}" data-sort="${esc(key)}"
+      aria-sort="${on ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}"
+      title="Sort by ${esc(label)}" tabindex="0" role="button"
+      >${esc(label)}<span class="sort-arrow">${on ? (sort.dir === "desc" ? "▾" : "▴") : "⇅"}</span></th>`;
+  };
+
+  if (!paint(root, `<div class="panel" data-nofold>
+    <header><h2>Season ${d.season}</h2>
+      <span class="hint">Straight-up winners · "same games" scores only games every
+        picker had a view on</span></header>
+    <div class="table-scroll"><table class="slate totals">
+      <thead><tr><th>Picker</th><th class="num">All their picks</th>
+        <th class="num">Same games</th></tr></thead>
+      <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
+    </table></div>
+
+    <h3 class="sub-head">Week by week<span class="hint"> · correct out of picked</span></h3>
+    <div class="table-scroll"><table class="slate">
+      <thead><tr><th>Week</th>${pickers.map((p) =>
+        `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
+      <tbody>${d.weeks.map((w) => `<tr>
+        <td class="who">Week ${w.week}</td>
+        ${pickers.map((p) => {
+          const t = w.tallies[p];
+          return t.n
+            ? `<td class="num">${t.correct}<span class="rec">/${t.n}</span></td>`
+            : '<td class="num muted">–</td>';
+        }).join("")}
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </div>
+
+  <div class="panel" data-nofold>
+    <header><h2>By team</h2>
+      <span class="hint">how often each picker called that team's games right ·
+        click a column to sort by it</span></header>
+    <div class="table-scroll"><table class="slate sortable">
+      <thead><tr>
+        ${sortHead("team", "Team", "")}
+        ${sortHead("games", "Games", "num")}
+        ${(d.pickers || []).map((p) => sortHead(p, d.labels[p], "num")).join("")}
+      </tr></thead>
+      <tbody>${sortedTeams.map((t) => `<tr>
+        <td class="who">${esc(t.team)}</td>
+        <td class="num muted">${t.games}</td>
+        ${d.pickers.map((p) => {
+          const v = t.tallies[p];
+          if (!v.n) return `<td class="num muted${p === sort.key ? " sorted" : ""}">–</td>`;
+          // Above half is being read well, below it badly; the midpoint is
+          // where a coin would sit, so it is the only sensible split.
+          const tone = v.rate > 0.5 ? " hit" : (v.rate < 0.5 ? " miss" : "");
+          return `<td class="num${tone}${p === sort.key ? " sorted" : ""}">${
+            pct(v.rate)}<span class="rec">${v.correct}-${v.wrong}</span></td>`;
+        }).join("")}
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </div>
+
+  ${clvBlock(d.clv)}
+
+  <div class="panel" id="survivor-track">
+    <header><h2>Survivor: the original run</h2>
+      <span class="hint">the plan as first made, against the teams you
+        actually spent</span></header>
+    <div class="empty">Loading…</div>
+  </div>`)) return;
+
+  /* The plan the optimiser made before any of it had happened, against what
+     was actually picked. Fetched after the page is drawn rather than in the
+     Promise.all above: it is the last thing on the page, it is behind a fold,
+     and the rest of Performance should not wait on it. */
+  api(`/api/survivor/tracker?season=${state.season}`)
+    .then((t) => {
+      const outer = $("#survivor-track", root);
+      if (!outer || stale(ticket)) return;
+      // Folded by the time this arrives, in which case the content belongs
+      // inside the fold rather than after it.
+      const panel = $(".fold-body", outer) || outer;
+      const mark = { won: "✓", lost: "✕", tied: "=", pending: "·" };
+      const runRows = (run) => (run.weeks || []).map((w) => `<tr class="r-${
+        esc(w.result)}">
+        <td class="team">W${w.week}</td>
+        <td>${teamMark(w.team)}<b>${esc(w.team)}</b></td>
+        <td class="res">${mark[w.result] || "·"}</td>
+        <td class="muted">${w.score ? esc(w.score) : (w.opponent
+          ? `vs ${esc(w.opponent)}` : "")}</td>
+      </tr>`).join("");
+      const column = (title, run, note) => `<div>
+        <h3 class="sub-head">${esc(title)}<span class="hint">${esc(note)}</span></h3>
+        ${run.weeks && run.weeks.length
+          ? `<div class="table-scroll"><table class="slate run-track">
+              <tbody>${runRows(run)}</tbody></table></div>`
+          : '<div class="empty">Nothing here yet.</div>'}
+      </div>`;
+      const ran = (run) => run.out_week
+        ? `out in week ${run.out_week}`
+        : `alive · ${run.weeks_survived} survived`;
+      panel.querySelector(".empty, .grid-2")?.remove();
+      panel.insertAdjacentHTML("beforeend", `
+        <p class="verdict">${esc(t.verdict || "")}</p>
+        <div class="grid-2 track-split">
+          ${column("The original plan", t.original || {}, ran(t.original || {}))}
+          ${column("What you picked", t.mine || {}, ran(t.mine || {}))}
+        </div>`);
+      wireLogos(panel);
+    })
+    .catch(() => {});
+
+
+  /* Re-sorting is a re-render of this view, not a reload: the payload is
+     already here and the server has no opinion about column order. */
+  $$("th[data-sort]", root).forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      state.sbSort = key === sort.key
+        ? { key, dir: sort.dir === "desc" ? "asc" : "desc" }
+        // A new column starts on its most useful end: best first for a rate,
+        // A-Z for the team name.
+        : { key, dir: key === "team" ? "asc" : "desc" };
+      // render(), not the view function: this page was renamed from
+      // Scoreboard and the old name was left behind here, so every click on a
+      // column heading threw a ReferenceError and sorted nothing.
+      render();
+    });
+  });
+}
+
+// -------------------------------------------------------------------- home
+/* The whole slate, one card per game.
+
+   This replaced an eleven-column table. The table fit everything, but every
+   game was a single dense line and reading one meant counting columns across
+   to find which number belonged to which team — the two teams shared one row,
+   so nothing on it could be attributed to a side by position alone.
+
+   A card gives each team its own line, and each line is only half the card
+   wide: the left half identifies the team, the right half is the same three
+   sources the rest of the app uses, one column each, read straight down.
+
+     blind  -- margin_home: the model before it is ever shown the line. This
+               is the only column that is genuinely independent of the market.
+     blend  -- fair_margin and the win probability built from it, so the pick
+               and the spread can never disagree. What the app actually claims.
+     book   -- the sportsbook consensus.
+     market -- prediction markets, shown but never mixed into either.
+
+   Blind and blend sit next to each other deliberately: the gap between them
+   is the market's contribution, and with a fitted weight of 0.98 that gap is
+   most of the number. Seeing it is the point.
+
+   The tick marks the side a source picked, which is what makes the card
+   scannable: four ticks in a column is agreement, a split is a game worth
+   opening. Once a game is final the tick turns green or red, so the card is
+   its own scorecard. */
+
+const LOGO_BASE = "https://a.espncdn.com/i/teamlogos/nfl/500/";
+
+/* A team's mark. The abbreviation in the team's own colour is drawn first and
+   the logo replaces it only once it has actually loaded, so a blocked network
+   or a slow CDN degrades to a readable badge rather than to a broken image. */
+function teamMark(abbr) {
+  const t = (state.meta?.teams || {})[abbr] || {};
+  const slug = t.espn || String(abbr || "").toLowerCase();
+  return `<span class="tbadge" style="--team:${esc(t.color || "#64748b")}">
+    <span class="mono">${esc(abbr)}</span>
+    <img class="tlogo" alt="" src="${esc(LOGO_BASE + slug)}.png" />
+  </span>`;
+}
+
+function wireLogos(root) {
+  $$("img.tlogo", root).forEach((img) => {
+    const badge = img.closest(".tbadge");
+    if (!badge) return;
+    const ok = () => badge.classList.add("hasimg");
+    if (img.complete && img.naturalWidth > 0) ok();
+    img.addEventListener("load", ok);
+  });
+}
+
+/* "Final · 9/14", "LIVE · Q3 4:05", "Sun 1:00" — the one line that says where
+   in its life the game is. */
+function gameStamp(g) {
+  if (g.status === "in_progress") {
+    return `<span class="live-dot"></span>LIVE${
+      g.live ? ` · ${esc(liveLabel(g.live, true))}` : ""}`;
+  }
+  const d = g.kickoff ? new Date(g.kickoff) : null;
+  const date = d && !Number.isNaN(d.getTime())
+    ? d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" }) : "";
+  if (g.status === "final") return `Final${date ? ` · ${date}` : ""}`;
+  return esc(kickoffShort(g.kickoff)) || "Scheduled";
+}
+
+async function renderHome(ticket) {
+  const root = $("#view");
+  const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
+  if (stale(ticket)) return;
+  // Browsing the live week means Home has just fetched exactly what the
+  // sidebar wants, so it is handed over rather than fetched twice.
+  if (state.week === state.meta?.week && state.season === state.meta?.season) {
+    state.liveSlate = data.games || [];
+    sideFoot(state.meta);
+  }
+  if (!data.games.length) {
+    paint(root, '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>');
+    return;
+  }
+
+  // Prediction-market prices ride along with the picks payload. A failure here
+  // must not cost the board: the column simply reads "–".
+  const picks = await api(`/api/picks?week=${state.week}&season=${state.season}`)
+    .catch(() => ({}));
+  const pmByGame = {};
+  for (const row of picks.prediction_markets?.games || []) pmByGame[row.game_id] = row;
+
+  const mine = await api(`/api/my-picks?season=${state.season}&week=${state.week}`)
+    .catch(() => ({ picks: [] }));
+  const myPick = {};
+  for (const row of mine.picks || []) myPick[row.game_id] = row.selection;
+
+  const games = [...data.games].sort((a, b) => {
+    const rank = (g) => (g.status === "in_progress" ? 0 : g.status === "final" ? 2 : 1);
+    return rank(a) - rank(b) || String(a.kickoff).localeCompare(String(b.kickoff));
+  });
+
+  let anyInherited = false;
+
+  const card = (g) => {
+    const p = g.prediction;
+    const ownProb = p && p.home_win_prob !== null && p.home_win_prob !== undefined
+      ? p.home_win_prob : null;
+    const blindHome = p && p.blind_win_prob !== null && p.blind_win_prob !== undefined
+      ? p.blind_win_prob : null;
+    const bookHome = g.market?.home_win_prob ?? null;
+
+    // A finished game the model never saw -- anything from before the app was
+    // running -- borrows the sportsbook's pick rather than showing a blank.
+    // Only finished games: for an upcoming one the model has its own view, and
+    // lending it the book's would be inventing an opinion.
+    const inherited = ownProb === null && g.status === "final" && bookHome !== null;
+    if (inherited) anyInherited = true;
+    const ourHome = ownProb !== null ? ownProb : (inherited ? bookHome : null);
+
+    const mkt = pmByGame[g.game_id];
+    const mktHome = mkt && mkt.venue_prob !== null && mkt.venue_prob !== undefined
+      ? mkt.venue_prob : null;
+
+    // Model margins are home-positive; posted spreads are the home team's line.
+    // One negation apart, and getting it wrong would flip every number on the
+    // card, so it is done once here rather than per cell.
+    const ourLineHome = p && p.fair_margin !== null && p.fair_margin !== undefined
+      ? -Number(p.fair_margin) : null;
+    const blindLineHome = p && p.margin_home !== null && p.margin_home !== undefined
+      ? -Number(p.margin_home) : null;
+    const bookLineHome = g.market?.spread_home ?? null;
+
+    const actualWinner = g.status === "final" && g.home_score !== null
+      && g.away_score !== null && g.home_score !== g.away_score
+      ? (g.home_score > g.away_score ? g.home : g.away)
+      : null;
+
+    const lineText = (homeLine, side) => {
+      if (homeLine === null || homeLine === undefined) return "–";
+      const v = side === "home" ? Number(homeLine) : -Number(homeLine);
+      return Math.abs(v) < 0.05 ? "PK" : signed(v);
     };
 
-    const news = (card.news || []).slice(0, 2).map((n) =>
-      `<span class="badge ${esc(n.category)}">${esc(n.category)}</span>`).join(" ");
+    // One source's opinion about one team: its line for that side, its
+    // probability for that side, and whether that is the side it picked.
+    const cell = (kind, homeProb, homeLine, side) => {
+      const picked = homeProb !== null && Math.abs(Number(homeProb) - 0.5) > 1e-9
+        && ((Number(homeProb) > 0.5) === (side === "home"));
+      const verdict = picked && actualWinner
+        ? (g[side] === actualWinner ? " hit" : " miss") : "";
+      const prob = homeProb === null ? null
+        : (side === "home" ? Number(homeProb) : 1 - Number(homeProb));
+      const borrowed = kind === "ours" && inherited;
+      return `<div class="gcell ${kind}${picked ? " picked" : ""}${verdict}${
+        borrowed ? " borrowed" : ""}"${borrowed
+        ? ' title="This game finished before the app was running, so the model has no number of its own. Its pick is the sportsbook\'s; the spread and total are left blank rather than copied, which would read as the model agreeing on them."'
+        : ""}>
+        <span class="gline">${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
+        <span class="gprob">${prob === null ? "–" : pct(prob)}${
+          borrowed ? '<i class="est">*</i>' : ""}${picked ? `
+          <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>` : ""}</span>
+      </div>`;
+    };
 
-    return `<article class="card" data-game="${esc(card.game_id)}" tabindex="0">
-      <div class="kick"><span>${final ? "Final" : when(card.kickoff)}</span>
-        <span>${card.movement.steam ? "⚡ steam move" : (spark || "")}</span></div>
-      <div class="teams">${teamRow("away")}${teamRow("home")}</div>
-      <div class="numbers">
-        <div>Market<strong>${esc(spreadText(card))}</strong></div>
-        <div>Model<strong>${esc(modelLineText(card))}</strong></div>
-        <div>Edge<strong>${edgePill(p?.spread_edge)}</strong></div>
+    const yourPick = myPick[g.game_id];
+    const teamRow = (side) => {
+      const abbr = g[side];
+      const t = (state.meta?.teams || {})[abbr] || {};
+      const score = g[`${side}_score`];
+      const mineHere = yourPick === abbr;
+      // Blue while the game is undecided, so your pick still reads as yours
+      // rather than as a result you have not earned yet.
+      const yourVerdict = !mineHere || actualWinner === null
+        ? "" : (abbr === actualWinner ? " hit" : " miss");
+      const beaten = actualWinner !== null && abbr !== actualWinner;
+      const won = actualWinner !== null && abbr === actualWinner;
+      return `<div class="gteam${beaten ? " beaten" : ""}${won ? " won" : ""}">
+        <button class="pickdot${mineHere ? " on" : ""}${yourVerdict}" data-pick="${esc(g.game_id)}"
+          data-team="${esc(abbr)}" title="${mineHere ? "Your pick — click to clear" : `Pick ${esc(abbr)}`}"
+          aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
+            mineHere ? (yourVerdict === " miss" ? "✕" : "✓") : ""}</button>
+        ${teamMark(abbr)}
+        <span class="tname" title="${esc(t.full_name || abbr)}${
+          side === "home" ? " (home)" : " (away)"}"><span class="nick">${
+            esc(t.name || abbr)}</span><span class="abbr">${esc(abbr)}</span></span>
+        <span class="tscore">${score === null || score === undefined ? "" : score}</span>
       </div>
-      <div class="numbers" style="border-top:0;padding-top:6px">
-        <div>Total<strong>${num(card.market?.total_points, 1)}</strong></div>
-        <div>Model total<strong>${num(p?.total_points, 1)}</strong></div>
-        <div>Line move<strong>${signed(card.movement.spread_move)}</strong></div>
+      ${cell("blind", blindHome, blindLineHome, side)}
+      ${cell("ours", ourHome, ourLineHome, side)}
+      ${cell("book", bookHome, bookLineHome, side)}`;
+    };
+
+    const moved = g.movement?.toward_us;
+    const movedBadge = moved === null || moved === undefined || Math.abs(moved) < 0.05
+      ? ""
+      : `<span class="gmoved ${moved > 0 ? "good" : "bad"}"
+           title="${signed(moved)} points: how far the line has moved ${
+             moved > 0 ? "toward" : "away from"} our side since it opened"
+           >${signed(moved)}</span>`;
+
+    const ourTotal = p && p.fair_total ? num(p.fair_total, 1) : null;
+    const blindTotal = p && p.total_points ? num(p.total_points, 1) : null;
+    const bookTotal = g.market?.total_points;
+
+    /* Did the favourite win. Judged against the book rather than against our
+       own number, because "upset" is a claim about what the world expected --
+       and the book is the closest thing to a public answer. A game the market
+       had at a coin flip is neither, so it says so instead of calling a 50.4%
+       favourite losing an upset. */
+    const favourite = bookHome === null || bookHome === undefined
+      || Math.abs(Number(bookHome) - 0.5) < 0.02
+      ? null : (Number(bookHome) > 0.5 ? g.home : g.away);
+    const verdictBadge = !actualWinner || !favourite ? "" : (
+      actualWinner === favourite
+        ? `<span class="gverdict expected" title="The book's favourite won">Expected</span>`
+        : `<span class="gverdict upset" title="The underdog won">Upset</span>`);
+
+    return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
+      <div class="gcard-top">
+        <span class="gstate">${gameStamp(g)}</span>
+        ${movedBadge}
+        ${verdictBadge}
+        <span class="gopen" title="Open this game">&rsaquo;</span>
       </div>
-      ${news ? `<div class="newsline">${news}<span class="muted">news affecting this game</span></div>` : ""}
+      <div class="gcard-grid">
+        <div class="ghead you">You</div>
+        <div class="ghead blind" title="Blind model — the projection before it is ever shown the line. The only column here independent of the market.">Blind</div>
+        <div class="ghead ours" title="Our blend — that same model blended with the line. This is what the app actually claims.">Blend</div>
+        <div class="ghead book" title="Sportsbook consensus, with the vig removed">Book</div>
+
+        ${teamRow("away")}
+        ${teamRow("home")}
+        <!-- The projected total, as its own row under the two teams rather
+             than squeezed into the corner of the top strip. It belongs in the
+             grid: each figure then sits under the column it came from, so
+             "which of these three is the book's" is answered by position
+             instead of by remembering the order in a tooltip. -->
+        <div class="gtot-label" title="Projected total points for the game">Total</div>
+        <div class="gtot" title="Blind model's projected total">${
+          blindTotal === null ? "–" : blindTotal}</div>
+        <div class="gtot" title="Our blend's projected total">${
+          ourTotal === null ? "–" : ourTotal}</div>
+        <div class="gtot" title="Sportsbook total">${num(bookTotal, 1)}</div>
+      </div>
     </article>`;
-  }).join("");
+  };
 
-  root.innerHTML = `<div class="panel">
-    <header><h2>Week ${data.week} — ${data.games.length} games</h2>
-      <span class="hint">Click a game for line movement, every book, and prediction history</span>
-    </header>
-    <div class="legend" style="margin-bottom:12px">
-      <span class="key"><i style="background:var(--div-pos)"></i>Edge favours home</span>
-      <span class="key"><i style="background:var(--div-neg)"></i>Edge favours away</span>
-      <span class="key muted">Edge is our blended estimate against the line, not the raw model gap</span>
-    </div>
-    <div class="cards">${cards}</div></div>`;
+  if (!paint(root, `<div class="panel board">
+    <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
+      <span class="hint">Home team listed second · Blind = before the line ·
+        Blend = what we claim · Book = sportsbook ·
+        a tick marks each source's pick</span></header>
+    <div class="gboard">${games.map(card).join("")}</div>
+    ${anyInherited ? `<p class="note">* These games finished before the app was
+      running, so the model has no pick of its own and the sportsbook's number is
+      shown in its place.</p>` : ""}
+  </div>`)) return;
 
-  $$(".card", root).forEach((node) => {
+  wireLogos(root);
+
+  $$(".gcard", root).forEach((node) => {
     const open = () => openGame(node.dataset.game);
     node.addEventListener("click", open);
     node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
   });
+
+  // The pick button sits inside a card that opens a dialog, so its click must
+  // not reach the card -- otherwise recording a pick also opens the detail view.
+  $$(".pickdot", root).forEach((dot) => {
+    dot.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const gameId = dot.dataset.pick;
+      // Clicking the team you already have selected clears it; clicking the
+      // other one switches. Two buttons behaving like a radio group you can
+      // also turn off, which is what picking a game actually is.
+      const next = myPick[gameId] === dot.dataset.team ? "" : dot.dataset.team;
+      await api("/api/my-picks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ game_id: gameId, selection: next }),
+      });
+      await render();
+    });
+  });
 }
 
+// ------------------------------------------------- one game, in detail
+/* The dialog behind every card on the board. It outlived the Games page:
+   that page was a second rendering of the same week the board already
+   shows, but this is the only place a single game explains itself --
+   line movement, every book's current number, and the alerts raised for
+   it. */
 async function openGame(gameId) {
   const dlg = $("#detail");
   const body = $(".dialog-body", dlg);
   $(".dialog-title", dlg).textContent = "Loading…";
   body.innerHTML = '<div class="empty">Loading…</div>';
   dlg.showModal();
+  /* Anything that goes wrong from here has to end up on screen.
 
-  const d = await api(`/api/game/${encodeURIComponent(gameId)}`);
+     The dialog is shown before its contents are fetched, which is right --
+     a click should do something immediately -- but it means the failure mode
+     of everything below is an open dialog reading "Loading…" for ever, with
+     the actual error in a console nobody has open. That is precisely what
+     happened, and from the outside "clicking a game does nothing" gives no
+     clue where to look. An error in the dialog names the game and the
+     problem, and the close button still works. */
+  try {
+    await fillGame(dlg, body, gameId);
+  } catch (err) {
+    $(".dialog-title", dlg).textContent = "Could not open this game";
+    body.innerHTML = `<div class="empty">${esc(err && err.message
+      ? err.message : String(err))}</div>`;
+  }
+}
+
+async function fillGame(dlg, body, gameId) {
+
+  const [d, alertsFor] = await Promise.all([
+    api(`/api/game/${encodeURIComponent(gameId)}`),
+    // A game with no alerts is the normal case, so a failure here must not
+    // cost the dialog everything else it was going to show.
+    api(`/api/alerts?game_id=${encodeURIComponent(gameId)}`).catch(() => ({ alerts: [] })),
+  ]);
+
+  /* Alerts for this game have now been seen, because they are on the screen.
+     Nothing marked them, so every alert this app ever raised stayed unread for
+     ever -- which makes the unread count a running total of the season rather
+     than a thing to act on.
+
+     After the fetch, and that is the whole of a bug that stopped every game
+     opening. This block used to sit above the `const [d, alertsFor] = await`
+     below it and read `alertsFor` to decide what to mark. A `const` is not
+     hoisted the way a `var` is -- it is in scope from the top of the block but
+     unreadable until its own line runs -- so touching it early does not read
+     undefined, it throws. The throw landed one line after `showModal()`, which
+     is why the dialog opened, said "Loading…", and then stopped: the dialog was
+     already on screen and everything that would have filled it was on the far
+     side of the exception. */
+  api("/api/alerts/seen", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: (alertsFor.alerts || []).map((a) => a.id).filter(Boolean) }),
+  }).catch(() => { /* a badge that stays lit is not worth an error */ });
+
   const g = d.game;
   $(".dialog-title", dlg).textContent = `${g.away_name} at ${g.home_name}`;
 
@@ -190,15 +1177,18 @@ async function openGame(gameId) {
         <div class="sub">market-blind projection</div></div>
       <div class="tile"><div class="label">Actionable edge</div>
         <div class="value">${signed(g.prediction?.spread_edge)}</div>
-        <div class="sub">raw gap ${signed(g.components?.raw_spread_edge ?? null)} before shrinking</div></div>
+        <div class="sub">raw gap ${signed(rawSpreadEdge(g))} before shrinking</div></div>
       <div class="tile"><div class="label">Win probability</div>
         <div class="value">${pct(g.prediction?.home_win_prob)}</div>
         <div class="sub">${esc(g.home)} · market ${pct(g.market?.home_win_prob)}</div></div>
     </div>
+    ${wagerNotice()}
 
     <div class="panel" style="background:var(--surface-sunken)">
       <header><h2>Spread movement</h2>
-        <span class="hint">consensus against our number; thin grey lines are individual books</span></header>
+        <span class="hint">consensus against our number · the band is how far our
+          line moved inside each step, since it is recomputed far more often than
+          the market moves · thin grey lines are individual books</span></header>
       <div id="chart-spread" style="height:230px"></div>
       <div class="legend" style="margin-top:8px">
         <span class="key"><i style="background:var(--series-2)"></i>Market consensus</span>
@@ -237,6 +1227,29 @@ async function openGame(gameId) {
       </table></div>
     </div>
 
+    ${alertList(alertsFor.alerts)}
+
+    ${["home", "away"].some((s) => g.availability?.[s]?.missing?.length)
+      ? `<div class="panel" style="background:var(--surface-sunken)">
+      <header><h2>Availability</h2>
+        <span class="hint">applied to our projection; the market already prices this</span></header>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Team</th><th>Player</th><th>Pos</th><th>Status</th><th>Cost</th></tr></thead>
+        <tbody>${["away", "home"].flatMap((side) => {
+          const team = side === "home" ? g.home : g.away;
+          const a = g.availability?.[side];
+          if (!a || !a.missing?.length) return [];
+          return a.missing.map((m, i) => `<tr>
+            <td class="team">${i === 0 ? `${esc(team)} <span class="muted">(${signed(a.adjustment)})</span>` : ""}</td>
+            <td>${esc(m.player || "–")}</td><td>${esc(m.position || "–")}</td>
+            <td>${esc(m.status || "–")}</td><td>${m.cost ? `−${num(m.cost, 2)}` : "–"}</td></tr>`);
+        }).join("")}</tbody>
+      </table></div>
+      <p class="note">Injury history is not in the training data, so this is applied to the
+        projection rather than learned. It mostly removes false disagreement — a model that
+        has not noticed a ruled-out starter claims its biggest edge on the game it understands
+        least. A quarterback's cost is the measured gap to his backup, not a flat constant.</p>
+    </div>` : ""}
     ${(g.news || []).length ? `<div class="panel" style="background:var(--surface-sunken)">
       <header><h2>News touching this game</h2></header>
       ${g.news.map((n) => `<div style="padding:6px 0;border-bottom:1px solid var(--grid)">
@@ -251,73 +1264,177 @@ async function openGame(gameId) {
   // is "some book", and the story is consensus versus our number.
   const bookSeries = Object.entries(d.books.spread || {}).map(([book, pts]) => ({
     name: book, color: "var(--text-muted)", muted: true, label: false,
-    points: pts.map((p) => ({ x: p.captured_at, y: p.value })),
+    // Condensed too, but with no band: these are already background context at
+    // 30% opacity, and a band behind each of eight books is a grey wash.
+    points: condense(pts.map((p) => ({ x: p.captured_at, y: p.value }))).points,
   }));
   const consensusPts = (d.movement.spread.points || []).map((p) => ({ x: p.captured_at, y: p.value }));
-  const modelPts = history.map((h) => ({
+
+  /* The two lines are sampled on completely different clocks, and that is why
+     the model's used to read as a solid block of sawtooth.
+
+     The market changes when a book moves its number -- a handful of times in a
+     week, each one real -- so its series is a step function and every vertex
+     means something. The model is written on every recompute, which is a timer,
+     so two days produce hundreds of points whose *spacing* carries no
+     information at all. Half a point of wobble between consecutive runs then
+     fills the plot edge to edge and buries the trend underneath it.
+
+     So the model series is condensed to roughly one point per few pixels,
+     plotted at each bin's median, with the range it covered drawn as a faint
+     band behind it. The market is left alone: binning a step function would
+     round off the corners, which are the only part of it worth seeing. */
+  const modelSpread = condense(history.map((h) => ({
     x: h.captured_at,
     y: h.margin_home === null ? null : -h.margin_home,   // model's implied home line
-  }));
+  })));
   lineChart($("#chart-spread"), [
     ...bookSeries,
     { name: "Consensus", short: "market", color: "var(--series-2)", points: consensusPts },
-    { name: "Our line", short: "model", color: "var(--series-1)", points: modelPts },
+    { name: "Our line", short: "model", color: "var(--series-1)",
+      points: modelSpread.points, band: modelSpread.band },
   ], { height: 230, yFormat: (v) => signed(v, 1), ariaLabel: "spread movement over time" });
 
+  const modelTotal = condense(history.map((h) => ({ x: h.captured_at, y: h.total_points })));
   lineChart($("#chart-total"), [
     { name: "Market total", short: "market", color: "var(--series-2)",
       points: (d.movement.total.points || []).map((p) => ({ x: p.captured_at, y: p.value })) },
     { name: "Our total", short: "model", color: "var(--series-1)",
-      points: history.map((h) => ({ x: h.captured_at, y: h.total_points })) },
+      points: modelTotal.points, band: modelTotal.band },
   ], { height: 200, ariaLabel: "total movement over time" });
 }
 
 // ------------------------------------------------------------------- teams
-async function renderTeams() {
+/* Ours against everybody else's, side by side.
+
+   The consensus is the average of published top-32s, pooled over weeks 1 and 2.
+   It is opinion rather than measurement, so it is not a scoreboard — but where
+   our ranking and a *tight* consensus differ by a dozen places, one of us has
+   found something. Both tables carry the same signed gap so a team can be
+   followed across: +4 on the left means the published lists put that team four
+   places lower than we do, and the same team reads −4 on the right. */
+
+/* The shared delta. "=" rather than "0" because a zero in a column of signed
+   numbers reads as a missing value, and agreeing exactly is worth seeing. */
+
+async function renderTeams(ticket) {
   const root = $("#view");
-  const data = await api("/api/teams");
-  // Season win totals only exist when the odds feed publishes futures. Two
-  // columns of dashes read as a bug, so drop them when nothing has one.
+  const [data, history] = await Promise.all([
+    api("/api/teams"),
+    // Movement against the previous week we actually hold. Its own request
+    // because a missing history must cost the ranking nothing.
+    api("/api/power/history").catch(() => ({ teams: [], compared_to: null })),
+  ]);
+  if (stale(ticket)) return;
+
+  // Season win totals only exist when the odds feed publishes futures.
   const hasWinTotals = data.teams.some(
     (t) => t.win_total_line !== null && t.win_total_line !== undefined);
-  const rows = data.teams.map((t) => `<tr data-team="${esc(t.team)}" style="cursor:pointer">
-    <td class="team">${t.rank}. ${esc(t.team)} <span class="muted">${esc(t.name)}</span></td>
-    <td>${t.record.wins ?? 0}-${t.record.losses ?? 0}${t.record.ties ? `-${t.record.ties}` : ""}</td>
-    <td>${signed(t.power)}</td>
-    <td>${num(t.elo, 0)}</td>
-    <td>${num(t.exp_wins, 1)}</td>
-    <td class="muted">${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}</td>
-    ${hasWinTotals ? `<td>${num(t.win_total_line, 1)}</td><td>${pct(t.over_prob)}</td>` : ""}
-    <td>${pct(t.playoff_prob)}</td>
-    <td>${pct(t.division_prob)}</td>
-    <td>${pct(t.sb_prob, 1)}</td>
-  </tr>`).join("");
 
-  root.innerHTML = `<div class="panel">
-    <header><h2>Power ratings &amp; season projections</h2>
-      <span class="hint">Power is points better than an average team on a neutral field.
-        Projections come from 20,000 simulated seasons.</span></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Team</th><th>Record</th><th>Power</th><th>Elo</th><th>Exp. wins</th>
-        <th>80% range</th>${hasWinTotals ? "<th>Win total</th><th>Over</th>" : ""}
-        <th>Playoff</th><th>Division</th><th>Title</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>
-    <p class="note">${hasWinTotals
-      ? "Over probabilities come from the simulated win distribution against the posted line."
-      : "No season win-total lines are available from the odds feed right now, so those "
-        + "columns are hidden. The simulated win distribution below is unaffected."}</p>
+  /* How far a team has moved since the last week we hold a ranking for.
+
+     Blank when there is nothing to compare against, for every team, rather
+     than a column of zeroes. A zero is a claim -- "this team held its place"
+     -- and in week one nobody has held anything yet. `compared_to` is null
+     exactly when no earlier week exists, which is what makes the distinction
+     available at all. */
+  const moved = {};
+  if (history.compared_to !== null && history.compared_to !== undefined) {
+    for (const row of history.teams || []) {
+      if (row.move !== null && row.move !== undefined) moved[row.team] = row.move;
+    }
+  }
+  const moveCell = (abbr) => {
+    const m = moved[abbr];
+    if (m === undefined) return '<td class="move"></td>';
+    if (m === 0) return '<td class="move muted">—</td>';
+    return `<td class="move ${m > 0 ? "up" : "down"}">${m > 0 ? "▲" : "▼"}${
+      Math.abs(m)}</td>`;
+  };
+
+  /* Four columns and a mark. Everything else -- the rating, the Pythagorean,
+     the 80% range, division and title odds, the win total -- moves into the
+     card a row opens. The table had eleven columns of numbers and was, in the
+     reader's words, hard to read; the answer to that is not a smaller font. */
+  const row = (t) => `<tr data-team="${esc(t.team)}" tabindex="0">
+    <td class="rk">${t.rank}</td>
+    <td class="team">${teamMark(t.team)}<span class="tname">${esc(t.name)}</span></td>
+    <td class="num">${t.record.wins ?? 0}-${t.record.losses ?? 0}${
+      t.record.ties ? `-${t.record.ties}` : ""}</td>
+    <td class="num"><b>${num(t.exp_wins, 1)}</b></td>
+    <td class="num">${pct(t.playoff_prob)}</td>
+    ${moveCell(t.team)}
+  </tr>`;
+
+  const head = `<thead><tr><th class="rk">#</th><th>Team</th>
+    <th class="num">Rec</th>
+    <th class="num" title="Expected wins from 20,000 simulations of the remaining schedule">Proj</th>
+    <th class="num" title="Chance of reaching the playoffs">Playoff</th>
+    <th class="move" title="Places moved since the last week held">Move</th></tr></thead>`;
+
+  // Top sixteen beside bottom sixteen: the whole league on one screen, which
+  // is the only way the bottom half is ever looked at.
+  const half = Math.ceil(data.teams.length / 2);
+  const table = (teams) => `<table class="rank-table">${head}
+    <tbody>${teams.map(row).join("")}</tbody></table>`;
+
+  if (!paint(root, `
+  <div class="panel" data-nofold>
+    <header><h2>Power rankings</h2>
+      <span class="hint">by projected finish, the Pythagorean, the rating and
+        title odds — not by record · click a team for the rest</span></header>
+    <div class="rank-split">
+      <div class="table-scroll">${table(data.teams.slice(0, half))}</div>
+      <div class="table-scroll">${table(data.teams.slice(half))}</div>
+    </div>
+    ${hasWinTotals ? "" : `<p class="note">No season win-total lines are
+      available from the odds feed right now, so the market columns in each
+      card are blank. Nothing else is affected.</p>`}
   </div>
-  <div class="panel" id="team-detail-panel">
+  <div class="panel" id="team-detail-panel" data-nofold>
     <header><h2>Simulated win distribution</h2>
-      <span class="hint">Select a team above</span></header>
+      <span class="hint" id="dist-who"></span></header>
+    <div class="team-card" id="team-card"></div>
     <div id="team-dist" style="height:200px"></div>
-  </div>`;
+  </div>`)) return;
+
+  const card = (t) => {
+    const cell = (label, value, hint) => `<div class="fact"${
+      hint ? ` title="${esc(hint)}"` : ""}>
+      <div class="fact-label">${esc(label)}</div>
+      <div class="fact-value">${value}</div></div>`;
+    return [
+      cell("Rating", signed(t.power),
+           "Points better than an average team on a neutral field"),
+      /* A dash here could mean "no games yet" or "this field never got
+         written", and those are different answers. The number is worked out
+         from the season's scores server-side when the rating row does not
+         carry it, so a blank now means only the first one. */
+      cell("Pythag", t.pythagorean === null || t.pythagorean === undefined
+        ? '<span class="muted">no games yet</span>' : pct(t.pythagorean),
+           "Win expectation implied by points scored and allowed"),
+      cell("80% range", `${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)}`,
+           "Where four seasons in five finish"),
+      cell("Division", pct(t.division_prob)),
+      cell("Title", pct(t.sb_prob, 1)),
+      ...(hasWinTotals ? [
+        cell("Win total", num(t.win_total_line, 1), "The posted market line"),
+        cell("Over", pct(t.over_prob),
+             "Chance of finishing above the posted line"),
+      ] : []),
+    ].join("");
+  };
 
   const show = (abbr) => {
     const team = data.teams.find((t) => t.team === abbr);
     if (!team) return;
-    $("#team-detail-panel .hint").textContent =
-      `${team.name} — ${num(team.exp_wins, 1)} expected wins`;
+    $("#dist-who").textContent = `click any team above · showing ${team.name}`;
+    $("#team-card").innerHTML =
+      `<div class="card-head">${teamMark(team.team)}<b>${esc(team.name)}</b>
+        <span class="muted">#${team.rank} · ${num(team.exp_wins, 1)} expected wins</span>
+      </div><div class="facts">${card(team)}</div>`;
+    $$("#view tr[data-team]").forEach(
+      (tr) => tr.classList.toggle("on", tr.dataset.team === abbr));
     const dist = team.distribution || {};
     const bars = [];
     for (let w = 0; w <= 17; w++) {
@@ -330,307 +1447,1247 @@ async function renderTeams() {
       ariaLabel: `${team.name} simulated win distribution`,
     });
   };
-  $$("tbody tr", root).forEach((tr) => tr.addEventListener("click", () => show(tr.dataset.team)));
+
+  // No team picker: the ranking above *is* the picker. A second control that
+  // selects the same thing as the row you just clicked is a second place for
+  // the two to disagree, and one more thing to look at on a page whose whole
+  // complaint was that there was too much to look at.
+  wireLogos(root);
+  $$("#view tr[data-team]", root).forEach((tr) => {
+    tr.addEventListener("click", () => show(tr.dataset.team));
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(tr.dataset.team); }
+    });
+  });
   if (data.teams.length) show(data.teams[0].team);
 }
 
 // ------------------------------------------------------------------- picks
-async function renderPicks() {
+async function renderPicks(ticket) {
   const root = $("#view");
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
-  const edges = data.ats?.edges || [];
+  if (stale(ticket)) return;
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
-  const edgeRows = edges.map((e) => `<tr>
-    <td class="team">${esc(e.selection)}</td>
-    <td>${esc(e.market)}</td>
-    <td>${esc(e.book || "–")}</td>
-    <td>${american(e.price)}</td>
-    <td>${pct(e.win_prob, 1)}</td>
-    <td>${american(e.fair_price)}</td>
-    <td>${e.edge_points === null ? "–" : signed(e.edge_points)}</td>
-    <td>${(e.expected_value * 100).toFixed(1)}%</td>
-    <td>${(e.kelly * 100).toFixed(1)}%</td>
-    <td><span class="badge ${e.confidence === "suspect" ? "qb" : ""}">${esc(e.confidence)}</span></td>
-  </tr>`).join("");
-
   const board = pickem[state.pickemMode || "ev"] || pickem.ev || {};
+
+  /* Why this page is empty, when it is.
+     Picks are made for the week that is coming, so a week already played and a
+     week not yet reached both have nothing on them -- and both were showing
+     "— of 0 possible" above "No games to pick", which reads as a broken page
+     rather than as a finished one. The week is in the selector; what it means
+     should be on the page. */
+  const liveWeek = state.meta?.week;
+  const nothing = !(board.picks || []).length && !survivor.recommendation;
+  const why = !nothing || liveWeek === undefined || state.week === liveWeek ? ""
+    : state.week < liveWeek
+      ? `Week ${state.week} has been played. There is nothing left to pick —
+         how it went is on Home and Performance.`
+      : `Week ${state.week} has not come round yet. Picks are made for the
+         current week, which is week ${liveWeek}.`;
+  /* Two lines to a row rather than four columns across.
+     This panel is a third of the page now, and "PHI over WAS  74.2%  +1.8pp
+     vs mkt" laid out in one line either wrapped in the middle of a number or
+     pushed a horizontal scrollbar under the list. Stacked, the pick and its
+     opponent read on the top line and the two numbers sit under them, and the
+     row gets narrower instead of longer. */
   const pickRows = (board.picks || []).map((p) => `<div class="pick-row">
     <span class="conf">${p.confidence}</span>
-    <span><strong>${esc(p.pick)}</strong> <span class="muted">over ${esc(p.opponent)}</span>
-      ${p.note ? `<div class="muted" style="font-size:11px">${esc(p.note)}</div>` : ""}</span>
-    <span>${pct(p.win_prob, 1)}</span>
-    <span class="muted">${p.edge === null ? "" : `${signed(p.edge * 100, 1)}pp vs mkt`}</span>
+    <span class="pick-body">
+      <span class="pick-who"><strong>${esc(p.pick)}</strong>
+        <span class="muted">over ${esc(p.opponent)}</span></span>
+      <span class="pick-nums">
+        <span class="pick-prob">${pct(p.win_prob, 1)}</span>
+        ${p.edge === null ? ""
+          : `<span class="muted">${signed(p.edge * 100, 1)}pp vs mkt</span>`}
+      </span>
+      ${p.note ? `<span class="pick-note muted">${esc(p.note)}</span>` : ""}
+    </span>
   </div>`).join("");
 
   const path = (survivor.path || []).map((s) => `<tr>
     <td class="team">Week ${s.week}</td><td>${esc(s.team)}</td>
     <td class="muted">vs ${esc(s.opponent)}</td><td>${pct(s.win_prob, 1)}</td></tr>`).join("");
-  const alts = (survivor.alternatives || []).map((a) => `<tr>
-    <td class="team">${esc(a.team)}</td><td class="muted">vs ${esc(a.opponent)}</td>
-    <td>${pct(a.win_prob, 1)}</td><td>${pct(a.path_survival, 1)}</td>
-    <td>${a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`}</td></tr>`).join("");
+  /* This week's options as one list, the recommendation included and marked,
+     rather than a pick in one panel and a table of "alternatives" in another.
+     Deviating is not a separate subject from choosing -- it is the same choice
+     -- and splitting them meant reading the cost of a switch two panels away
+     from the thing it would replace. */
+  const rec = survivor.recommendation;
+  const altRows = [
+    ...(rec ? [{
+      team: rec.team, opponent: rec.opponent, win_prob: rec.win_prob,
+      path_survival: survivor.survival_prob, cost: 0, picked: true,
+    }] : []),
+    ...(survivor.alternatives || []).filter((a) => !rec || a.team !== rec.team),
+  ].map((a) => `<div class="alt-row${a.picked ? " picked" : ""}">
+    <span class="alt-team">${teamMark(a.team)}<strong>${esc(a.team)}</strong>
+      <span class="muted">vs ${esc(a.opponent)}</span></span>
+    <span class="alt-win">${pct(a.win_prob, 1)}</span>
+    <span class="alt-cost ${a.picked ? "muted" : (a.cost > 0 ? "neg" : "pos")}">${
+      a.picked ? "the pick"
+        : (a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`)}</span>
+  </div>`).join("");
 
-  root.innerHTML = `
+  root.classList.add("fit-screen");
+  if (!paint(root, `
+  <div class="grid-2 pick-split">
   <div class="panel">
-    <header><h2>Best bets — week ${data.week}</h2>
-      <span class="hint">Priced against the best available number, sized at quarter Kelly</span></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Selection</th><th>Market</th><th>Book</th><th>Price</th><th>Our prob</th>
-        <th>Fair price</th><th>Edge</th><th>EV</th><th>Stake</th><th>Rating</th></tr></thead>
-      <tbody>${edgeRows || '<tr><td colspan="10" class="muted">No qualifying edges this week — that is a normal result, not a failure.</td></tr>'}</tbody>
-    </table></div>
-    <p class="note">Edges are the blended estimate against the line, already shrunk toward the
-      market. A rating of <strong>suspect</strong> means the disagreement is so large it is more
-      likely our blind spot than the market's — treat it as a prompt to investigate, not a bet.</p>
-  </div>
-
-  <div class="panel">
-    <header><h2>ESPN pick'em</h2>
-      <div class="controls" style="margin-left:auto">
-        <select id="pickem-mode">
-          <option value="ev">Maximise expected points</option>
-          <option value="leverage">Leverage (large pools)</option>
-        </select>
-      </div></header>
-    <div class="tiles" style="margin-bottom:12px">
+    <header><h2>Picks</h2>
+      <span class="hint" title="Confidence points are assigned highest-to-most-likely, which maximises expected score. Leverage mode deliberately gives some of that up to differentiate from a field that picks close to the market — the right trade only when finishing first is what pays.">most confident first</span>
+    </header>
+    <div class="controls pick-mode">
+      <select id="pickem-mode">
+        <option value="ev">Maximise expected points</option>
+        <option value="leverage">Leverage (large pools)</option>
+      </select>
+    </div>
+    ${(board.picks || []).length ? `<div class="tiles pick-tiles">
       <div class="tile"><div class="label">Expected correct</div>
         <div class="value">${num(board.expected_correct, 1)}<span class="sub"> of ${board.n_games ?? 0}</span></div></div>
       <div class="tile"><div class="label">Expected points</div>
         <div class="value">${num(board.expected_points, 1)}</div>
         <div class="sub">of ${board.max_points ?? 0} possible</div></div>
-      <div class="tile"><div class="label">Versus the field</div>
-        <div class="value ${(board.expected_points - board.field_expected_points) >= 0 ? "pos" : "neg"}">
-          ${signed(board.expected_points - board.field_expected_points, 2)}</div>
-        <div class="sub">points, under our own probabilities</div></div>
-    </div>
-    <div class="pickem-list">${pickRows || '<div class="empty">No games to pick.</div>'}</div>
-    <p class="note">Confidence points are assigned highest-to-most-likely, which maximises
-      expected score. Leverage mode deliberately gives some of that up to differentiate
-      from a field that picks close to the market — the right trade only when finishing
-      first is what pays.</p>
+    </div>` : ""}
+    <div class="pickem-list">${pickRows || `<div class="empty">${
+      esc(why).replace(/\s+/g, " ") || "No games to pick."}</div>`}</div>
+    ${(board.picks || []).length ? wagerNotice() : ""}
   </div>
 
-  <div class="panel">
+  <div class="pick-col">
+  <div class="panel survivor-now">
     <header><h2>Survivor</h2>
       <span class="hint">${survivor.horizon ? `planned ${survivor.horizon} weeks ahead` : ""}</span></header>
     ${survivor.recommendation ? `
-      <div class="tiles" style="margin-bottom:12px">
+      <div class="tiles">
         <div class="tile"><div class="label">This week</div>
           <div class="value">${esc(survivor.recommendation.team)}</div>
           <div class="sub">vs ${esc(survivor.recommendation.opponent)} ·
             ${pct(survivor.recommendation.win_prob, 1)} to win</div></div>
         <div class="tile"><div class="label">Path survival</div>
           <div class="value">${pct(survivor.survival_prob, 1)}</div>
-          <div class="sub">through week ${(survivor.week || 0) + (survivor.horizon || 1) - 1}</div></div>
+          <div class="sub">through week ${survivor.through_week
+            || ((survivor.week || 0) + (survivor.horizon || 1) - 1)}</div></div>
       </div>
-      <div class="grid-2">
-        <div><h3 style="font-size:12px;margin-bottom:6px">Planned path</h3>
-          <table><thead><tr><th>Week</th><th>Team</th><th>Opponent</th><th>Win prob</th></tr></thead>
-          <tbody>${path}</tbody></table></div>
-        <div><h3 style="font-size:12px;margin-bottom:6px">If you deviate this week</h3>
-          <table><thead><tr><th>Team</th><th>Opp</th><th>Win prob</th><th>Path</th><th>Cost</th></tr></thead>
-          <tbody>${alts || '<tr><td colspan="5" class="muted">No alternatives.</td></tr>'}</tbody></table></div>
+      <div class="alt-block">
+        <h3>This week's options<span class="hint">win chance, then what taking
+          that team instead costs across the whole remaining path</span></h3>
+        <div class="alt-list">${altRows
+          || '<div class="empty">No alternatives.</div>'}</div>
       </div>
-      <p class="note">The recommendation is not always this week's safest team. Spending a strong
-        team now can cost more later than it gains today, so the optimiser solves the whole
-        remaining path — the cost column is what deviating actually costs over that path.</p>
-    ` : `<div class="empty">${esc(survivor.note || "No survivor plan available.")}</div>`}
-    <div style="margin-top:14px">
-      <h3 style="font-size:12px;margin-bottom:6px">Teams you have already used</h3>
-      <div class="controls">
-        <input type="text" id="used-teams" style="flex:1;min-width:220px"
-          value="${esc((data.survivor_used || []).join(", "))}"
-          placeholder="e.g. KC, SF, BAL" />
-        <button class="btn primary" id="save-used">Save &amp; replan</button>
+      <div class="used-block">
+        <h3>Teams you have already used<span class="hint">click a mark to use or
+          release it — the plan replans itself</span></h3>
+        <div class="team-picker used">${(state.meta?.teams
+          ? Object.keys(state.meta.teams).sort() : []).map((t) => {
+            const used = (data.survivor_used || []).includes(t);
+            return `<button class="team-pick${used ? " used" : ""}" data-used="${esc(t)}"
+              title="${esc(t)} — ${used ? "used, click to release" : "available, click to mark used"}"
+              aria-pressed="${used}">${teamMark(t)}</button>`;
+          }).join("")}</div>
       </div>
-    </div>
-  </div>`;
+    ` : `<div class="empty">${esc(survivor.note || "").replace(/\s+/g, " ")
+      || esc(why).replace(/\s+/g, " ")
+      || "No survivor plan available."}</div>`}
+  </div>
+
+  ${survivor.recommendation ? `
+  <div class="panel survivor-run">
+    <header><h2>The rest of the run</h2>
+      <span class="hint" title="The recommendation is not always this week's safest team. Spending a strong team now can cost more later than it gains today, so the optimiser solves the whole remaining path — which is why the cost of switching, shown beside this week's options, is measured over this run rather than over Sunday.">every week from here · scroll ↓</span></header>
+    <div class="table-scroll"><table class="slate">
+      <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
+        <th class="num">Win prob</th></tr></thead>
+      <tbody>${path}</tbody></table></div>
+  </div>` : ""}
+  </div>
+  </div>`)) return;
 
   const modeSelect = $("#pickem-mode");
   modeSelect.value = state.pickemMode || "ev";
   modeSelect.addEventListener("change", () => {
     state.pickemMode = modeSelect.value;
-    renderPicks();
+    render();
   });
 
-  $("#save-used").addEventListener("click", async (ev) => {
-    const teams = $("#used-teams").value.split(",").map((t) => t.trim().toUpperCase()).filter(Boolean);
-    ev.target.disabled = true;
-    ev.target.textContent = "Replanning…";
-    try {
+  wireLogos(root);
+  /* Clicking a mark toggles it and replans immediately. Typing a
+     comma-separated list meant naming a team from memory, spelling its
+     abbreviation the way this app happens to spell it, and pressing a second
+     button before anything happened. */
+  $$("[data-used]", root).forEach((button) => {
+    button.addEventListener("click", async () => {
+      const team = button.dataset.used;
+      const used = new Set(data.survivor_used || []);
+      if (used.has(team)) used.delete(team); else used.add(team);
+      button.classList.toggle("used");
       await api("/api/survivor/used", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ teams }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ teams: [...used] }),
       });
-      await renderPicks();
-    } catch (err) {
-      alert(`Could not save: ${err.message}`);
-      ev.target.disabled = false;
-      ev.target.textContent = "Save & replan";
-    }
+      await render();
+    });
   });
 }
 
 // -------------------------------------------------------------------- news
-async function renderNews() {
+/* Two columns, not folded. This page is read by scanning rather than by
+   looking one thing up: the question is "has anything changed that I should
+   know before I pick", and the injury report is the half that answers it most
+   often. Side by side, one scan covers both; stacked behind summaries it took
+   two clicks to learn there was nothing new. */
+async function renderNews(ticket) {
   const root = $("#view");
   const data = await api("/api/news?limit=80");
-  const items = data.items.map((n) => `<div style="padding:9px 0;border-bottom:1px solid var(--grid)">
-    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+  if (stale(ticket)) return;
+  const items = data.items.map((n) => `<div class="news-item">
+    <div class="news-tags">
       <span class="badge ${esc(n.category)}">${esc(n.category)}</span>
       ${(n.teams || []).map((t) => `<span class="badge">${esc(t)}</span>`).join("")}
       ${n.line_impact ? `<span class="badge" style="border-color:var(--serious);color:var(--serious)">
         est. ${signed(n.line_impact)} pts</span>` : ""}
-      <span class="muted" style="margin-left:auto;font-size:11px">${esc(n.source)} · ${ago(n.published_at)}</span>
+      <span class="muted news-src">${esc(n.source)} · ${ago(n.published_at)}</span>
     </div>
-    <div style="margin-top:3px">${n.url
+    <div class="news-title">${n.url
       ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`
       : esc(n.title)}</div>
-    ${n.summary ? `<div class="muted" style="font-size:12px;margin-top:2px">${esc(n.summary.slice(0, 220))}</div>` : ""}
+    ${n.summary ? `<div class="muted news-sum">${esc(n.summary.slice(0, 220))}</div>` : ""}
   </div>`).join("");
 
-  const injuries = (data.injuries || []).slice(0, 60).map((i) => `<tr>
-    <td class="team">${esc(i.team)}</td><td>${esc(i.player)}</td>
-    <td>${esc(i.position || "–")}</td><td>${esc(i.status || "–")}</td>
-    <td class="muted">${ago(i.updated_at)}</td></tr>`).join("");
+  /* One team at a time, chosen by its mark. A league-wide list is four hundred
+     rows you scroll past to find the one team you are about to pick, and the
+     status filter happens server-side: "Active" is not an injury report. */
+  const teams = data.injury_teams || [];
+  const counts = data.injury_counts || {};
+  if (!state.injuryTeam || !teams.includes(state.injuryTeam)) {
+    state.injuryTeam = teams[0] || null;
+  }
+  const picker = (state.meta?.teams ? Object.keys(state.meta.teams).sort() : teams)
+    .map((t) => {
+      const n = counts[t] || 0;
+      return `<button class="team-pick${t === state.injuryTeam ? " on" : ""}${
+        n ? "" : " empty"}" data-team="${esc(t)}"
+        title="${esc(t)} — ${n ? `${n} listed` : "nobody listed"}">
+        ${teamMark(t)}<span class="tp-count">${n || ""}</span></button>`;
+    }).join("");
 
-  root.innerHTML = `<div class="panel">
-    <header><h2>News &amp; changes</h2>
-      <span class="hint">Sorted by estimated relevance to picks, not by recency</span></header>
-    ${items || '<div class="empty">No news stored yet.</div>'}
-    <p class="note">The points estimate is a coarse prior from position and availability —
-      a starting quarterback is worth two to three points, a backup almost nothing. It is a
-      triage signal for what to look at, never a substitute for the market's own reaction.</p>
-  </div>
-  ${injuries ? `<div class="panel"><header><h2>Injury report</h2></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Team</th><th>Player</th><th>Pos</th><th>Status</th><th>Updated</th></tr></thead>
-      <tbody>${injuries}</tbody></table></div></div>` : ""}`;
+  /* Four columns, because four things are being asked: who, what, how long,
+     how serious. The position and the last-updated timestamp came out -- the
+     first is on the name for anyone who follows the team, and the second is a
+     fact about our polling rather than about the player. The source's prose
+     comment stays too, but as a tooltip: it is the fallback when the feed did
+     not break the injury out into fields, not a column of its own. */
+  const shown = (data.injuries || []).filter((i) => i.team === state.injuryTeam);
+  const injuries = shown.map((i) => `<tr${i.detail
+      ? ` title="${esc(i.detail)}"` : ""}>
+    <td class="team">${esc(i.player)}${i.position
+      ? ` <span class="muted">${esc(i.position)}</span>` : ""}</td>
+    <td>${esc(i.injury || "–")}</td>
+    <td class="muted">${esc(i.how_long || "–")}</td>
+    <td><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
+    </tr>`).join("");
+
+  if (!paint(root, `<div class="grid-2 news-split">
+    <div class="panel">
+      <header><h2>Injury report</h2>
+        <span class="hint">questionable, doubtful, out, IR and PUP only —
+          not the whole roster</span></header>
+      <div class="team-picker">${picker}</div>
+      ${injuries
+        ? `<div class="table-scroll tall"><table class="slate roster">
+            <thead><tr><th>Player</th>
+              <th title="What is hurt, when the feed breaks it out. Hover a row for the full note.">Injury</th>
+              <th title="How long they have been listed, and when they are expected back">How long</th>
+              <th>Status</th></tr></thead>
+            <tbody>${injuries}</tbody></table></div>`
+        : `<div class="empty">${state.injuryTeam
+            ? `Nobody listed for ${esc(state.injuryTeam)} — everyone is available.`
+            : "No injury report stored yet."}</div>`}
+    </div>
+
+    <div class="panel">
+      <header><h2>News &amp; changes</h2>
+        <span class="hint">by estimated relevance, not recency</span></header>
+      <div class="news-feed">${items || '<div class="empty">No news stored yet.</div>'}</div>
+      <p class="note">The points estimate is a coarse prior from position and availability —
+        a starting quarterback is worth two to three points, a backup almost nothing. It is a
+        triage signal for what to look at, never a substitute for the market's own reaction.</p>
+    </div>
+  </div>`)) return;
+
+  // The marks are drawn by the same teamMark() the board uses, and that draws
+  // the logo at opacity 0 until it has actually loaded -- so without this the
+  // badges rendered as bare abbreviations here while working on Home.
+  wireLogos(root);
+
+  // And the buttons had no listener at all: the picker was drawn, styled and
+  // given a selected state that nothing could ever change.
+  $$(".team-pick[data-team]", root).forEach((button) => {
+    button.addEventListener("click", () => {
+      state.injuryTeam = button.dataset.team;
+      render();
+    });
+  });
 }
 
-// ------------------------------------------------------------- performance
-async function renderPerformance() {
+// ------------------------------------------------------------- the desk
+/* Support, what is being built, and what has changed -- three columns, one
+   page.
+
+   Named "The Desk" because that is what it is: the place you go when the app
+   has not answered your question. Splitting it into a help page, a roadmap and
+   a changelog would be three pages each too thin to justify a tab, and all
+   three answer the same underlying question -- "is this meant to work like
+   this, and if not, when will it".
+
+   Static content. A support page that cannot load is a support page that has
+   failed at the one moment it exists for. */
+const DESK_HELP = [
+  {
+    q: "The board says “–” where a number should be",
+    a: `A dash is always "we do not have this", never zero. The most common
+       cause is the betting lines: without an Odds API key the book columns
+       stay empty and everything the model produces on its own still works.
+       Settings → Data sources takes the key.`,
+  },
+  {
+    q: "Nothing is updating",
+    a: `Fetching is manual by default. The refresh button beside LIVE does
+       everything except the betting lines, and runs itself once a minute while
+       the app is open. The lines have their own button at the bottom left,
+       because each press spends three requests of a monthly allowance. Settings
+       → Model → "Fetch automatically" puts the timers back.`,
+  },
+  {
+    q: "The power rankings have not moved",
+    a: `They are cut once a week and then left alone, the moment the last game
+       of the previous week goes final. A ranking that changes three times on a
+       Tuesday is a live readout with a week number on it, and nothing can be
+       said to have moved against it. There is no week-one ranking at all, so
+       the Move column starts in week three.`,
+  },
+  {
+    q: "The assistant is slow, or will not start",
+    a: `It runs entirely on this machine — nothing is sent anywhere — which is
+       why it needs a model downloaded first. The Assistant tab sets that up in
+       one press. On a laptop the first answer after a cold start is the slow
+       one; the model stays warm for an hour after that.`,
+  },
+  {
+    q: "Windows says the app is not trusted",
+    a: `The build is unsigned. More info → Run anyway. Signing a Windows binary
+       means buying a certificate, and it is on the list below rather than
+       done.`,
+  },
+];
+
+const DESK_SOON = [
+  {
+    title: "Prediction markets",
+    state: "in progress",
+    items: [
+      "Kalshi and Polymarket prices beside the book on every game",
+      "Where a contract and a sportsbook disagree, and by how much",
+      "Contract volume, so a price nobody trades reads differently",
+    ],
+    note: `Both venues answer and the right games come back. What is missing is
+      the books: the events endpoint returns each contract without a bid or an
+      ask. Asking the markets endpoint directly is written and shipped — whether
+      it is enough is the next thing to find out.`,
+  },
+  {
+    title: "Closing line value",
+    state: "partly there",
+    items: [
+      "Already on Performance where an opening and closing line both exist",
+      "Per-week and per-team breakdowns",
+      "One running figure for how much of the season's edge was real",
+    ],
+  },
+  {
+    title: "Your pool, not the model's",
+    state: "planned",
+    items: [
+      "Pick'em scored by your own league's rules",
+      "More than one survivor entry at a time",
+      "Importing a pool's results instead of marking teams used by hand",
+    ],
+  },
+  {
+    title: "Shipping",
+    state: "planned",
+    items: ["A signed Windows build", "A signed and notarised Mac build"],
+  },
+];
+
+/* What changed, newest first. Written by hand: a changelog generated from
+   commit messages is a list of commits, not a list of changes. */
+const DESK_CHANGES = [
+  {
+    when: "This build",
+    items: [
+      "Power rankings follow projected wins, so the order agrees with the PROJ column",
+      "A week's ranking waits for the previous week's last game to go final",
+      "Records and projections are frozen into the ranking with it",
+      "The betting lines have their own button and their own budget",
+      "Everything else refreshes itself once a minute",
+      "The assistant knows which week is which, and its formatting renders",
+      "A moon in dark mode and a sun in light",
+    ],
+  },
+  {
+    when: "Earlier",
+    items: [
+      "Winners read in gold, and finished games say Upset or Expected",
+      "Lines and totals freeze at kickoff instead of tracking the in-play market",
+      "The survivor tracker keeps the original run and scores it against yours",
+      "Connections moved to Settings; the sidebar shows the live game",
+      "The assistant stopped printing its working",
+    ],
+  },
+];
+
+async function renderSoon(ticket) {
   const root = $("#view");
-  const r = await api("/api/performance");
-  if (!r.n_games) {
-    root.innerHTML = `<div class="panel"><div class="empty">${esc(r.note ||
-      "No graded games yet. Results appear once games this app predicted have finished.")}</div></div>`;
+  if (stale(ticket)) return;
+  const help = DESK_HELP.map((h) => `<details class="desk-q">
+    <summary>${esc(h.q)}</summary>
+    <p>${esc(h.a).replace(/\s+/g, " ")}</p></details>`).join("");
+  const soon = DESK_SOON.map((s) => `<div class="desk-item">
+    <div class="desk-head"><b>${esc(s.title)}</b>
+      <span class="soon-state ${esc(s.state.replace(/\s+/g, "-"))}">${esc(s.state)}</span></div>
+    <ul class="soon-list">${s.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+    ${s.note ? `<p class="note">${esc(s.note).replace(/\s+/g, " ")}</p>` : ""}
+  </div>`).join("");
+  const changes = DESK_CHANGES.map((c) => `<div class="desk-item">
+    <div class="desk-head"><b>${esc(c.when)}</b></div>
+    <ul class="soon-list">${c.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+  </div>`).join("");
+
+  if (!paint(root, `<div class="grid-3 desk">
+    <div class="panel" data-nofold>
+      <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
+      ${help}
+    </div>
+    <div class="panel" data-nofold>
+      <header><h2>Being built</h2><span class="hint">and honestly not finished</span></header>
+      ${soon}
+    </div>
+    <div class="panel" data-nofold>
+      <header><h2>What changed</h2><span class="hint">newest first</span></header>
+      ${changes}
+    </div>
+  </div>`)) return;
+}
+
+// --------------------------------------------------------------- settings
+/* What you have to tell this app, and where it goes.
+
+   Everything here was an environment variable, which is fine in a terminal and
+   useless in a packaged app: there is no shell to export from. Each field says
+   what breaks without it, because "Odds API key" answers nothing on its own —
+   the question being asked is "what do I need to fill in, and what happens if
+   I don't". */
+async function renderSettings(ticket) {
+  const root = $("#view");
+  // The backup list is not worth failing the whole page over: settings still
+  // need editing on a machine where the directory cannot be read.
+  const [data, backups] = await Promise.all([
+    api("/api/settings"),
+    api("/api/settings/backups").catch(() => ({ backups: [], directory: "", keep: 10 })),
+  ]);
+  if (stale(ticket)) return;
+
+  const field = (s) => {
+    const id = `set-${s.key}`;
+    if (s.kind === "bool") {
+      const on = String(s.value).toLowerCase() === "true";
+      return `<label class="switch"><input type="checkbox" id="${id}"
+        data-key="${esc(s.key)}" ${on ? "checked" : ""} /><span>Enabled</span></label>`;
+    }
+    // A secret is never sent to the browser, so the box starts empty with the
+    // stored key's last four characters as its placeholder: enough to see that
+    // something is saved, useless to anyone reading over your shoulder.
+    const type = s.kind === "secret" ? "password" : (s.kind === "number" ? "number" : "text");
+    const placeholder = s.kind === "secret" && s.is_set
+      ? `saved — ${s.masked} — type to replace` : s.placeholder;
+    return `<input type="${type}" id="${id}" data-key="${esc(s.key)}"
+      value="${esc(s.kind === "secret" ? "" : s.value)}"
+      placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" />`;
+  };
+
+  const saveBar = (where) => `<div class="save-bar ${where}">
+    <button class="btn primary" data-save>Save settings</button>
+    <span class="save-result muted"></span>
+    <span class="muted tiny">Written to <code>${esc(data.path)}</code> · takes
+      effect on the next refresh, no restart</span>
+  </div>`;
+
+  /* Each group collapses, and two sit side by side. Open, stacked and full
+     width, this was a very long page to scroll past to reach the one box you
+     came for -- and the save button was stranded in the middle of it, which is
+     the one place a save button should never be.
+     One bar, at the top. There was a second at the foot of the page for when
+     the groups were open and long; with everything closed by default the page
+     is shorter than the screen, and a duplicate of the only button on it was
+     costing the height that made that true. */
+  /* The theme, where someone looking for a setting would look for it. The
+     header toggle stays: one is for flipping it, the other is for finding it.
+     It is not a stored setting like the rest -- the browser remembers the
+     choice -- so it saves itself on change rather than waiting for the bar. */
+  const themeRow = `<div class="setting">
+    <div class="set-head"><label for="set-theme">Appearance</label>
+      <span class="set-state on">saved here</span></div>
+    <select id="set-theme">
+      <option value="dark">Dark</option>
+      <option value="light">Light</option>
+    </select>
+    <div class="set-help">The same switch as the one in the corner of every
+      page, kept here because this is where a setting is looked for.</div>
+  </div>`;
+
+  if (!paint(root, `${saveBar("top")}
+  <div class="settings-grid">
+  ${(data.groups || []).map((g) => `<details class="panel set-group"${
+    openSettings.has(g.name) ? " open" : ""} data-group="${esc(g.name)}">
+    <summary><h2>${esc(g.name)}</h2>
+      <span class="hint">${g.settings.length} setting${
+        g.settings.length === 1 ? "" : "s"}</span>
+      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 6l6 6-6 6"/></svg></summary>
+    <div class="settings">
+      ${g.name === "General" ? themeRow : ""}
+      ${g.settings.map((s) => `<div class="setting">
+        <div class="set-head">
+          <label for="set-${esc(s.key)}">${esc(s.label)}</label>
+          <span class="set-state ${s.explicit ? "on" : ""}">${
+            s.explicit
+              ? (s.source === "file" ? "saved" : "from environment")
+              : (s.is_set ? "default" : "not set")}</span>
+        </div>
+        ${field(s)}
+        <div class="set-help">${esc(s.help)}${s.link
+          ? ` <a href="${esc(s.link)}" target="_blank" rel="noopener">${esc(s.link)}</a>` : ""}</div>
+        ${s.needed_for ? `<div class="set-need"><b>Needed for:</b> ${esc(s.needed_for)}</div>` : ""}
+        ${s.key === "ODDS_API_KEY"
+          ? `<div class="controls"><button class="btn" id="test-odds">Test this key</button>
+             <span id="odds-result" class="muted"></span></div>` : ""}
+      </div>`).join("")}
+    </div>
+  </details>`).join("")}
+  </div>
+  <p class="note">A secret is never sent back to this page, so an empty box
+    means "leave it alone", not "clear it"; to remove a key, type a space and
+    save.</p>
+
+  <div class="grid-2 tool-row">
+  <div class="panel tool-panel">
+    <header><h2>Prediction markets</h2>
+      <span class="hint" title="Asks Kalshi and Polymarket directly and reports each one. The status dot in the sidebar can only say a feed failed; &quot;no NFL games right now&quot; and &quot;this machine cannot reach the host&quot; look identical from the outside and need opposite responses.">an optional feed — the board reads "–" without it</span>
+      <div class="controls" style="margin-left:auto">
+        <button class="btn" id="test-pmkt">Test connection</button>
+      </div></header>
+    <div class="tool-out"><span id="pmkt-result" class="muted"></span>
+      <div id="pmkt-venues" class="backup-list"></div></div>
+  </div>
+
+  <div class="panel tool-panel">
+    <header><h2>Backup</h2>
+      <span class="hint">your picks, results and settings are one file —
+        this copies it</span>
+      <button class="why" type="button" aria-label="About backups"
+        title="The app already writes a copy before it changes the database's shape, but that is one file per version and a second upgrade from the same version overwrites it — a safety net for the app's own changes, not a backup you should rely on. This one you asked for. The newest ${
+          backups.keep ?? 10} are kept; older ones are removed so a growing database cannot quietly fill the disk. Copies live in ${
+          esc(backups.directory || "")} — that folder is inside the data directory, so copy it somewhere else if you want it to survive losing this machine.">?</button>
+      <div class="controls" style="margin-left:auto">
+        <button class="btn" id="make-backup">Back up now</button>
+      </div></header>
+    <div class="tool-out"><span id="backup-result" class="muted"></span>
+      <div id="backup-list" class="backup-list"></div></div>
+  </div>
+
+  <div class="panel tool-panel">
+    <header><h2>Refresh everything</h2>
+      <span class="hint">scores, schedule, injuries and news — free, and
+        already automatic</span>
+      <button class="why" type="button" aria-label="About refreshing"
+        title="The app fetches all of this on its own once a minute, so this button is for when you do not want to wait for the next one — after fixing a connection, say, or on opening a laptop that has been shut. It does not touch the betting lines: those are metered and have their own button beside LIVE.">?</button>
+      <div class="controls" style="margin-left:auto">
+        <button class="btn" id="refresh">Refresh now</button>
+      </div></header>
+    <div class="tool-out"><span id="refresh-result" class="muted"></span></div>
+  </div>
+  </div>`)) return;
+
+  /* A refresh re-renders this whole page, which used to close every section
+     the reader had opened -- including the one they were halfway through
+     filling in. What is open is remembered for the session instead. */
+  $$("details.set-group", root).forEach((d) => {
+    d.addEventListener("toggle", () => {
+      if (d.open) openSettings.add(d.dataset.group);
+      else openSettings.delete(d.dataset.group);
+    });
+  });
+
+  const paintBackups = (rows) => {
+    const list = $("#backup-list");
+    if (!list) return;
+    list.innerHTML = (rows || []).length
+      ? rows.map((b) => `<div class="backup-row">
+          <span class="nm">${esc(b.name)}</span>
+          <span class="muted">${ago(b.made_at)}</span>
+          <span class="muted num">${(b.bytes / 1048576).toFixed(1)} MB</span>
+        </div>`).join("")
+      : '<div class="empty">No backups yet.</div>';
+  };
+  paintBackups(backups.backups);
+
+  $("#test-pmkt")?.addEventListener("click", async (ev) => {
+    const out = $("#pmkt-result");
+    const venues = $("#pmkt-venues");
+    out.textContent = "asking both venues…";
+    out.className = "muted";
+    venues.innerHTML = "";
+    ev.target.disabled = true;
+    try {
+      const r = await api("/api/settings/test-prediction-markets", { method: "POST" });
+      out.textContent = r.summary;
+      out.className = r.ok ? "pos" : "neg";
+      /* The per-series attempts are shown when a venue answers with nothing.
+         "Quoting no NFL games" and "we asked under a ticker they renamed" are
+         the same sentence from outside and need opposite fixes, so the ticker
+         asked and the count returned go on screen rather than into a log. */
+      venues.innerHTML = (r.venues || []).map((v) => `<div class="backup-row">
+        <span class="nm">${v.ok ? "✓" : "✕"} ${esc(v.venue)}</span>
+        <span class="muted">${esc(v.message)}</span>
+      </div>${(v.attempts || []).map((a) => `<div class="backup-row probe">
+        <span class="nm">${esc(a.series)}</span>
+        <span class="muted">${a.error
+          ? esc(a.error)
+          /* A /markets row counts prices rather than events, because on that
+             endpoint "how many contracts came back" was never the question --
+             the question is how many of them carry a book. A row reading "62
+             markets" beside a message saying nothing has a price was the most
+             confusing thing on this panel. */
+          : a.priced !== undefined
+            ? `${a.markets} contracts · ${a.priced} priced (${a.book} with a
+               book, ${a.last_trade} last trade)${
+               a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`
+            : `${a.events} events · ${a.markets} markets${
+              a.sample ? ` · e.g. ${esc(a.sample)}` : ""}`}</span>
+      </div>`).join("")}`).join("");
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
+
+  $("#make-backup")?.addEventListener("click", async (ev) => {
+    const out = $("#backup-result");
+    out.textContent = "copying…";
+    out.className = "muted";
+    ev.target.disabled = true;
+    try {
+      const r = await api("/api/settings/backup", { method: "POST" });
+      out.textContent = `Saved ${r.name} (${(r.bytes / 1048576).toFixed(1)} MB)`
+        + (r.pruned ? ` · removed ${r.pruned} older` : "");
+      out.className = "pos";
+      paintBackups(r.backups);
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
+
+  $("#test-odds")?.addEventListener("click", async (ev) => {
+    const key = $("#set-ODDS_API_KEY").value.trim();
+    const out = $("#odds-result");
+    out.textContent = "checking…";
+    ev.target.disabled = true;
+    try {
+      const r = await api("/api/settings/test-odds-key", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      out.textContent = r.message;
+      out.className = r.ok ? "pos" : "neg";
+    } catch (err) {
+      out.textContent = String(err);
+      out.className = "neg";
+    } finally {
+      ev.target.disabled = false;
+    }
+  });
+
+  const themeSelect = $("#set-theme");
+  if (themeSelect) {
+    themeSelect.value = document.documentElement.getAttribute("data-theme") || "dark";
+    themeSelect.addEventListener("change", () => setTheme(themeSelect.value));
+  }
+
+  // Both bars save the same thing. A collapsed group still has its inputs in
+  // the document, so a setting you cannot currently see is still saved rather
+  // than silently dropped.
+  $$("[data-save]", root).forEach((button) => {
+    button.addEventListener("click", async () => {
+      const values = {};
+      $$("[data-key]", root).forEach((el) => {
+        if (el.type === "checkbox") values[el.dataset.key] = el.checked ? "true" : "false";
+        // An untouched secret box is empty, and sending that would clear a key
+        // the page was never shown. Absent means "leave it".
+        else if (el.value !== "") values[el.dataset.key] = el.value;
+        else if (el.type !== "password") values[el.dataset.key] = "";
+      });
+      $$("[data-save]", root).forEach((b) => { b.disabled = true; });
+      const outs = $$(".save-result", root);
+      const say = (text, cls) => outs.forEach((o) => {
+        o.textContent = text; o.className = `save-result ${cls}`;
+      });
+      try {
+        const r = await api("/api/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values }),
+        });
+        say(`Saved ${r.saved.length} setting${r.saved.length === 1 ? "" : "s"}.`, "pos");
+        await loadState();
+        await render();
+      } catch (err) {
+        say(String(err), "neg");
+      } finally {
+        $$("[data-save]", root).forEach((b) => { b.disabled = false; });
+      }
+    });
+  });
+}
+
+// -------------------------------------------------------------- assistant
+/* A local model, given this app's own numbers.
+
+   It is not a football oracle and is not asked to be one: it gets the board,
+   the model's measured record and the scoreboard as JSON, and answers about
+   those. Nothing leaves the machine — the app refuses any endpoint that is not
+   loopback, so "offline" is enforced rather than promised. */
+/* The assistant, as a chat app rather than a single running log.
+
+   One log meant every question shared one context -- asking about week 3
+   after twenty lines about week 2 fed the model all twenty -- and there was
+   no way to put a thread aside and come back to it. Conversations live in the
+   database, not the browser, so they survive an update and land in a backup.
+*/
+const chat = { id: null, chats: [], messages: [], busy: false, loaded: false };
+
+async function loadChats() {
+  const r = await api("/api/assistant/chats").catch(() => ({ chats: [] }));
+  chat.chats = r.chats || [];
+  if (chat.id && !chat.chats.some((c) => c.id === chat.id)) chat.id = null;
+  if (!chat.id && chat.chats.length) chat.id = chat.chats[0].id;
+  chat.messages = chat.id
+    ? (await api(`/api/assistant/chats/${chat.id}`).catch(() => ({ messages: [] }))).messages
+    : [];
+  chat.loaded = true;
+}
+
+/* Setting the assistant up, rather than explaining how to.
+
+   What used to be here was three numbered steps: install Ollama, run a
+   command, paste an address into Settings. Every one of them is a place to
+   give up, and the last two are a terminal -- which is the thing a desktop
+   app exists to avoid. Now it is a button, and the work happens where the
+   user can watch it.
+
+   The server is installed into this app's own directory on its own port, so
+   an Ollama the user already runs keeps its models and its settings. */
+let setupPoll = null;
+
+function bytes(n) {
+  if (!n) return "";
+  const mb = n / 1e6;
+  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+}
+
+async function renderAssistantSetup(status) {
+  const root = $("#view");
+  const setup = await api("/api/assistant/setup").catch(() => null);
+  const job = setup?.progress || {};
+  const offered = status.setup_offered !== false && setup;
+
+  const choices = (setup?.choices || []).map((c) => `<label class="model-choice">
+    <input type="radio" name="setup-model" value="${esc(c.name)}"
+      ${c.name === (setup.default_model) ? "checked" : ""} />
+    <span><b>${esc(c.name)}</b> <span class="muted">· ${esc(c.size)}</span>
+      <span class="model-note">${esc(c.note)}</span></span>
+  </label>`).join("");
+
+  const bar = job.running || job.phase === "done" || job.phase === "error" ? `
+    <div class="setup-progress">
+      <div class="bar"><div class="bar-fill${job.percent === null ? " indeterminate" : ""}"
+        style="width:${job.percent === null ? 100 : job.percent}%"></div></div>
+      <div class="setup-status">
+        <span>${esc(job.message || "")}</span>
+        <span class="muted">${job.total
+          ? `${bytes(job.done)} of ${bytes(job.total)}` : ""}</span>
+      </div>
+      ${job.error ? `<p class="note warn">${esc(job.error)}</p>` : ""}
+    </div>` : "";
+
+  if (!paint(root, `<div class="panel">
+    <header><h2>Assistant</h2><span class="hint">${
+      job.running ? "setting up" : "not set up yet"}</span></header>
+    <div class="setup-pane">
+      <p>${esc(status.message)}</p>
+      <p class="note">The assistant runs a model on this machine and talks to it
+        over loopback only — an endpoint anywhere else is refused, so nothing you
+        ask it can leave the computer. It sees this week's board, the model's
+        measured record and the scoreboard, and nothing else.</p>
+      ${offered ? `
+        <div class="model-choices"${job.running ? " hidden" : ""}>${choices}</div>
+        ${bar}
+        <div class="controls setup-actions">
+          <button class="btn primary" id="setup-go" ${job.running ? "disabled" : ""}>
+            ${job.running ? "Setting up…"
+              : (job.error ? "Try again" : "Set up the assistant")}</button>
+          <span class="muted tiny">Downloads a model server and a model into
+            ${esc(setup.directory)}. Nothing is installed anywhere else, and
+            deleting The Edge takes it with it.</span>
+        </div>
+      ` : `<p class="note">Change it on the <b>Settings</b> page.</p>`}
+    </div>
+  </div>`)) return;
+
+  if (!offered) return;
+
+  $("#setup-go")?.addEventListener("click", async () => {
+    const chosen = $('input[name="setup-model"]:checked')?.value;
+    await api("/api/assistant/setup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: chosen }),
+    }).catch(() => null);
+    await renderAssistantSetup(status);
+  });
+
+  // Poll while it runs. Cleared on the way out of the tab, because a timer
+  // that outlives its page is a timer that rewrites somebody else's.
+  clearInterval(setupPoll);
+  if (job.running) {
+    setupPoll = setInterval(async () => {
+      if (state.tab !== "assistant") { clearInterval(setupPoll); return; }
+      const now = await api("/api/assistant/setup").catch(() => null);
+      if (!now) return;
+      if (now.progress?.phase === "done") {
+        clearInterval(setupPoll);
+        chat.loaded = false;
+        await render();
+        return;
+      }
+      await renderAssistantSetup(status);
+    }, 1200);
+  }
+}
+
+async function renderAssistant(ticket) {
+  const root = $("#view");
+  // The status probe starts the managed server if it is not running, which can
+  // take twenty seconds. That is the longest await on any tab, and it is why
+  // this is the tab that used to land on top of whichever one you switched to.
+  const status = await api("/api/assistant/status").catch((e) => ({
+    ready: false, message: String(e) }));
+  if (stale(ticket)) return;
+
+  if (!status.ready) {
+    await renderAssistantSetup(status);
     return;
   }
-  const acc = r.accuracy || {};
-  const beatsMarket = acc.margin_mae !== null && acc.market_margin_mae !== null
-    && acc.margin_mae < acc.market_margin_mae;
 
-  // When most graded games were backfilled through a model that was trained on
-  // them, these figures are in-sample and will flatter the model — often by a
-  // lot. Say so on the numbers themselves, not only in a footnote nobody reads,
-  // and put the walk-forward result beside them as the honest benchmark.
-  const wf = r.walk_forward || null;
-  const inSample = r.n_games > 0 && (r.backfilled || 0) / r.n_games > 0.5;
-  const flag = inSample
-    ? '<span class="badge" style="border-color:var(--warning);color:var(--warning)">in-sample</span>'
-    : "";
-  const tone = (good) => (inSample ? "" : (good ? "pos" : "neg"));
+  if (!chat.loaded) await loadChats();
+  if (stale(ticket)) return;
 
-  root.innerHTML = `<div class="panel">
-    <header><h2>How the model is actually doing</h2>
-      <span class="hint">${r.n_games} graded games</span></header>
-    <div class="tiles">
-      <div class="tile"><div class="label">Against the spread ${flag}</div>
-        <div class="value ${tone((r.ats.rate ?? 0) > 0.524)}">${pct(r.ats.rate, 1)}</div>
-        <div class="sub">${r.ats.wins}-${r.ats.losses}-${r.ats.pushes} · break-even 52.4%${
-          wf && wf.ats_rate ? `<br><strong>walk-forward ${pct(wf.ats_rate, 1)}</strong>` : ""}</div></div>
-      <div class="tile"><div class="label">Return on risk ${flag}</div>
-        <div class="value ${tone((r.ats.roi ?? 0) >= 0)}">${pct(r.ats.roi, 1)}</div>
-        <div class="sub">${signed(r.ats.units, 1)} units at −110</div></div>
-      <div class="tile"><div class="label">Closing-line value</div>
-        <div class="value ${(r.clv.spread_avg ?? 0) >= 0 ? "pos" : "neg"}">${
-          r.clv.spread_avg === null ? "–" : signed(r.clv.spread_avg, 2)}</div>
-        <div class="sub">${r.clv.spread_n} bets · points vs close</div></div>
-      <div class="tile"><div class="label">Straight up</div>
-        <div class="value">${pct(r.straight_up.rate, 1)}</div>
-        <div class="sub">${r.straight_up.correct} of ${r.straight_up.n}</div></div>
-      <div class="tile"><div class="label">Brier score</div>
-        <div class="value">${num(r.calibration.brier, 3)}</div>
-        <div class="sub">lower is better · 0.25 = coin flip</div></div>
-      <div class="tile"><div class="label">Margin error ${flag}</div>
-        <div class="value ${inSample ? "" : (beatsMarket ? "pos" : "")}">${num(acc.margin_mae, 2)}</div>
-        <div class="sub">market ${num(acc.market_margin_mae, 2)}${
-          beatsMarket ? " — we're closer" : " — market is closer"}${
-          wf && wf.margin_mae ? `<br><strong>walk-forward ${num(wf.margin_mae, 2)}</strong> vs ${
-            num(wf.market_margin_mae, 2)}` : ""}</div></div>
+  const list = chat.chats.map((c) => `<button class="chat-item${
+    c.id === chat.id ? " on" : ""}" data-chat="${esc(c.id)}">
+    <span class="ci-title">${esc(c.title)}</span>
+    <span class="ci-sub">${esc(ago(c.updated_at))} · ${c.n || 0} message${
+      c.n === 1 ? "" : "s"}</span>
+    <span class="ci-actions">
+      <span class="ci-act" data-rename="${esc(c.id)}" title="Rename" role="button">✎</span>
+      <span class="ci-act" data-delete="${esc(c.id)}" title="Delete" role="button">✕</span>
+    </span>
+  </button>`).join("");
+
+  const bubbles = chat.messages.map((m) => `<div class="msg ${esc(m.role)}">
+    <div class="msg-body">${m.role === "assistant"
+      ? markdown(m.content) : esc(m.content)}</div></div>`).join("");
+
+  if (!paint(root, `<div class="chat-shell">
+    <aside class="chat-side">
+      <div class="chat-side-head">
+        <button class="btn primary tiny" id="chat-new">New chat</button>
+      </div>
+      <div class="chat-list">${list || '<div class="empty tiny">No chats yet.</div>'}</div>
+    </aside>
+
+    <div class="panel chat">
+      <header><h2>${esc(chat.chats.find((c) => c.id === chat.id)?.title || "Assistant")}</h2>
+        <span class="hint">${esc(status.model)} · on this machine · sees week
+          ${state.week} of ${state.season}</span></header>
+      <div class="chat-log" id="chat-log">${bubbles || `<div class="empty">
+        Ask about this week's board, where the model disagrees with the market, or
+        what its record actually says. It only knows what this app has.</div>`}${
+        chat.busy ? '<div class="msg assistant pending"><div class="msg-body">…</div></div>' : ""}</div>
+      <div class="controls chat-input">
+        <input type="text" id="chat-q" ${chat.busy ? "disabled" : ""}
+          placeholder="e.g. where does the blind model disagree most with the book this week?" />
+        <button class="btn primary" id="chat-send" ${chat.busy ? "disabled" : ""}>Ask</button>
+      </div>
+      <div class="chat-suggest">
+        ${["Which games does the blind model disagree with the market on?",
+           "Is this model actually any good? Be blunt.",
+           "Summarise this week in five lines."].map((q) =>
+          `<button class="btn tiny" data-q="${esc(q)}">${esc(q)}</button>`).join("")}
+      </div>
     </div>
-    ${inSample ? `<p class="note" style="border-left-color:var(--warning)">
-      <strong>These headline figures are in-sample.</strong> ${r.backfilled} of ${r.n_games}
-      graded games were replayed through a model trained on those same seasons, which
-      flatters every one of them. The walk-forward figures shown beneath each tile are
-      the honest measure — they train only on earlier seasons and test on later ones.
-      Once this app has watched real games before kickoff, the top-line numbers become
-      genuine out-of-sample results and this warning goes away.</p>` : ""}
-    ${r.clv.note ? `<p class="note">${esc(r.clv.note)}</p>` : ""}
-    ${!inSample && r.backfill_note ? `<p class="note">${esc(r.backfill_note)}</p>` : ""}
-  </div>
+  </div>`)) return;
 
-  <div class="grid-2">
-    <div class="panel"><header><h2>Cumulative units</h2>
-      <span class="hint">flat stakes at −110</span></header>
-      <div id="chart-units" style="height:230px"></div></div>
-    <div class="panel"><header><h2>Calibration</h2>
-      <span class="hint">dot size is sample count</span></header>
-      <div id="chart-calib" style="height:240px"></div>
-      <div class="table-scroll" style="margin-top:10px"><table>
-        <thead><tr><th>Confidence</th><th>Predicted</th><th>Observed</th><th>Games</th></tr></thead>
-        <tbody>${(r.calibration.buckets || []).map((b) => `<tr><td class="team">${esc(b.range)}</td>
-          <td>${pct(b.predicted, 1)}</td><td>${pct(b.observed, 1)}</td><td>${b.n}</td></tr>`).join("")}
-        </tbody></table></div>
-    </div>
-  </div>
+  const scroll = () => {
+    const log = $("#chat-log");
+    if (log) log.scrollTop = log.scrollHeight;
+  };
 
-  <div class="panel"><header><h2>Week by week</h2></header>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Season</th><th>Week</th><th>ATS</th><th>Straight up</th>
-        <th>CLV</th><th>Cumulative units</th></tr></thead>
-      <tbody>${(r.weekly || []).slice().reverse().map((w) => `<tr>
-        <td class="team">${w.season}</td><td>${w.week}</td>
-        <td>${w.ats_wins}-${w.ats_losses}</td><td>${w.su_correct}/${w.n}</td>
-        <td>${w.clv === null ? "–" : signed(w.clv, 2)}</td>
-        <td>${signed(w.cumulative_units, 1)}</td></tr>`).join("")}</tbody>
-    </table></div></div>`;
+  const send = async (question) => {
+    if (!question.trim() || chat.busy) return;
+    // Shown immediately, and kept on screen while the model thinks: a 4B model
+    // takes seconds, and a question that vanishes into a still page reads as a
+    // dropped click.
+    chat.messages = [...chat.messages, { role: "user", content: question }];
+    chat.busy = true;
+    await render();
+    try {
+      const r = await api("/api/assistant/ask", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat.id, question,
+                               season: state.season, week: state.week }),
+      });
+      chat.id = r.chat_id;
+      chat.messages = r.messages;
+    } catch (err) {
+      chat.messages = [...chat.messages,
+        { role: "assistant", content: `Could not answer: ${err}` }];
+    } finally {
+      chat.busy = false;
+    }
+    await loadChats().catch(() => {});
+    await render();
+    scroll();
+  };
 
-  lineChart($("#chart-units"), [{
-    name: "Units", short: "units", color: "var(--series-1)",
-    points: (r.weekly || []).map((w, i) => ({ x: i, y: w.cumulative_units })),
-  }], {
-    height: 230, includeZero: true, zeroLine: true,
-    xFormat: (v) => {
-      const w = (r.weekly || [])[Math.round(v)];
-      return w ? `${w.season} wk ${w.week}` : "";
-    },
-    ariaLabel: "cumulative units over time",
+  $("#chat-new").addEventListener("click", async () => {
+    const created = await api("/api/assistant/chats", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "New chat" }),
+    });
+    chat.id = created.id;
+    await loadChats();
+    await render();
   });
-  calibrationChart($("#chart-calib"), r.calibration.buckets || [], { height: 240 });
+
+  $$("[data-chat]", root).forEach((b) => b.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-rename],[data-delete]")) return;
+    chat.id = b.dataset.chat;
+    await loadChats();
+    await render();
+  }));
+
+  $$("[data-rename]", root).forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const current = chat.chats.find((c) => c.id === b.dataset.rename);
+    const title = prompt("Rename this chat", current?.title || "");
+    if (title === null) return;
+    await api(`/api/assistant/chats/${b.dataset.rename}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }).catch(() => {});
+    await loadChats();
+    await render();
+  }));
+
+  $$("[data-delete]", root).forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const current = chat.chats.find((c) => c.id === b.dataset.delete);
+    if (!confirm(`Delete "${current?.title || "this chat"}"? This cannot be undone.`)) return;
+    await api(`/api/assistant/chats/${b.dataset.delete}`, { method: "DELETE" }).catch(() => {});
+    if (chat.id === b.dataset.delete) chat.id = null;
+    await loadChats();
+    await render();
+  }));
+
+  $("#chat-send").addEventListener("click", () => send($("#chat-q").value));
+  $("#chat-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send(e.target.value);
+  });
+  $$("[data-q]", root).forEach((b) =>
+    b.addEventListener("click", () => send(b.dataset.q)));
+  if (!chat.busy) $("#chat-q")?.focus();
+  scroll();
 }
 
 // -------------------------------------------------------------------- shell
-const VIEWS = { games: renderGames, teams: renderTeams, picks: renderPicks,
-  news: renderNews, performance: renderPerformance };
+const VIEWS = { home: renderHome, teams: renderTeams,
+  picks: renderPicks, news: renderNews,
+  performance: renderPerformance,
+  assistant: renderAssistant, settings: renderSettings, soon: renderSoon };
 
-async function render() {
-  const view = VIEWS[state.tab] || renderGames;
+/* Which render is allowed to write to the page.
+
+   Every view fetches before it draws, and nothing stopped a slow one from
+   finishing after the reader had moved on -- so clicking Teams and then Picks
+   left you on Picks for a moment and then dropped Teams on top of it. It looked
+   like a sluggish tab; it was the wrong tab arriving late. Worst while the
+   assistant is downloading or answering, because that is when the server is
+   busiest and the gap is widest.
+
+   Each render takes a ticket. A render that comes back holding a stale ticket
+   has been overtaken and says nothing. */
+let renderTicket = 0;
+
+/* Write a view's HTML, but only when it differs from what is already there.
+
+   The refresh loop calls the current view once a minute. Every view builds its
+   whole page as a string and assigns it to innerHTML, which destroys and
+   recreates every node underneath -- so even when the fetch came back with
+   byte-identical data, the page was rebuilt: text selection lost, charts torn
+   down and redrawn, transitions restarted, and the DOM churned for nothing.
+   Preserving scroll and focus hid the worst of it; it did not stop it
+   happening.
+
+   Comparing the string is the whole trick, and it works because these views
+   are pure: the same data produces the same markup, so identical markup means
+   identical data and there is nothing to draw.
+
+   The return value matters as much as the write. Every view wires its own
+   listeners immediately after assigning innerHTML, on the assumption that the
+   nodes are new. If the paint is skipped the nodes are *not* new -- they still
+   carry the listeners bound last time -- so wiring them again would leave two
+   handlers on every button and one click would fire both. Each view returns
+   early on false. That is also why this cannot be a general DOM-diffing
+   morph: preserving a node and re-running the wiring beside it is precisely
+   the bug, and the only safe rule is that a node either is rebuilt and
+   rewired, or is left entirely alone.
+
+   Keyed by tab, because switching pages and coming back should not be fooled
+   by the previous page's markup. */
+const painted = new Map();
+
+function paint(root, html, key = state.tab) {
+  if (painted.get(key) === html && root.childElementCount) return false;
+  root.innerHTML = html;
+  painted.set(key, html);
+  return true;
+}
+
+/* Anything that edits the page outside `paint` has to say so, or the next
+   identical render will believe the DOM still matches the string it stored
+   and decline to put it back. */
+function repaintNext(key = state.tab) {
+  painted.delete(key);
+}
+
+async function render({ keepPlace = false } = {}) {
+  const ticket = ++renderTicket;
+  // Connections show on Settings and the game everywhere else, so this follows
+  // the tab rather than the data.
+  if (state.meta) sideFoot(state.meta);
+  const view = VIEWS[state.tab] || renderHome;
+  // Only Picks asks for the viewport's height; every other page is as tall as
+  // it needs to be. Cleared here so a class one view sets cannot outlive it.
+  $("#view").classList.remove("fit-screen");
+  // The hero reports which season and week are on screen, so it has to follow
+  // the selectors rather than only the last state load.
+  if (state.meta) renderHero(state.meta);
+  const place = keepPlace ? capturePlace() : null;
   try {
-    await view();
+    await view(renderTicket);
+    if (ticket !== renderTicket) return;
+    foldPanels($("#view"));
+    measureFit();
+    markScrollFades($("#view"));
+    restorePlace(place);
   } catch (err) {
+    if (ticket !== renderTicket) return;
     $("#view").innerHTML = `<div class="panel"><div class="empty">
       Could not load this view: ${esc(err.message)}</div></div>`;
+    // This wrote over the page without going through `paint`, so the string
+    // `paint` is holding for this tab no longer describes what is on screen.
+    // Left alone, the next render would compare the view's markup against
+    // that stale string, find them equal, decline to paint -- and the error
+    // would stay up for ever with the real page behind it.
+    repaintNext();
   }
+}
+
+/* Putting the reader back where they were, after a refresh they did not ask
+   for.
+
+   Every minute this app fetches, recomputes and rebuilds the whole view from
+   its innerHTML. That is a fine way to keep numbers current and a terrible
+   way to be read over: the survivor run scrolled back to week two under the
+   pointer, a half-read injury list jumped to the top, and whatever was
+   focused stopped being focused. A refresh you can feel is a refresh that
+   interrupts, and there is nothing on this page urgent enough to be worth
+   interrupting for.
+
+   So the automatic path records where everything was, lets the rebuild
+   happen, and puts it back in the same frame -- the browser paints once, at
+   the end, so none of it is visible. A refresh the reader asked for restores
+   nothing: pressing the button is a request for a fresh page, and landing
+   back at the top is the right answer to it.
+
+   Keyed by id where there is one and by position among the page's own scroll
+   boxes where there is not. Both are stable across a re-render of the same
+   view, and that is the only case this runs in -- a tab or week change is not
+   a refresh and does not keep its place. */
+function scrollBoxes() {
+  return $$("*", $("#view")).filter(
+    (el) => el.scrollHeight - el.clientHeight > 2);
+}
+
+function placeKey(el, index) {
+  return el.id ? `#${el.id}` : `${el.className || el.tagName}@${index}`;
+}
+
+function capturePlace() {
+  const boxes = {};
+  scrollBoxes().forEach((box, i) => {
+    if (box.scrollTop > 0) boxes[placeKey(box, i)] = box.scrollTop;
+  });
+  const active = document.activeElement;
+  return {
+    page: window.scrollY,
+    boxes,
+    // Only by id: an element matched by position could be a different control
+    // after a rebuild, and moving focus somewhere the reader did not put it is
+    // worse than dropping it.
+    focus: active && active.id && $("#view").contains(active) ? active.id : null,
+  };
+}
+
+function restorePlace(place) {
+  if (!place) return;
+  scrollBoxes().forEach((box, i) => {
+    const at = place.boxes[placeKey(box, i)];
+    if (at) box.scrollTop = at;
+  });
+  if (place.page) window.scrollTo(0, place.page);
+  if (place.focus) {
+    const el = document.getElementById(place.focus);
+    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+  }
+}
+
+/* Whether an automatic refresh should redraw at all.
+
+   Rebuilding the page under an open dialog or under someone typing is not
+   something restoring a scroll position can paper over: the dialog is built
+   from the row it was opened on, and a half-typed question in the assistant
+   box is not in any state the server knows about. The numbers wait a minute;
+   the reader does not have to. */
+function busyBeingRead() {
+  if ($$("dialog[open]").length) return true;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = active.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
+    || active.isContentEditable;
+}
+
+/* How much of the window the chrome above and below the view is using.
+
+   A page that must fit the screen has to know what is left of it, and that
+   used to be a constant: 162px, standing for the header plus the page's own
+   padding. The header changed height and the constant did not, so Picks
+   overflowed by exactly the difference and the page it was built to fit
+   scrolled again. Measuring it means the next header change costs nothing. */
+function measureFit() {
+  const view = $("#view");
+  if (!view) return;
+  const main = view.parentElement;
+  const below = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
+  const top = view.getBoundingClientRect().top + window.scrollY;
+  document.documentElement.style.setProperty(
+    "--fit-offset", `${Math.round(top + below)}px`);
+  /* And the header's own height, so the wordmark can be centred in the same
+     band as the rest of the top bar. Measured for the same reason the offset
+     above is: the header's height depends on its contents, and a constant
+     here would be wrong the next time any of them changed. */
+  const hero = $(".hero");
+  if (hero) {
+    document.documentElement.style.setProperty(
+      "--hero-h", `${Math.round(hero.getBoundingClientRect().height)}px`);
+  }
+}
+
+/* Every box on the page that fades its bottom edge while more is below.
+   Kept in one place because the rule is the same everywhere and the bug was
+   that it had been written three times as static CSS. */
+const FADE_BOXES = ".table-scroll.tall, .news-feed, .survivor-run .table-scroll";
+
+function markScrollFades(root = document) {
+  $$(FADE_BOXES, root).forEach((box) => {
+    const update = () => box.classList.toggle(
+      "scroll-fade", box.scrollHeight - box.clientHeight - box.scrollTop > 2);
+    if (!box.dataset.fadeWired) {
+      box.addEventListener("scroll", update, { passive: true });
+      box.dataset.fadeWired = "1";
+    }
+    update();
+  });
+}
+
+/* True when this render has been overtaken by a newer one.
+
+   Views call it after every await and before they touch the page. The ticket
+   check in `render` is not enough on its own: a view writes to #view itself,
+   partway through, long before it returns. */
+/* When the lines were last fetched, and what is left of the allowance. Its own
+   line because it is its own decision: the rest of the app refreshes on a
+   minute and this does not. */
+function paintOdds() {
+  const when = $("#odds-when");
+  if (!when) return;
+  const usage = state.oddsUsage || state.meta?.odds_usage;
+  const at = state.oddsAt
+    || (state.meta?.sources || []).find((s) => s.source === "odds")?.ts;
+  const parts = [];
+  if (at) parts.push(`lines ${ago(at)}`);
+  if (usage && usage.budget) {
+    parts.push(`${usage.remaining_budget ?? usage.budget - usage.used} left this month`);
+  }
+  when.textContent = parts.join(" · ") || "not fetched yet";
+}
+
+function stale(ticket) {
+  /* No ticket means nobody is racing this render, so let it paint. Twelve
+     handlers used to call their view directly -- the injury picker, every
+     assistant button, the picks controls -- and every one of them fetched,
+     came back holding `undefined`, compared it to the current ticket, decided
+     it had been overtaken and drew nothing. The page only changed when you
+     left the tab and came back, which is the bug that was reported. They all
+     go through render() now; this is so that the next one to forget degrades
+     into painting anyway rather than into doing nothing at all. */
+  return ticket !== undefined && ticket !== renderTicket;
 }
 
 async function loadState() {
   const meta = await api("/api/state");
   state.meta = meta;
+  // The live slate for the sidebar, kept up to date by the same poll that
+  // keeps everything else. Cheap: it is the local server, and it is the one
+  // request that has to happen whichever page is open.
+  api(`/api/games?week=${meta.week}&season=${meta.season}`)
+    .then((live) => { state.liveSlate = live.games || []; sideFoot(meta); })
+    .catch(() => {});
   if (state.season === null) state.season = meta.season;
   if (state.week === null) state.week = meta.week;
   state.weeks = meta.weeks && meta.weeks.length ? meta.weeks
@@ -642,67 +2699,267 @@ async function loadState() {
     sel.innerHTML = state.weeks.map((w) => `<option value="${w}">Week ${w}</option>`).join("");
   }
   sel.value = String(state.week);
-  $("#refreshed").textContent = `updated ${ago(meta.last_recompute)}`;
+
+  // Seasons the app has games for. A season it was never running for is simply
+  // absent until it is backfilled, so the list is what exists rather than a
+  // range of years that mostly lead to empty boards.
+  const seasons = meta.seasons && meta.seasons.length ? meta.seasons : [state.season];
+  const seasonSel = $("#season");
+  seasonSel.innerHTML = seasons
+    .slice().reverse()
+    .map((y) => `<option value="${y}">${y}</option>`).join("");
+  seasonSel.value = String(state.season);
+  $("#refreshed").textContent = `Updated ${ago(meta.last_recompute)}`;
+  // Which build is running, in the corner. It is the first thing worth knowing
+  // when something is reported broken and the first thing nobody can see.
+  const build = $("#build-line");
+  if (build) {
+    build.textContent = meta.build_label || "";
+    build.title = meta.build?.source === "release"
+      ? "The build you installed" : "Running from a source checkout";
+  }
+  paintOdds();
+  renderHero(meta);
 }
 
-function setTab(tab) {
+function setTab(tab, { fromHash = false } = {}) {
+  if (!VIEWS[tab]) tab = "home";
   state.tab = tab;
   $$(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
-  $("#week-wrap").classList.toggle("hidden", !["games", "picks"].includes(tab));
+  // The week selector is shown on every page. Hiding it made changing week a
+  // two-step move -- go to Home, change it, come back -- on the pages most
+  // likely to raise the question.
+  //
+  // The tab also lives in the address, which it did not before: reloading
+  // dropped you back on Home, and there was no way to reopen the app on the
+  // page you were last reading. It is what makes the page addressable at all.
+  if (!fromHash && location.hash.slice(1) !== tab) {
+    history.replaceState(null, "", `#${tab}`);
+  }
+  // Clear the old page immediately rather than leaving it up until the new
+  // one has fetched. A tab that responds at once and then fills in reads as
+  // fast; a tab that sits on the last page for two seconds reads as broken.
+  $("#view").innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
+  // Same reason as the error path above, and this one fires constantly: go to
+  // Teams, come back to Home, and Home's markup is byte-identical to the last
+  // time you were on it -- so without this the paint is skipped and "Loading…"
+  // is the page. Every tab you revisited would have been a dead end.
+  repaintNext(tab);
+  render();
+}
+
+function initRouting() {
+  addEventListener("hashchange", () => {
+    const tab = location.hash.slice(1);
+    if (tab && tab !== state.tab) setTab(tab, { fromHash: true });
+  });
+}
+
+/* Set the theme and remember it. Pulled out of the toggle's handler because
+   there are two ways to change it now -- the corner button and the Settings
+   page -- and both have to do exactly the same thing. */
+function setTheme(next) {
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("theedge-theme", next); } catch { /* not fatal */ }
   render();
 }
 
 function initTheme() {
-  const saved = localStorage.getItem("nflpicker-theme");
-  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  // Dark unless told otherwise. A stored choice still wins in both directions,
+  // so someone who picked light keeps light; only the unset case changes.
+  let saved = null;
+  try { saved = localStorage.getItem("theedge-theme") || localStorage.getItem("nflpicker-theme"); }
+  catch { /* private window, blocked storage */ }
+  document.documentElement.setAttribute("data-theme", saved || "dark");
   $("#theme").addEventListener("click", () => {
     const current = document.documentElement.getAttribute("data-theme");
     const isDark = current === "dark" ||
       (!current && matchMedia("(prefers-color-scheme: dark)").matches);
-    const next = isDark ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    localStorage.setItem("nflpicker-theme", next);
-    render();
+    setTheme(isDark ? "light" : "dark");
+  });
+}
+
+/* Full screen. The window has no browser chrome to hide, so this is the only
+   way to give the board the whole display -- which is what it is for.
+
+   Two routes, because the obvious one does not work in the packaged app.
+   `requestFullscreen()` asks the *host* to take the window full screen, and an
+   embedded webview has no standing to do that: WebView2 passes the request to
+   the application and pywebview does not implement it, so the promise rejected,
+   the catch below swallowed it, and the button did nothing. In the app the
+   window toggles itself through the bridge; in a browser tab the DOM API is
+   the one that works, so it stays as the fallback. */
+function initFullscreen() {
+  const button = $("#fullscreen");
+  if (!button) return;
+  let native = false;   // what the bridge last told us, when there is one
+  const bridge = () => window.pywebview?.api?.toggle_fullscreen;
+  const sync = () => button.classList.toggle(
+    "on", bridge() ? native : !!document.fullscreenElement);
+  button.addEventListener("click", async () => {
+    try {
+      const toggle = bridge();
+      if (toggle) {
+        // The DOM never reports fullscreen in this environment, so the bridge
+        // returns the new state rather than leaving it to be inferred.
+        native = await toggle();
+      } else if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch { /* refused by the platform; the button simply does nothing */ }
+    sync();
+  });
+  document.addEventListener("fullscreenchange", sync);
+  // F11 is what people already press, and a webview does not handle it itself.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "F11") { e.preventDefault(); button.click(); }
   });
 }
 
 async function main() {
   initTheme();
+  initFullscreen();
+  initRouting();
+  // Open on the page the address names, so a reload or a saved link lands
+  // where it says it will.
+  const initial = location.hash.slice(1);
+  if (initial && VIEWS[initial]) state.tab = initial;
   $$(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   $("#week").addEventListener("change", (e) => { state.week = Number(e.target.value); render(); });
+  $("#season").addEventListener("change", async (e) => {
+    state.season = Number(e.target.value);
+    // Week numbers are per season, and the one being viewed may not exist in
+    // the season being switched to, so the week list is reloaded rather than
+    // carried across.
+    const meta = await api(`/api/state?season=${state.season}`).catch(() => null);
+    if (meta && meta.weeks?.length) {
+      state.week = meta.weeks.includes(state.week) ? state.week : meta.weeks[0];
+    }
+    await render();
+  });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
 
-  $("#refresh").addEventListener("click", async (ev) => {
-    if (state.busy) return;
+  /* The general refresh lives on the Settings page now, so it is wired up
+     there on each render of that page rather than once at start-up -- the
+     button does not exist until Settings is open. Delegated from the document
+     so there is nothing to re-bind and nothing to leak. */
+  document.addEventListener("click", async (ev) => {
+    const refreshBtn = ev.target.closest("#refresh");
+    if (!refreshBtn || state.busy) return;
+    const out = $("#refresh-result");
     state.busy = true;
-    ev.target.disabled = true;
-    ev.target.textContent = "Refreshing…";
+    refreshBtn.disabled = true;
+    const label = refreshBtn.textContent;
+    refreshBtn.textContent = "Refreshing…";
     try {
-      await api("/api/refresh", { method: "POST" });
+      // full=1: the button means "do it now", not "do whatever is due". A
+      // stage inside its own polling interval is exactly the stage a person
+      // pressing refresh wants fetched again.
+      await api("/api/refresh?full=1", { method: "POST" });
       await loadState();
       await render();
+      const done = $("#refresh-result");
+      if (done) {
+        done.textContent = "Up to date.";
+        done.className = "pos";
+      }
     } catch (err) {
-      alert(`Refresh failed: ${err.message}`);
+      if (out) { out.textContent = `Refresh failed: ${err.message}`; out.className = "neg"; }
     } finally {
       state.busy = false;
-      ev.target.disabled = false;
-      ev.target.textContent = "Refresh now";
+      // render() has rebuilt the page, so this is a different button by now.
+      const live = $("#refresh");
+      if (live) { live.disabled = false; live.textContent = label; }
     }
   });
 
-  await loadState();
-  await render();
+  /* The lines, on their own button. Everything else in this app is free to
+     fetch; this one spends three requests of a monthly allowance every time,
+     so it is asked for rather than included. */
+  const oddsBtn = $("#refresh-odds");
+  oddsBtn?.addEventListener("click", async () => {
+    if (state.busy) return;
+    state.busy = true;
+    oddsBtn.disabled = true;
+    oddsBtn.classList.add("spinning");
+    try {
+      const out = await api("/api/refresh/odds", { method: "POST" });
+      state.oddsAt = Date.now();
+      if (out.usage) state.oddsUsage = out.usage;
+      await loadState();
+      await render();
+    } catch (err) {
+      alert(`Could not update the odds: ${err.message}`);
+    } finally {
+      state.busy = false;
+      oddsBtn.disabled = false;
+      oddsBtn.classList.remove("spinning");
+      paintOdds();
+    }
+  });
+  paintOdds();
 
-  // The server refreshes on its own schedule; poll so an open tab reflects it
-  // without the user reaching for reload.
+  /* The update banner: one line above the page when a newer build has been
+     published, with a "Later" that remembers which build it was about. */
+
+  // The clock is the one thing on the page that must not wait for a refresh --
+  // including the one in the logo, which is why it ticks whether or not there
+  // is any state to render around it.
+  // A narrower window rewraps rows, which changes whether a box still has
+  // anything below the fold.
+  addEventListener("resize", () => markScrollFades(), { passive: true });
+
+  setBrandClock(new Date());
+  setInterval(() => {
+    setBrandClock(new Date());
+    if (state.meta) {
+      renderHero(state.meta);
+      // The sidebar counts down to kickoff, so it has to be redrawn on the
+      // minute rather than only when something is fetched.
+      sideFoot(state.meta);
+    }
+  }, 30000);
+
+  await ensureLicensed();
+  await loadState();
+  setTab(state.tab, { fromHash: true });
+  checkForUpdate();
+  // Every few hours for a window left open all week; the server caches it.
+  setInterval(() => { checkForUpdate(); paintLicense(); }, 3 * 3600 * 1000);
+
+  /* Everything that is due, once a minute.
+     This is a real fetch rather than a poll for someone else's work: the
+     scheduler is off by default, so if this tab does not ask, nothing does.
+     It can run this often precisely because the metered feed is not in it --
+     scores, the schedule and the news are free, and a minute is about how long
+     a score is worth being wrong for.
+
+     Due, not everything. It used to send full=1, which is the flag that means
+     "run every stage regardless of its own interval" -- and that is the whole
+     reason a refresh was something you noticed. Once a minute the app was
+     rebuilding the model's predictions and replaying the season twenty
+     thousand times, which takes the better part of half a minute; the page
+     then redrew off the back of it. A scoreboard that changes every few
+     seconds and a season simulation that changes when a game ends were being
+     fetched on the same clock, at the speed of the faster one.
+
+     Each stage already carries an interval saying how often it is worth
+     redoing. Left to them, the minute tick costs a scoreboard request and
+     nothing else on most minutes. full=1 belongs to the button, which is the
+     one place someone has actually asked for all of it. */
   setInterval(async () => {
-    if (state.busy || document.hidden) return;
+    if (state.busy || document.hidden || busyBeingRead()) return;
     const before = state.meta?.last_recompute;
     try {
+      await api("/api/refresh", { method: "POST" });
       await loadState();
-      if (state.meta?.last_recompute !== before) await render();
+      // keepPlace: this refresh is the app's idea, not the reader's, so it
+      // has no business moving anything they were looking at.
+      if (state.meta?.last_recompute !== before) await render({ keepPlace: true });
     } catch { /* transient: the next tick retries */ }
-  }, 30000);
+  }, 60000);
 }
 
 main();

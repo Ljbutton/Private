@@ -28,6 +28,8 @@ class OddsApiSource:
         self.api_key = (api_key if api_key is not None else cfg.odds_api_key).strip()
         self.books = [b.lower() for b in cfg.odds_books]
         self.budget = cfg.odds_monthly_budget
+        self.weekly_budget = cfg.odds_weekly_budget
+        self.daily_budget = cfg.odds_daily_budget
         self.http = client or HttpClient(cache_ttl=0.0)
         self.remaining: int | None = None
 
@@ -36,9 +38,36 @@ class OddsApiSource:
         return bool(self.api_key)
 
     # ------------------------------------------------------------- budgeting
+    #
+    # Three windows, all enforced, because they answer different questions.
+    #
+    # The month is the bill: spend it and the account is done until it resets.
+    # The day and the week are burst ceilings -- they exist so a bug, a retry
+    # loop or a stuck scheduler cannot spend a month's credits in an afternoon,
+    # which is exactly the failure the month-only guard could not see coming.
+    #
+    # The daily ceiling is deliberately well above the sustainable rate. At 480
+    # a month the even pace is about 16 credits a day; a cap of 50 lets a busy
+    # Sunday poll harder than a quiet Tuesday without ever letting a runaway
+    # loop off the leash. The month still governs the total -- if the daily cap
+    # were the binding constraint, 50 a day would be 1,500 a month.
     @staticmethod
     def _period() -> str:
         return now().strftime("%Y-%m")
+
+    @staticmethod
+    def _day() -> str:
+        return now().strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _week() -> str:
+        year, week, _ = now().isocalendar()
+        return f"{year}-W{week:02d}"
+
+    def _spent(self, key: str, bucket: str) -> int:
+        from .. import db
+
+        return int((db.get_meta(key, {}) or {}).get(bucket, 0))
 
     def usage(self) -> dict:
         from .. import db
@@ -46,7 +75,17 @@ class OddsApiSource:
         counters = db.get_meta("odds_api_usage", {}) or {}
         period = self._period()
         used = int(counters.get(period, 0))
+        day_used = self._spent("odds_api_usage_daily", self._day())
+        week_used = self._spent("odds_api_usage_weekly", self._week())
         return {
+            "day": self._day(),
+            "day_used": day_used,
+            "day_budget": self.daily_budget,
+            "day_remaining": max(0, self.daily_budget - day_used),
+            "week": self._week(),
+            "week_used": week_used,
+            "week_budget": self.weekly_budget,
+            "week_remaining": max(0, self.weekly_budget - week_used),
             "period": period,
             "used": used,
             "budget": self.budget,
@@ -54,29 +93,72 @@ class OddsApiSource:
             "provider_remaining": self.remaining,
         }
 
-    def _record_call(self) -> None:
+    @staticmethod
+    def _cost_of(response: Any, params: dict[str, Any]) -> int:
+        """How many credits that request actually spent.
+
+        The Odds API bills one credit per market *per region*, not one per
+        HTTP request. Counting requests made the budget guard undercount by
+        exactly the number of markets -- three, here -- so a 500-request
+        budget was spent after 167 polls while the app still believed it had
+        two thirds left.
+
+        `x-requests-last` is the provider's own figure for the call that just
+        happened, so it is preferred; the multiplication is the fallback.
+        """
+        header = getattr(response, "headers", {}) or {}
+        reported = header.get("x-requests-last")
+        if reported is not None:
+            try:
+                return max(1, int(float(reported)))
+            except (TypeError, ValueError):
+                pass
+        markets = len([m for m in str(params.get("markets", "")).split(",") if m])
+        regions = len([r for r in str(params.get("regions", "")).split(",") if r])
+        return max(1, markets * regions)
+
+    def _record_call(self, cost: int = 1) -> None:
         from .. import db
 
-        counters = db.get_meta("odds_api_usage", {}) or {}
-        period = self._period()
-        counters[period] = int(counters.get(period, 0)) + 1
-        # Keep only the last few months so meta does not grow forever.
-        for key in sorted(counters)[:-6]:
-            counters.pop(key, None)
-        db.set_meta("odds_api_usage", counters)
+        cost = max(1, int(cost))
+        for key, bucket, keep in (
+            ("odds_api_usage", self._period(), 6),
+            ("odds_api_usage_weekly", self._week(), 10),
+            ("odds_api_usage_daily", self._day(), 21),
+        ):
+            counters = db.get_meta(key, {}) or {}
+            counters[bucket] = int(counters.get(bucket, 0)) + cost
+            # Keep a short history so meta cannot grow forever.
+            for stale in sorted(counters)[:-keep]:
+                counters.pop(stale, None)
+            db.set_meta(key, counters)
 
     def budget_available(self) -> bool:
-        return self.usage()["remaining_budget"] > 0
+        return self.budget_block() is None
+
+    def budget_block(self) -> str | None:
+        """Which window is spent, if any. None means the call may proceed."""
+        u = self.usage()
+        if u["day_remaining"] <= 0:
+            return (f"the daily Odds API cap of {self.daily_budget} credits is spent "
+                    f"({u['day_used']} used today); it resets at midnight")
+        if u["week_remaining"] <= 0:
+            return (f"the weekly Odds API cap of {self.weekly_budget} credits is spent "
+                    f"({u['week_used']} used this week)")
+        if u["remaining_budget"] <= 0:
+            return (f"the monthly Odds API budget of {self.budget} credits is spent "
+                    f"({u['used']} used in {u['period']})")
+        return None
 
     # ---------------------------------------------------------------- fetch
     def fetch_odds(self, *, force: bool = False) -> list[dict]:
         """Current lines for every upcoming NFL game, one row per book/market."""
         if not self.enabled:
             raise SourceError("no ODDS_API_KEY configured")
-        if not force and not self.budget_available():
+        blocked = None if force else self.budget_block()
+        if blocked:
             raise SourceError(
-                f"monthly Odds API budget of {self.budget} requests is spent; "
-                "raise ODDS_MONTHLY_BUDGET or wait for the next period"
+                f"{blocked}. Raise the limit on the Settings page, or wait."
             )
 
         params: dict[str, Any] = {
@@ -93,7 +175,7 @@ class OddsApiSource:
         try:
             with httpx.Client(timeout=cfg.http_timeout, headers={"User-Agent": cfg.user_agent}) as c:
                 resp = c.get(f"{BASE}/sports/{SPORT}/odds", params=params)
-            self._record_call()
+            self._record_call(self._cost_of(resp, params))
             remaining = resp.headers.get("x-requests-remaining")
             if remaining is not None:
                 try:

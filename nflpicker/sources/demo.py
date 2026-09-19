@@ -226,9 +226,16 @@ def _generate_quotes(games: list[dict], rng: random.Random, through_week: int) -
         market_bias = rng.gauss(0.0, 2.1)
         total_bias = rng.gauss(0.0, 2.4)
         kickoff = dt.datetime.fromisoformat(game["kickoff"])
+        # History ends at kickoff or now, whichever comes first, and runs
+        # backwards from there. Anchoring purely on kickoff would date an
+        # upcoming game's "history" in the future, where it sorts after the
+        # live poll and makes the opening line look identical to the close.
+        from ..util import now as _now
+
+        latest = min(kickoff, _now())
         for step in range(snapshots):
             ago = dt.timedelta(hours=(snapshots - step) * 18)
-            captured = (kickoff - ago).replace(microsecond=0)
+            captured = (latest - ago).replace(microsecond=0)
             decay = (step + 1) / snapshots
             margin = game["_true_margin"] + market_bias * (1 - 0.6 * decay)
             total = game["_true_total"] + total_bias * (1 - 0.6 * decay)
@@ -295,3 +302,161 @@ def generate_news(season: int, count: int = 24) -> list[dict]:
             }
         )
     return sorted(items, key=lambda x: x["published_at"], reverse=True)
+
+
+DEMO_POSITIONS = ["QB", "RB", "WR", "TE", "LT", "EDGE", "CB", "S", "LB"]
+DEMO_STATUSES = ["Out", "Doubtful", "Questionable", "Injured Reserve"]
+# What the report says is wrong, so the demo exercises the same columns the
+# live feed fills rather than leaving them dashed and looking broken.
+DEMO_INJURIES = ["Hamstring Strain", "Right Knee Sprain", "Ankle", "Concussion",
+                 "Left Shoulder", "Groin", "Foot", "Ribs", "Illness"]
+
+
+def generate_injuries(season: int, per_team: int = 3) -> list[dict]:
+    """A plausible league-wide injury report for demo mode."""
+    from ..util import now
+
+    rng = random.Random(season * 811)
+    rows: list[dict] = []
+    today = now().replace(microsecond=0)
+    stamp = today.isoformat()
+    initials = "ABCDEFGHJKLMPRSTW"
+    for team in ABBRS:
+        # Distinct initials per team so two entries never collide on name.
+        chosen = rng.sample(initials, per_team)
+        for i in range(rng.randint(0, per_team)):
+            from datetime import timedelta
+
+            position = rng.choice(DEMO_POSITIONS)
+            status = rng.choice(DEMO_STATUSES)
+            # Spread the spells out so the "how long" column has a range to
+            # show rather than every row reading "this week".
+            began = today - timedelta(days=rng.choice([1, 3, 9, 16, 30]))
+            back = (today + timedelta(days=rng.choice([6, 13, 27]))
+                    if status == "Injured Reserve" else None)
+            rows.append({
+                "team": team,
+                "player": f"{chosen[i]}.{TEAMS[team].name[:-1]}son",
+                "position": position,
+                "status": status,
+                "injury": rng.choice(DEMO_INJURIES),
+                "return_date": back.isoformat() if back else None,
+                "first_seen": began.isoformat(),
+                "detail": "Synthetic demo entry — enable live sources for the real report.",
+                "updated_at": stamp,
+            })
+    return rows
+
+
+def generate_team_efficiency(season: int) -> list[dict]:
+    """Synthetic EPA per team, consistent with the season's hidden truth.
+
+    Without this the demo has no efficiency data at all, so every team's
+    offensive and defensive ratings sit at the league average and every game's
+    projected total comes out identical — which reads as a broken column rather
+    than as missing data.
+
+    Strength drives margin and pace drives scoring, so they are split back out
+    the same way the season was generated: offence gets half of each, defence
+    gets pace minus strength.
+    """
+    from ..ratings.efficiency import PLAYS_PER_GAME
+
+    strengths = _true_strengths(season)
+    paces = _pace(season)
+    rows = []
+    for team in ABBRS:
+        strength, pace = strengths[team], paces[team]
+        off_points = (pace + strength) / 2.0
+        def_points = (pace - strength) / 2.0
+        rows.append({
+            "team": team,
+            "off_epa": round(off_points / PLAYS_PER_GAME, 5),
+            "def_epa": round(def_points / PLAYS_PER_GAME, 5),
+            "off_pass_epa": round((off_points * 1.3) / PLAYS_PER_GAME, 5),
+            "off_rush_epa": round((off_points * 0.6) / PLAYS_PER_GAME, 5),
+            "def_pass_epa": round((def_points * 1.3) / PLAYS_PER_GAME, 5),
+            "def_rush_epa": round((def_points * 0.6) / PLAYS_PER_GAME, 5),
+            "off_success": round(0.45 + off_points / 100.0, 4),
+            "def_success": round(0.45 + def_points / 100.0, 4),
+            "plays": 1000,
+        })
+    return rows
+
+
+def generate_weather(games: list[dict]) -> dict[str, dict]:
+    """Plausible kickoff forecasts for demo mode, including a few windy ones."""
+    rng = random.Random(len(games) * 31 + 7)
+    out: dict[str, dict] = {}
+    for game in games:
+        team = TEAMS.get(game["home"])
+        if team is None:
+            continue
+        if team.roof in {"dome", "retractable"}:
+            out[game["game_id"]] = {"roof": team.roof, "indoor": True,
+                                    "temp_f": 70.0, "wind_mph": 0.0, "precip_pct": 0.0}
+            continue
+        out[game["game_id"]] = {
+            "roof": "outdoor", "indoor": False,
+            "temp_f": round(rng.uniform(28, 82), 1),
+            # A long tail, so the 15mph threshold that matters is exercised.
+            "wind_mph": round(max(0.0, rng.gauss(8, 6)), 1),
+            "precip_pct": round(rng.uniform(0, 70), 1),
+        }
+    return out
+
+
+def generate_game_team_stats(games: list[dict], season: int) -> list[dict]:
+    """Per-game, per-team detail for completed demo games.
+
+    Without this the demo exercises none of the market-blind feature path —
+    quarterback value, opponent-adjusted efficiency, special teams, turnover
+    luck and the situational rates are all empty — so a whole half of the model
+    goes untested by the demo and unseen in the interface.
+
+    Values are generated from the same hidden strengths the season was built
+    from, so a good team really does convert more third downs.
+    """
+    strengths = _true_strengths(season)
+    paces = _pace(season)
+    rng = random.Random(season * 1223)
+    rows: list[dict] = []
+
+    for game in games:
+        if game.get("status") != "final":
+            continue
+        for team, opponent, is_home in (
+            (game["home"], game["away"], 1),
+            (game["away"], game["home"], 0),
+        ):
+            edge = strengths[team] - strengths[opponent]
+            off = (paces[team] + strengths[team]) / 2.0
+            deff = (paces[team] - strengths[team]) / 2.0
+            rows.append({
+                "game_id": game["game_id"], "team": team, "opponent": opponent,
+                "season": season, "week": game["week"], "is_home": is_home,
+                "off_epa": round(off / 63.0 + rng.gauss(0, 0.05), 5),
+                "def_epa": round(deff / 63.0 + rng.gauss(0, 0.05), 5),
+                "off_pass_epa": round(off / 55.0 + rng.gauss(0, 0.07), 5),
+                "off_rush_epa": round(off / 90.0 + rng.gauss(0, 0.06), 5),
+                "st_epa": round(rng.gauss(0, 0.25), 5),
+                "qb_id": f"{team}-QB1",
+                "qb_name": f"{team[0]}.{TEAMS[team].name[:-1]}",
+                "qb_epa": round(strengths[team] / 30.0 + rng.gauss(0, 0.08), 5),
+                "qb_dropbacks": rng.randint(26, 44),
+                "turnover_margin": float(rng.randint(-3, 3)),
+                "turnover_luck": round(rng.gauss(0, 0.9), 3),
+                "third_down_rate": round(_clip(0.39 + edge / 60.0 + rng.gauss(0, 0.07)), 4),
+                "def_third_down_rate": round(_clip(0.39 - edge / 60.0 + rng.gauss(0, 0.07)), 4),
+                "red_zone_td_rate": round(_clip(0.22 + edge / 90.0 + rng.gauss(0, 0.05)), 4),
+                "explosive_rate": round(_clip(0.06 + edge / 300.0 + rng.gauss(0, 0.015)), 4),
+                "def_explosive_rate": round(_clip(0.06 - edge / 300.0 + rng.gauss(0, 0.015)), 4),
+                "sack_rate": round(_clip(0.065 - edge / 400.0 + rng.gauss(0, 0.02)), 4),
+                "sack_rate_forced": round(_clip(0.065 + edge / 400.0 + rng.gauss(0, 0.02)), 4),
+                "penalty_yards": float(max(0, round(rng.gauss(50, 18)))),
+            })
+    return rows
+
+
+def _clip(value: float, low: float = 0.005, high: float = 0.95) -> float:
+    return max(low, min(high, value))

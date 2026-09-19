@@ -33,13 +33,32 @@ from .features import MARKET_FEATURES, NUMERIC_FEATURES
 MODEL_VERSION = "1.0"
 MIN_TRAIN_GAMES = 400
 
+# Tuned by walk-forward over 2002-2026, five seeds each, against the params
+# this shipped with (depth 5, leaves of 40, l2 1.0):
+#
+#     variant                MAE      sd     ATS
+#     shipped            10.5398  0.0084  50.54%
+#     depth 3            10.5164  0.0159  50.48%
+#     patient + slow     10.5124  0.0161  50.47%
+#     this one           10.5103  0.0173  50.37%
+#     squared loss       10.5796  0.0364  50.28%
+#
+# Read that honestly: the gain is 0.03 points of MAE, which is under two
+# standard deviations of the seed noise, and ATS does not move at all. Every
+# variant that helped did so by *reducing* capacity, which is consistent
+# enough across three independent configurations to believe the direction --
+# depth 5 was mildly overfitting -- without believing the magnitude matters.
+#
+# The useful conclusion is the one that cost a day to establish: this model is
+# at the ceiling of what these features and this algorithm give. Hyperparameters
+# are not where the remaining accuracy is.
 REGRESSOR_PARAMS = dict(
     loss="absolute_error",      # margins are heavy-tailed; MAE resists blowouts
     max_iter=400,
     learning_rate=0.05,
-    max_depth=5,
-    min_samples_leaf=40,
-    l2_regularization=1.0,
+    max_depth=3,
+    min_samples_leaf=80,
+    l2_regularization=3.0,
     early_stopping=True,
     validation_fraction=0.15,
     random_state=7,
@@ -88,10 +107,15 @@ class TrainingReport:
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        import sklearn
+
         return {
             **asdict(self),
             "blind": asdict(self.blind),
             "aware": asdict(self.aware),
+            # The environment that produced the pickle, so a bundle that will
+            # not load back is diagnosable from the report beside it.
+            "sklearn_version": sklearn.__version__,
         }
 
 
@@ -286,9 +310,15 @@ def train(
 
     blind_features = NUMERIC_FEATURES
     aware_features = NUMERIC_FEATURES + MARKET_FEATURES
+    import sklearn
+
     bundle = {
         "model_version": MODEL_VERSION,
         "trained_at": report.trained_at,
+        # A bundle is a pickle of fitted scikit-learn estimators, so it is only
+        # guaranteed to load back under the version that wrote it. Recording
+        # that here turns "the sidebar says power-only" into a diagnosable fact.
+        "sklearn_version": sklearn.__version__,
         "blind_features": blind_features,
         "aware_features": aware_features,
         "residual_sd": report.residual_sd,
@@ -302,8 +332,23 @@ def train(
         "total_aware": _fit_regressor(completed, aware_features, "total_points"),
         "calibrator": calibrator,
     }
-    joblib.dump(bundle, model_dir / "models.joblib")
-    (model_dir / "training_report.json").write_text(json.dumps(report.to_dict(), indent=2))
+    # Write beside the target and rename into place. A half-written pickle is
+    # indistinguishable from a corrupt one at load time, and the app's response
+    # to a corrupt bundle is to fall back to power ratings -- so an interrupted
+    # save would quietly cost the model until somebody noticed. os.replace is
+    # atomic within a filesystem, so a reader sees the old bundle or the new
+    # one and never a partial file.
+    import os
+
+    target = model_dir / "models.joblib"
+    staged = model_dir / "models.joblib.partial"
+    joblib.dump(bundle, staged)
+    os.replace(staged, target)
+
+    report_target = model_dir / "training_report.json"
+    report_staged = model_dir / "training_report.json.partial"
+    report_staged.write_text(json.dumps(report.to_dict(), indent=2))
+    os.replace(report_staged, report_target)
     return report
 
 
@@ -385,8 +430,12 @@ def _fit_calibrator(preds: pd.DataFrame):
 
 
 def load_report(model_dir: Path | None = None) -> dict | None:
-    path = (Path(model_dir) if model_dir else get_config().model_dir) / "training_report.json"
-    if not path.exists():
+    # Same search order as load_bundle, or the app would describe one model
+    # while predicting with another.
+    candidates = ([Path(model_dir)] if model_dir else get_config().model_dirs)
+    path = next((d / "training_report.json" for d in candidates
+                 if (d / "training_report.json").exists()), None)
+    if path is None:
         return None
     try:
         return json.loads(path.read_text())

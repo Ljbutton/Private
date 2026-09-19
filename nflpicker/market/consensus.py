@@ -15,6 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from ..util import american_to_prob, devig, mean, median, prob_to_american
+from ..venues import is_sportsbook
 
 
 @dataclass
@@ -71,6 +72,17 @@ class Consensus:
         }
 
 
+def sportsbook_quotes(quotes: list[dict]) -> list[dict]:
+    """Drop prediction-market venues from a set of quotes.
+
+    The consensus is only useful because it averages deep, efficient
+    sportsbooks. Mixing a thinner prediction market into it would move the
+    benchmark toward the very price we want to measure against, and the
+    cross-market comparison would partly be comparing that price to itself.
+    """
+    return [q for q in quotes if is_sportsbook(q.get("book"))]
+
+
 def latest_per_book(quotes: list[dict]) -> dict[tuple[str, str], dict]:
     """Keep only each book's most recent quote for each market."""
     newest: dict[tuple[str, str], dict] = {}
@@ -84,6 +96,14 @@ def latest_per_book(quotes: list[dict]) -> dict[tuple[str, str], dict]:
 
 def build_consensus(game_id: str, quotes: list[dict], captured_at: str) -> Consensus | None:
     """Average the latest quote from every book into a single market view."""
+    quotes = sportsbook_quotes(quotes)
+    # A snapshot describes the market as of `captured_at`, so a quote stamped
+    # later than that cannot be part of it. Without this, replaying history
+    # would quietly fold the closing line into the opening one.
+    quotes = [
+        q for q in quotes
+        if not q.get("captured_at") or str(q["captured_at"]) <= str(captured_at)
+    ]
     if not quotes:
         return None
     newest = latest_per_book(quotes)
