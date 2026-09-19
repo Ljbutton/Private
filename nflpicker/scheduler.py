@@ -156,50 +156,8 @@ class Scheduler:
                 job.last_detail = str(exc)
             await asyncio.sleep(max(30.0, self.interval_for(job)))
 
-    def inputs_fingerprint(self) -> tuple:
-        """Everything a recompute would read, as one comparable value.
-
-        Cheap: four aggregates over indexed columns, against a recompute that
-        replays twenty thousand seasons.
-        """
-        games = db.query_one(
-            "SELECT COUNT(*) n, MAX(updated_at) u, "
-            " SUM(COALESCE(home_score, 0) + COALESCE(away_score, 0)) pts, "
-            " SUM(status = 'final') fin FROM games") or {}
-        odds = db.query_one(
-            "SELECT COUNT(*) n, MAX(captured_at) c FROM odds_snapshots") or {}
-        stats = db.query_one(
-            "SELECT COUNT(*) n, MAX(updated_at) u FROM team_game_stats") or {}
-        injuries = db.query_one("SELECT COUNT(*) n FROM injuries") or {}
-        return (
-            games.get("n"), games.get("u"), games.get("pts"), games.get("fin"),
-            odds.get("n"), odds.get("c"),
-            stats.get("n"), stats.get("u"), injuries.get("n"),
-        )
-
-    # A ceiling on how long derived state may go untouched even when nothing
-    # upstream has moved. Not a poll: on a quiet Tuesday the inputs do not
-    # change for hours and this is the only thing that runs.
-    RECOMPUTE_CEILING_SECONDS = 6 * 3600
-
-    def recompute_overdue(self) -> bool:
-        """Whether a recompute is due on time rather than on new data.
-
-        The fingerprint below is the right test for "would this produce a
-        different answer", with one exception it cannot see: some of what a
-        recompute does is keyed to the calendar rather than to the inputs --
-        the weekly ranking cut most of all, which falls due on a Wednesday
-        morning when nothing has arrived since Monday night. Without a ceiling
-        the cut would wait for the next score to land.
-        """
-        last = db.get_meta("last_recompute") or ""
-        stamp = to_utc(last) if last else None
-        if stamp is None:
-            return True
-        return (now() - stamp).total_seconds() >= self.RECOMPUTE_CEILING_SECONDS
-
     async def run_once(self, job: Job) -> None:
-        """Run a job's stages, then recompute only if they brought anything.
+        """Run a job's stages, then let the recompute decide for itself.
 
         The recompute is the expensive half of a refresh -- it retrains
         nothing, but it does replay twenty thousand seasons and rewrite every
@@ -209,19 +167,18 @@ class Scheduler:
         often than it should" looked like from outside: fans, a busy status
         line, and numbers that never actually changed.
 
-        A stage that fetched nothing new cannot change the output of a
-        deterministic pass over the same inputs, so the inputs are fingerprinted
-        instead. Scores, schedule, lines, team stats and injuries are what a
-        recompute reads; if none of them moved, the answer it would produce is
-        the one already on screen.
+        The test for that lived here, and here was the wrong place. This loop
+        is off by default; the browser drives refreshes itself through
+        /api/refresh, which never reaches this function -- so the guard
+        protected a path almost nobody was on while the path everybody was on
+        recomputed every single minute. It has moved into `recompute` itself,
+        which every caller goes through, and this now just asks for the stage
+        and lets it make its own decision.
         """
         assert self._lock is not None
         async with self._lock:
-            before = await asyncio.to_thread(self.inputs_fingerprint)
             result = await asyncio.to_thread(self.pipeline.refresh, list(job.stages))
-            after = await asyncio.to_thread(self.inputs_fingerprint)
-            if after != before or await asyncio.to_thread(self.recompute_overdue):
-                await asyncio.to_thread(self.pipeline.refresh, ["recompute"])
+            await asyncio.to_thread(self.pipeline.recompute)
         stage = result.stages.get(job.stages[0], {})
         job.last_run = now_iso()
         job.last_ok = bool(stage.get("ok"))

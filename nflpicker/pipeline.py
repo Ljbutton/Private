@@ -35,6 +35,7 @@ from .sources.base import SourceError
 from .util import (
     current_season,
     estimate_week,
+    now,
     now_iso,
     seconds_since,
     to_utc,
@@ -139,6 +140,11 @@ class Pipeline:
         return int(row["w"]) if row and row["w"] else estimate_week()
 
     # ------------------------------------------------------------- storage
+    # The fields a refetch can legitimately change. `updated_at` moves when one
+    # of these does and not otherwise -- see the upsert below.
+    GAME_VOLATILE = ("season", "week", "season_type", "kickoff", "home_score",
+                     "away_score", "status", "neutral_site", "roof", "venue")
+
     def upsert_games(self, games: list[dict]) -> int:
         rows = []
         stamp = now_iso()
@@ -160,7 +166,27 @@ class Pipeline:
                 "kickoff=excluded.kickoff, home_score=excluded.home_score, "
                 "away_score=excluded.away_score, status=excluded.status, "
                 "neutral_site=excluded.neutral_site, roof=excluded.roof, "
-                "venue=excluded.venue, updated_at=excluded.updated_at",
+                "venue=excluded.venue, "
+                # Only when the row is actually different.
+                #
+                # This used to be an unconditional `updated_at=excluded.updated_at`,
+                # so every scoreboard fetch stamped all two hundred and seventy-two
+                # games with "now" whether or not a single point had been scored.
+                # The column therefore meant "when we last asked", which is a fact
+                # about our polling and about nothing else -- and everything
+                # downstream that reads it as "when this game last changed" was
+                # wrong in the same way. The recompute's fingerprint is keyed off
+                # MAX(updated_at), so it moved every five minutes on a quiet
+                # Tuesday and the whole model was rebuilt to produce the numbers
+                # already on screen.
+                #
+                # `IS NOT` rather than `<>` because a score going from NULL to 0,
+                # or a venue being dropped, is a change, and `<>` is NULL when
+                # either side is -- which is falsey, so those would have been the
+                # changes it missed.
+                "updated_at = CASE WHEN "
+                + " OR ".join(f"games.{c} IS NOT excluded.{c}" for c in self.GAME_VOLATILE)
+                + " THEN excluded.updated_at ELSE games.updated_at END",
                 rows,
             )
         return len(rows)
@@ -1327,8 +1353,9 @@ class Pipeline:
             return {}
 
         # Nothing new to think about. See recompute_fingerprint.
-        mark = self.recompute_fingerprint(season)
-        if not force and mark == db.get_meta("recompute_mark", None):
+        mark = list(self.recompute_fingerprint())
+        if (not force and mark == db.get_meta("recompute_mark", None)
+                and not self.recompute_overdue()):
             if result:
                 result.record("recompute", True,
                               "nothing has changed since the last pass",
@@ -2185,8 +2212,13 @@ class Pipeline:
         """Registry-facing name for the analytical pass."""
         self.recompute(result, force=force)
 
-    def recompute_fingerprint(self, season: int) -> str:
-        """Everything the analytical pass reads, reduced to one string.
+    # How long derived state may go untouched even when nothing upstream has
+    # moved. Not a poll: on a quiet Tuesday the inputs do not change for hours
+    # and this is the only thing that brings the pass round.
+    RECOMPUTE_CEILING_SECONDS = 6 * 3600
+
+    def recompute_fingerprint(self) -> tuple:
+        """Everything the analytical pass reads, as one comparable value.
 
         The recompute is the expensive half of a refresh by a wide margin --
         the model over every game in the database, then the season replayed
@@ -2198,26 +2230,60 @@ class Pipeline:
 
         That was most of what "you can tell when it refreshes" was made of.
 
-        So: a cheap summary of every table it reads. When it has not moved,
-        neither has anything the pass would produce, and the pass is skipped.
-        `last_recompute` then does not move either -- which is what the page
-        watches to decide whether to redraw, so a quiet minute costs one
-        scoreboard request and no repaint at all.
+        Cheap: a handful of aggregates over indexed columns, against a pass
+        that replays twenty thousand seasons. And blunt on purpose -- it errs
+        towards recomputing, because a spurious pass costs time while a missed
+        one costs correctness.
 
-        Deliberately blunt. Each term is a max or a count, so it is one index
-        lookup rather than a scan, and it errs towards recomputing: a
-        timestamp that moves without the data changing wastes a pass, while
-        anything that changes the data moves a timestamp.
+        This lived in the scheduler, and that was the whole of why it never
+        helped: the scheduler is off by default, so the path it guarded was
+        not the path the app uses. The browser polls /api/refresh, which goes
+        straight to `refresh` and never through the scheduler's loop. Moved
+        here, into the one function every caller goes through, so the gate
+        applies to the scheduler, the browser, the CLI and the button alike.
         """
-        row = db.query_one(
-            "SELECT (SELECT MAX(updated_at) FROM games WHERE season = ?) AS games,"
-            "       (SELECT COUNT(*) FROM games WHERE season = ? AND status = 'final') AS final,"
-            "       (SELECT MAX(captured_at) FROM consensus) AS lines,"
-            "       (SELECT MAX(updated_at) FROM injuries) AS injuries",
-            (season, season),
-        ) or {}
-        return "|".join(str(row.get(k)) for k in ("games", "final", "lines", "injuries")) \
-            + f"|{getattr(self.predictor, 'version', '?')}"
+        # `live` as well as `fin`, and both as well as the timestamp, because
+        # the timestamp alone is not enough to lean on. `now_iso` has
+        # second resolution, so a change landing in the same second as the
+        # write before it produces an identical stamp -- and a game going from
+        # scheduled to in_progress moves no other term here: the scores are
+        # still nil and the count of finals has not changed. Counting the
+        # in-progress games closes that, and means the fingerprint is
+        # content-derived rather than clock-derived.
+        games = db.query_one(
+            "SELECT COUNT(*) n, MAX(updated_at) u, "
+            " SUM(COALESCE(home_score, 0) + COALESCE(away_score, 0)) pts, "
+            " SUM(status = 'final') fin, SUM(status = 'in_progress') live "
+            "FROM games") or {}
+        odds = db.query_one(
+            "SELECT COUNT(*) n, MAX(captured_at) c FROM odds_snapshots") or {}
+        stats = db.query_one(
+            "SELECT COUNT(*) n, MAX(updated_at) u FROM team_game_stats") or {}
+        injuries = db.query_one("SELECT COUNT(*) n FROM injuries") or {}
+        return (
+            games.get("n"), games.get("u"), games.get("pts"), games.get("fin"),
+            games.get("live"),
+            odds.get("n"), odds.get("c"),
+            stats.get("n"), stats.get("u"), injuries.get("n"),
+            getattr(self.predictor, "version", "?"),
+        )
+
+    def recompute_overdue(self) -> bool:
+        """Whether the pass is due on the calendar rather than on new data.
+
+        The fingerprint is the right test for "would this produce a different
+        answer", with one exception it cannot see: some of what a recompute
+        does is keyed to the calendar rather than to its inputs -- the weekly
+        ranking cut most of all, which falls due when the previous week's last
+        game goes final and would otherwise sit waiting for a score that has
+        already been counted. Without a ceiling a quiet stretch could hold it
+        off indefinitely.
+        """
+        last = db.get_meta("last_recompute") or ""
+        stamp = to_utc(last) if last else None
+        if stamp is None:
+            return True
+        return (now() - stamp).total_seconds() >= self.RECOMPUTE_CEILING_SECONDS
 
     def purge_demo_data(self) -> int:
         """Remove synthetic games left behind by a previous demo run.

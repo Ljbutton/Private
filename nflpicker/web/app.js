@@ -491,9 +491,9 @@ async function renderPerformance(ticket) {
   if (stale(ticket)) return;
   const pickers = d.pickers || [];
   if (!d.weeks.length) {
-    root.innerHTML = `<div class="panel"><div class="empty">
+    paint(root, `<div class="panel"><div class="empty">
       Nothing graded yet — this fills in as games finish and you record picks on the board.
-    </div></div>`;
+    </div></div>`);
     return;
   }
 
@@ -582,7 +582,7 @@ async function renderPerformance(ticket) {
       >${esc(label)}<span class="sort-arrow">${on ? (sort.dir === "desc" ? "▾" : "▴") : "⇅"}</span></th>`;
   };
 
-  root.innerHTML = `<div class="panel" data-nofold>
+  if (!paint(root, `<div class="panel" data-nofold>
     <header><h2>Season ${d.season}</h2>
       <span class="hint">Straight-up winners · "same games" scores only games every
         picker had a view on</span></header>
@@ -641,7 +641,7 @@ async function renderPerformance(ticket) {
       <span class="hint">the plan as first made, against the teams you
         actually spent</span></header>
     <div class="empty">Loading…</div>
-  </div>`;
+  </div>`)) return;
 
   /* The plan the optimiser made before any of it had happened, against what
      was actually picked. Fetched after the page is drawn rather than in the
@@ -780,7 +780,7 @@ async function renderHome(ticket) {
     sideFoot(state.meta);
   }
   if (!data.games.length) {
-    root.innerHTML = '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>';
+    paint(root, '<div class="panel"><div class="empty">No games stored for this week yet.</div></div>');
     return;
   }
 
@@ -947,7 +947,7 @@ async function renderHome(ticket) {
     </article>`;
   };
 
-  root.innerHTML = `<div class="panel board">
+  if (!paint(root, `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
       <span class="hint">Home team listed second · Blind = before the line ·
         Blend = what we claim · Book = sportsbook ·
@@ -956,7 +956,7 @@ async function renderHome(ticket) {
     ${anyInherited ? `<p class="note">* These games finished before the app was
       running, so the model has no pick of its own and the sportsbook's number is
       shown in its place.</p>` : ""}
-  </div>`;
+  </div>`)) return;
 
   wireLogos(root);
 
@@ -1264,7 +1264,7 @@ async function renderTeams(ticket) {
   const table = (teams) => `<table class="rank-table">${head}
     <tbody>${teams.map(row).join("")}</tbody></table>`;
 
-  root.innerHTML = `
+  if (!paint(root, `
   <div class="panel" data-nofold>
     <header><h2>Power rankings</h2>
       <span class="hint">by projected finish, the Pythagorean, the rating and
@@ -1282,7 +1282,7 @@ async function renderTeams(ticket) {
       <span class="hint" id="dist-who"></span></header>
     <div class="team-card" id="team-card"></div>
     <div id="team-dist" style="height:200px"></div>
-  </div>`;
+  </div>`)) return;
 
   const card = (t) => {
     const cell = (label, value, hint) => `<div class="fact"${
@@ -1417,7 +1417,7 @@ async function renderPicks(ticket) {
   </div>`).join("");
 
   root.classList.add("fit-screen");
-  root.innerHTML = `
+  if (!paint(root, `
   <div class="grid-2 pick-split">
   <div class="panel">
     <header><h2>Picks</h2>
@@ -1488,7 +1488,7 @@ async function renderPicks(ticket) {
       <tbody>${path}</tbody></table></div>
   </div>` : ""}
   </div>
-  </div>`;
+  </div>`)) return;
 
   const modeSelect = $("#pickem-mode");
   modeSelect.value = state.pickemMode || "ev";
@@ -1574,7 +1574,7 @@ async function renderNews(ticket) {
     <td><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
     </tr>`).join("");
 
-  root.innerHTML = `<div class="grid-2 news-split">
+  if (!paint(root, `<div class="grid-2 news-split">
     <div class="panel">
       <header><h2>Injury report</h2>
         <span class="hint">questionable, doubtful, out, IR and PUP only —
@@ -1600,7 +1600,7 @@ async function renderNews(ticket) {
         a starting quarterback is worth two to three points, a backup almost nothing. It is a
         triage signal for what to look at, never a substitute for the market's own reaction.</p>
     </div>
-  </div>`;
+  </div>`)) return;
 
   // The marks are drawn by the same teamMark() the board uses, and that draws
   // the logo at opacity 0 until it has actually loaded -- so without this the
@@ -1751,7 +1751,7 @@ async function renderSoon(ticket) {
     <ul class="soon-list">${c.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
   </div>`).join("");
 
-  root.innerHTML = `<div class="grid-3 desk">
+  if (!paint(root, `<div class="grid-3 desk">
     <div class="panel" data-nofold>
       <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
       ${help}
@@ -1764,7 +1764,7 @@ async function renderSoon(ticket) {
       <header><h2>What changed</h2><span class="hint">newest first</span></header>
       ${changes}
     </div>
-  </div>`;
+  </div>`)) return;
 }
 
 // --------------------------------------------------------------- settings
@@ -1833,7 +1833,7 @@ async function renderSettings(ticket) {
       page, kept here because this is where a setting is looked for.</div>
   </div>`;
 
-  root.innerHTML = `${saveBar("top")}
+  if (!paint(root, `${saveBar("top")}
   <div class="settings-grid">
   ${(data.groups || []).map((g) => `<details class="panel set-group"${
     openSettings.has(g.name) ? " open" : ""} data-group="${esc(g.name)}">
@@ -1904,7 +1904,7 @@ async function renderSettings(ticket) {
       </div></header>
     <div class="tool-out"><span id="refresh-result" class="muted"></span></div>
   </div>
-  </div>`;
+  </div>`)) return;
 
   /* A refresh re-renders this whole page, which used to close every section
      the reader had opened -- including the one they were halfway through
@@ -2121,7 +2121,7 @@ async function renderAssistantSetup(status) {
       ${job.error ? `<p class="note warn">${esc(job.error)}</p>` : ""}
     </div>` : "";
 
-  root.innerHTML = `<div class="panel">
+  if (!paint(root, `<div class="panel">
     <header><h2>Assistant</h2><span class="hint">${
       job.running ? "setting up" : "not set up yet"}</span></header>
     <div class="setup-pane">
@@ -2143,7 +2143,7 @@ async function renderAssistantSetup(status) {
         </div>
       ` : `<p class="note">Change it on the <b>Settings</b> page.</p>`}
     </div>
-  </div>`;
+  </div>`)) return;
 
   if (!offered) return;
 
@@ -2207,7 +2207,7 @@ async function renderAssistant(ticket) {
     <div class="msg-body">${m.role === "assistant"
       ? markdown(m.content) : esc(m.content)}</div></div>`).join("");
 
-  root.innerHTML = `<div class="chat-shell">
+  if (!paint(root, `<div class="chat-shell">
     <aside class="chat-side">
       <div class="chat-side-head">
         <button class="btn primary tiny" id="chat-new">New chat</button>
@@ -2235,7 +2235,7 @@ async function renderAssistant(ticket) {
           `<button class="btn tiny" data-q="${esc(q)}">${esc(q)}</button>`).join("")}
       </div>
     </div>
-  </div>`;
+  </div>`)) return;
 
   const scroll = () => {
     const log = $("#chat-log");
@@ -2338,6 +2338,48 @@ const VIEWS = { home: renderHome, teams: renderTeams,
    has been overtaken and says nothing. */
 let renderTicket = 0;
 
+/* Write a view's HTML, but only when it differs from what is already there.
+
+   The refresh loop calls the current view once a minute. Every view builds its
+   whole page as a string and assigns it to innerHTML, which destroys and
+   recreates every node underneath -- so even when the fetch came back with
+   byte-identical data, the page was rebuilt: text selection lost, charts torn
+   down and redrawn, transitions restarted, and the DOM churned for nothing.
+   Preserving scroll and focus hid the worst of it; it did not stop it
+   happening.
+
+   Comparing the string is the whole trick, and it works because these views
+   are pure: the same data produces the same markup, so identical markup means
+   identical data and there is nothing to draw.
+
+   The return value matters as much as the write. Every view wires its own
+   listeners immediately after assigning innerHTML, on the assumption that the
+   nodes are new. If the paint is skipped the nodes are *not* new -- they still
+   carry the listeners bound last time -- so wiring them again would leave two
+   handlers on every button and one click would fire both. Each view returns
+   early on false. That is also why this cannot be a general DOM-diffing
+   morph: preserving a node and re-running the wiring beside it is precisely
+   the bug, and the only safe rule is that a node either is rebuilt and
+   rewired, or is left entirely alone.
+
+   Keyed by tab, because switching pages and coming back should not be fooled
+   by the previous page's markup. */
+const painted = new Map();
+
+function paint(root, html, key = state.tab) {
+  if (painted.get(key) === html && root.childElementCount) return false;
+  root.innerHTML = html;
+  painted.set(key, html);
+  return true;
+}
+
+/* Anything that edits the page outside `paint` has to say so, or the next
+   identical render will believe the DOM still matches the string it stored
+   and decline to put it back. */
+function repaintNext(key = state.tab) {
+  painted.delete(key);
+}
+
 async function render({ keepPlace = false } = {}) {
   const ticket = ++renderTicket;
   // Connections show on Settings and the game everywhere else, so this follows
@@ -2362,6 +2404,12 @@ async function render({ keepPlace = false } = {}) {
     if (ticket !== renderTicket) return;
     $("#view").innerHTML = `<div class="panel"><div class="empty">
       Could not load this view: ${esc(err.message)}</div></div>`;
+    // This wrote over the page without going through `paint`, so the string
+    // `paint` is holding for this tab no longer describes what is on screen.
+    // Left alone, the next render would compare the view's markup against
+    // that stale string, find them equal, decline to paint -- and the error
+    // would stay up for ever with the real page behind it.
+    repaintNext();
   }
 }
 
@@ -2578,6 +2626,11 @@ function setTab(tab, { fromHash = false } = {}) {
   // one has fetched. A tab that responds at once and then fills in reads as
   // fast; a tab that sits on the last page for two seconds reads as broken.
   $("#view").innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
+  // Same reason as the error path above, and this one fires constantly: go to
+  // Teams, come back to Home, and Home's markup is byte-identical to the last
+  // time you were on it -- so without this the paint is skipped and "Loading…"
+  // is the page. Every tab you revisited would have been a dead end.
+  repaintNext(tab);
   render();
 }
 

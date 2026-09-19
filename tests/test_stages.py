@@ -191,7 +191,11 @@ def test_the_recompute_stops_when_nothing_has_arrived(pipeline, temp_env):
         " home_score, away_score, status, updated_at) "
         "VALUES('skip-1', ?, 1, 'REG', '2026-09-10T00:00:00+00:00', 'KC', 'BUF',"
         " 21, 17, 'final', '2026-09-10T04:00:00+00:00')", (season,))
-    db.set_meta("recompute_mark", pipeline.recompute_fingerprint(season))
+    db.set_meta("recompute_mark", list(pipeline.recompute_fingerprint()))
+    # And recently enough that the ceiling is not what decides this. A
+    # database that has never recomputed is always overdue, which is right,
+    # and would make this test pass for the wrong reason.
+    db.set_meta("last_recompute", now_iso())
 
     result = RefreshResult()
     pipeline.recompute(result, force=False)
@@ -220,10 +224,68 @@ def test_a_changed_score_moves_the_fingerprint(pipeline, temp_env):
     from nflpicker import db
 
     season = pipeline.season()
-    before = pipeline.recompute_fingerprint(season)
+    before = pipeline.recompute_fingerprint()
     db.execute(
         "INSERT INTO games(game_id, season, week, season_type, kickoff, home, away,"
         " home_score, away_score, status, updated_at) "
         "VALUES('fp-1', ?, 1, 'REG', '2026-09-10T00:00:00+00:00', 'KC', 'BUF',"
         " 21, 17, 'final', '2099-01-01T00:00:00+00:00')", (season,))
-    assert pipeline.recompute_fingerprint(season) != before
+    assert pipeline.recompute_fingerprint() != before
+
+
+def test_refetching_the_same_game_does_not_move_the_fingerprint(pipeline, temp_env):
+    """The fix that makes the whole gate work.
+
+    `upsert_games` used to stamp `updated_at` unconditionally, so every
+    scoreboard fetch touched all two hundred and seventy-two rows and
+    MAX(updated_at) moved whether or not a point had been scored. The gate
+    reads that column, so on a quiet Tuesday the model was rebuilt every five
+    minutes to produce the numbers already on screen.
+    """
+    game = {
+        "game_id": "fp-2", "season": pipeline.season(), "week": 1,
+        "season_type": "REG", "kickoff": "2026-09-10T00:00:00+00:00",
+        "home": "KC", "away": "BUF", "home_score": 21, "away_score": 17,
+        "status": "final",
+    }
+    pipeline.upsert_games([game])
+    settled = pipeline.recompute_fingerprint()
+
+    pipeline.upsert_games([game])            # the same game, fetched again
+    assert pipeline.recompute_fingerprint() == settled, "nothing changed"
+
+    pipeline.upsert_games([{**game, "home_score": 28}])
+    assert pipeline.recompute_fingerprint() != settled, "a touchdown did"
+
+
+def test_a_score_arriving_where_there_was_none_counts_as_a_change(pipeline, temp_env):
+    """`IS NOT` rather than `<>`, because `<>` is NULL when either side is --
+    which is falsey, so a score appearing for the first time would have been
+    the change the comparison missed."""
+    game = {
+        "game_id": "fp-3", "season": pipeline.season(), "week": 1,
+        "season_type": "REG", "kickoff": "2026-09-10T00:00:00+00:00",
+        "home": "KC", "away": "BUF", "status": "scheduled",
+    }
+    pipeline.upsert_games([game])
+    before = pipeline.recompute_fingerprint()
+    pipeline.upsert_games([{**game, "home_score": 0, "away_score": 0,
+                            "status": "in_progress"}])
+    assert pipeline.recompute_fingerprint() != before
+
+
+def test_the_pass_comes_round_on_the_calendar_even_when_nothing_arrives(
+        pipeline, temp_env, monkeypatch):
+    """The ceiling. Some of what a recompute does is keyed to the calendar
+    rather than to its inputs -- the weekly ranking cut above all -- so a
+    quiet stretch must not be able to hold it off for ever."""
+    from nflpicker import db
+
+    db.set_meta("last_recompute", "2020-01-01T00:00:00+00:00")
+    assert pipeline.recompute_overdue()
+
+    db.set_meta("last_recompute", now_iso())
+    assert not pipeline.recompute_overdue()
+
+    db.set_meta("last_recompute", None)
+    assert pipeline.recompute_overdue(), "never run is always due"
