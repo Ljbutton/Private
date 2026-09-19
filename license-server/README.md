@@ -72,7 +72,9 @@ unlicensed exactly as before, so nothing breaks in the meantime.
 - The key is rechecked every 12 hours. If the server can't be reached, the app
   keeps working for **7 days** on the last good check.
 - Cancelled, expired or unpaid (`past_due`) subscriptions lock the app at the
-  next check. `canceling` (cancelled but paid through the period) keeps working.
+  next check. `canceling` (cancelled but paid through the period) keeps working,
+  and so does `completed` — which is how Whop reports a one-time purchase such
+  as the season pass once it is paid, rather than one that has run out.
 - One key works on up to `MAX_MACHINES` computers (default 2). To move a
   customer to a new computer, clear `edge_machines` in that membership's
   metadata on Whop.

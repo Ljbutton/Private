@@ -17,7 +17,10 @@
 //                     to remember which computers a key is used on).
 //   WHOP_PRODUCT_ID   optional. prod_... -- keys from any other product are refused.
 //   MAX_MACHINES      optional, default 2. Computers one subscription may run on.
-//   ALLOWED_STATUSES  optional, default "active,trialing,canceling".
+//   ALLOWED_STATUSES  optional, default "active,trialing,canceling,completed".
+//                     `completed` is there because a one-time purchase -- the
+//                     season pass -- is reported by Whop as completed once it
+//                     has been paid. It means paid in full, not lapsed.
 //   GITHUB_REPO       optional, e.g. Ljbutton/Private -- where releases are published.
 //   GITHUB_TOKEN      secret, optional. Needed once that repository is private.
 //   RELEASE_TAG       optional, default "latest".
@@ -73,7 +76,10 @@ export async function validate(body, env) {
     return deny("wrong_product", "That key is for a different product.");
   }
 
-  const allowed = String(env.ALLOWED_STATUSES || "active,trialing,canceling")
+  // `completed` is an entitlement, not an ending: Whop reports a one-time
+  // purchase that way once it is paid, which is what the season pass is. A
+  // subscription that genuinely lapsed comes back as canceled or expired.
+  const allowed = String(env.ALLOWED_STATUSES || "active,trialing,canceling,completed")
     .split(",").map((s) => s.trim()).filter(Boolean);
   if (!allowed.includes(m.status)) {
     return deny("inactive", statusMessage(m.status), m.status);
@@ -122,8 +128,7 @@ function statusMessage(status) {
   switch (status) {
     case "past_due": return "Your last payment didn't go through. Update your card on Whop to keep using The Edge.";
     case "canceled":
-    case "expired":
-    case "completed": return "This subscription has ended. Resubscribe on Whop to keep using The Edge.";
+    case "expired": return "This subscription has ended. Resubscribe on Whop to keep using The Edge.";
     default: return `This subscription isn't active (${status}).`;
   }
 }

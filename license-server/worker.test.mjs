@@ -58,6 +58,51 @@ test("canceled subscription is refused with a readable message", async () => {
   assert.match(out.message, /ended/);
 });
 
+// `env` above deliberately does not set ALLOWED_STATUSES, so these exercise
+// the default the Worker ships with rather than a value the test supplies.
+
+test("a completed one-time purchase is accepted", async () => {
+  // The season pass. Whop reports a one-time purchase as `completed` once it
+  // has been paid, which reads like an ending and is the opposite: it is the
+  // entitlement. Refusing it locked out everyone who bought the pass rather
+  // than a subscription.
+  const calls = fakeWhop({ ...base, status: "completed" });
+  const out = await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
+  assert.equal(out.valid, true);
+  assert.equal(out.status, "completed");
+  assert.equal(out.reason, "ok");
+  const patch = calls.find((c) => c.method === "PATCH");
+  assert.ok(patch, "a season pass registers its machine like any other key");
+  assert.deepEqual(JSON.parse(patch.body), { metadata: { edge_machines: "m1" } });
+});
+
+test("a completed purchase is not told to resubscribe", async () => {
+  // It carries no ending message, because nothing has ended.
+  fakeWhop({ ...base, status: "completed" });
+  const out = await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
+  assert.equal(out.message, "");
+});
+
+test("completed is still refusable when the list is narrowed", async () => {
+  // Someone selling subscriptions only can take it back out, and the refusal
+  // must not then claim a one-time purchase has expired -- it never had a
+  // term to expire.
+  fakeWhop({ ...base, status: "completed" });
+  const out = await validate({ license_key: "ABC-123", machine_id: "m1" },
+                             { ...env, ALLOWED_STATUSES: "active,trialing" });
+  assert.equal(out.valid, false);
+  assert.equal(out.reason, "inactive");
+  assert.doesNotMatch(out.message, /ended|Resubscribe/);
+});
+
+test("the season pass keeps working with no renewal date", async () => {
+  // A one-time purchase has nothing to renew, so the field is absent upstream.
+  fakeWhop({ ...base, status: "completed", renewal_period_end: undefined });
+  const out = await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
+  assert.equal(out.valid, true);
+  assert.equal(out.renews_at, null);
+});
+
 test("key for another product is refused", async () => {
   fakeWhop({ ...base, product: { id: "prod_other" } });
   const out = await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
