@@ -426,3 +426,64 @@ def test_a_server_that_is_not_ollama_falls_through(monkeypatch):
 
     monkeypatch.setattr(httpx, "post", lambda *a, **k: NotFound())
     assert assistant._ask_ollama("http://x", {"model": "m", "messages": []}, 5.0) is None
+
+
+def test_the_context_says_how_much_of_the_week_has_been_played(pipeline, temp_env):
+    """The bug this closes: asked to summarise week two, the model answered
+    with the season-to-date record -- seventeen graded games, sixteen of them
+    from week one -- and never said which period it meant. The figure was
+    right and the answer was wrong.
+    """
+    from nflpicker import db
+    from nflpicker.assistant import context
+
+    season = pipeline.season()
+    for i in range(3):
+        db.execute(
+            "INSERT OR REPLACE INTO games(game_id, season, week, season_type,"
+            " kickoff, home, away, home_score, away_score, status, updated_at) "
+            "VALUES(?, ?, 2, 'REG', '2026-09-17T00:00:00+00:00', ?, ?, ?, ?, ?, 'now')",
+            (f"wk2-{i}", season, ["KC", "BUF", "PHI"][i], ["DEN", "MIA", "DAL"][i],
+             24 if i == 0 else None, 17 if i == 0 else None,
+             "final" if i == 0 else "scheduled"))
+
+    ctx = context(season, 2)
+    week = ctx["this_week"]
+    assert week["n_games"] == 3
+    assert week["n_played"] == 1
+    assert week["n_still_to_play"] == 2
+    assert "1 of 3" in week["state"]
+
+
+def test_an_unplayed_week_says_so_rather_than_counting_zero(pipeline, temp_env):
+    from nflpicker import db
+    from nflpicker.assistant import context
+
+    season = pipeline.season()
+    db.execute(
+        "INSERT OR REPLACE INTO games(game_id, season, week, season_type,"
+        " kickoff, home, away, status, updated_at) "
+        "VALUES('wk3-0', ?, 3, 'REG', '2026-09-24T00:00:00+00:00',"
+        " 'KC', 'DEN', 'scheduled', 'now')", (season,))
+    state = context(season, 3)["this_week"]["state"]
+    assert "none of week 3" in state
+
+
+def test_the_season_record_is_named_for_the_period_it_covers(pipeline, temp_env):
+    """It was called `season_scoreboard`, which is accurate and was read as
+    "this week" anyway. The field now says so in its own value."""
+    from nflpicker.assistant import context
+
+    ctx = context(pipeline.season(), 2)
+    assert "season_scoreboard" not in ctx
+    covers = ctx["record_for_the_whole_season_so_far"]["covers"]
+    assert "weeks 1 to 2" in covers
+    assert "NOT week 2 on its own" in covers
+
+
+def test_the_prompt_forbids_quoting_a_record_without_its_period():
+    from nflpicker import assistant
+
+    prompt = assistant.SYSTEM_PROMPT
+    assert "Every record has a period attached" in prompt
+    assert "this_week.state" in prompt

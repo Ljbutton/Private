@@ -37,6 +37,12 @@ invent a line, a score, an injury or a statistic.
 - "This week" means the week in `current_week`, and its games are the ones in \
 `this_week`. `results_so_far` is earlier weeks and is history. Never add the \
 two together or describe a finished game as part of this week.
+- Most of this week has usually not been played. `this_week.state` says how \
+much of it has; read it before writing a word about how the week is going, and \
+never imply a game has a result when it has not.
+- Every record has a period attached, and you always name it. \
+`record_for_the_whole_season_so_far` is the season, not this week -- quoting \
+it as "so far" when asked about this week is the one mistake to avoid here.
 - The blind projection is the model before it sees the betting line; the blend \
 is after. The fitted market weight is high, so the blend is mostly the market. \
 Be honest about that when asked whether the model is any good.
@@ -195,6 +201,8 @@ def context(season: int, week: int) -> dict:
             "line_moved_toward_us": _round((card.get("movement") or {}).get("toward_us")),
         })
 
+    _played = sum(1 for g in games if str(g.get("status")) == "final")
+
     # Every team, in our order, as one line each.
     #
     # This was thirty-two twelve-key objects and seven and a half thousand
@@ -272,7 +280,24 @@ def context(season: int, week: int) -> dict:
         "teams_columns": "rank abbr record pow pyth proj (80% range) "
                          "playoff div title",
         "teams": teams,
-        "this_week": {"week": week, "n_games": len(games), "games": games},
+        # How much of this week has actually happened, counted rather than left
+        # to be inferred from which lines carry a score. Asked to summarise
+        # "this week" in week two, the model answered with the season-to-date
+        # record -- seventeen graded games, sixteen of them from week one --
+        # and never said which period it meant. The number was right and the
+        # answer was wrong, which is the failure a labelled field prevents and
+        # a well-named one does not.
+        "this_week": {
+            "week": week,
+            "n_games": len(games),
+            "n_played": _played,
+            "n_still_to_play": len(games) - _played,
+            "state": (f"{_played} of {len(games)} games in week {week} have "
+                      f"finished" if _played else
+                      f"none of week {week}'s {len(games)} games have been "
+                      f"played yet"),
+            "games": games,
+        },
         "results_so_far": {"weeks_finished": sorted(
             {int(r.split()[0][1:]) for r in results if r[:1] == "W"}),
             "n_games": len(results), "games": results},
@@ -284,7 +309,13 @@ def context(season: int, week: int) -> dict:
             "straight_up_rate": _round((report.get("blind") or {}).get("su_rate"), 3),
             "note": "An ATS rate below 0.524 loses money at standard juice.",
         },
-        "season_scoreboard": scoreboard.report(season)["totals"]["all"],
+        # Named for what it covers. It was "season_scoreboard", which is
+        # accurate and was read as "this week" anyway.
+        "record_for_the_whole_season_so_far": {
+            "covers": (f"every game graded so far this season -- weeks 1 to "
+                       f"{week} -- and NOT week {week} on its own"),
+            **scoreboard.report(season)["totals"]["all"],
+        },
     }
 
 

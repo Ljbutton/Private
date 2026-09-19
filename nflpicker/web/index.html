@@ -119,14 +119,28 @@
              stands to the left of that column instead of being one more thing
              the centring has to average. -->
         <div class="hero-time">
-          <svg class="dialmark" viewBox="0 0 28 28" aria-hidden="true">
-            <path class="bm-flat" d="M2 24h24" />
-            <path class="bm-rise" d="M2 24 L14 12 L26 17" />
+          <!-- The hands ARE the mark's two strokes now.
+
+               They used to sit on top of them: the grey rise and fall stayed
+               put and two short green hands turned inside them, which is four
+               strokes radiating from one dot and reads as clutter at 42px.
+               So the grey pair is gone and the hands took their lengths --
+               seventeen units for the long climb, thirteen for the short fall
+               -- leaving only the baseline static, because that is the one
+               line in the logo that never moved anyway.
+
+               A hand of seventeen has to be able to point straight up, so the
+               grid is 36 wide with the pivot at its centre rather than 28 with
+               the pivot high; every proportion is the old one, measured from
+               the dot. The long hand sweeps below the baseline for a third of
+               every hour and crosses it. That is allowed. -->
+          <svg class="dialmark" viewBox="0 0 36 36" aria-hidden="true">
+            <path class="bm-flat" d="M6 30h24" />
             <line class="bm-hand bm-hour" id="bm-hour"
-                  x1="14" y1="12" x2="14" y2="5.4" transform="rotate(108.5 14 12)" />
+                  x1="18" y1="18" x2="18" y2="5" transform="rotate(108.5 18 18)" />
             <line class="bm-hand bm-minute" id="bm-minute"
-                  x1="14" y1="12" x2="14" y2="3.2" transform="rotate(222 14 12)" />
-            <circle class="bm-dot" cx="14" cy="12" r="2.1" />
+                  x1="18" y1="18" x2="18" y2="1" transform="rotate(222 18 18)" />
+            <circle class="bm-dot" cx="18" cy="18" r="2.4" />
           </svg>
           <div class="hero-stack">
             <div class="hero-greet" id="greeting"></div>

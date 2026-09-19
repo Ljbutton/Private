@@ -280,12 +280,24 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         return scoreboard.report(season or pipeline.season())
 
     @app.get("/api/teams")
-    def teams() -> dict:
-        season = pipeline.season()
+    def teams(season: int | None = None, week: int | None = None) -> dict:
+        """The ranking as it stood in a given week.
+
+        It used to take no arguments at all. The week selector is on every
+        page and the page it drives hardest is this one, but the query string
+        it sent was discarded here and the answer was always the current
+        week's cut -- so a season's worth of frozen rankings existed in the
+        database and there was no way to look at any of them. Choosing week
+        two in December showed December's table with week two in the header,
+        which is the one thing a frozen ranking is supposed to make
+        impossible.
+        """
+        season = season or pipeline.season()
+        week = week or pipeline.current_week(season)
         ratings = latest_team_rows(season, "team_ratings")
         projections = latest_team_rows(season, "season_projections")
 
-        # This week's cut, if it has been taken: its order, its records and the
+        # That week's cut, if it has been taken: its order, its records and the
         # projection it was ordered by. All three or none of them -- freezing
         # the rank and leaving the rest of the row live is what put a 2-0
         # record in week two's table, beside a ranking that was taken before
@@ -293,7 +305,7 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         cut_rows = db.query(
             "SELECT team, rank, power, pythagorean, wins, losses, ties, projection "
             "FROM power_snapshots WHERE season = ? AND week = ? AND source = 'live'",
-            (season, pipeline.current_week(season)),
+            (season, week),
         )
         cut = {r["team"]: r for r in cut_rows}
         if cut:

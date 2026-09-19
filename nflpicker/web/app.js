@@ -910,9 +910,30 @@ async function renderHome(ticket) {
   const myPick = {};
   for (const row of mine.picks || []) myPick[row.game_id] = row.selection;
 
+  /* Broadcast order: the order ESPN and the books list a week in, which is
+     simply kickoff time, with anything already finished moved to the back.
+
+     It used to pull live games to the *front*, and that is what put the board
+     out of order. A game in progress is not a separate category to be promoted
+     -- on a Sunday afternoon most of the board is in progress -- so a live
+     Sunday night game leapt above the one o'clock games that started hours
+     before it. Live and upcoming now sort together, by when they kick off,
+     and only finished games move, which is the part that was worth keeping:
+     they are the ones you have stopped needing.
+
+     Compared as instants rather than as strings. `localeCompare` on an ISO
+     timestamp is right only while every row carries the same UTC offset, and
+     the moment one arrives as `Z`, or as a local `-04:00`, two games at the
+     same moment sort apart and an earlier one can sort later. */
+  const kickAt = (g) => {
+    const t = Date.parse(g.kickoff);
+    return Number.isNaN(t) ? Infinity : t;      // undated games sit at the end
+  };
   const games = [...data.games].sort((a, b) => {
-    const rank = (g) => (g.status === "in_progress" ? 0 : g.status === "final" ? 2 : 1);
-    return rank(a) - rank(b) || String(a.kickoff).localeCompare(String(b.kickoff));
+    const done = (g) => (g.status === "final" ? 1 : 0);
+    return done(a) - done(b)
+      || kickAt(a) - kickAt(b)
+      || String(a.game_id).localeCompare(String(b.game_id));
   });
 
   let anyInherited = false;
@@ -1320,10 +1341,15 @@ async function fillGame(dlg, body, gameId) {
 async function renderTeams(ticket) {
   const root = $("#view");
   const [data, history] = await Promise.all([
-    api("/api/teams"),
+    api(`/api/teams?season=${state.season}&week=${state.week}`),
     // Movement against the previous week we actually hold. Its own request
     // because a missing history must cost the ranking nothing.
-    api("/api/power/history").catch(() => ({ teams: [], compared_to: null })),
+    /* The same week as the table it annotates. This endpoint has always taken
+       a week and the page has never sent one, so the Move column described
+       the current week's movement no matter which week was on screen -- two
+       halves of one row disagreeing about what they were describing. */
+    api(`/api/power/history?season=${state.season}&week=${state.week}`)
+      .catch(() => ({ teams: [], compared_to: null })),
   ]);
   if (stale(ticket)) return;
 
@@ -1470,7 +1496,14 @@ async function renderPicks(ticket) {
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
-  const board = pickem[state.pickemMode || "ev"] || pickem.ev || {};
+  /* Always the expected-points board. The other one, "leverage", deliberately
+     gives up expected score to differentiate from a field that picks close to
+     the market -- a real strategy, and the right one only in a large pool
+     where finishing first is what pays. It was a dropdown on a page whose
+     complaint was that there was too much on it, offering a choice almost
+     nobody wanted to make, and the answer to "which did I leave this set to"
+     was a control you had to go and look at. The API still returns both. */
+  const board = pickem.ev || {};
 
   /* Why this page is empty, when it is.
      Picks are made for the week that is coming, so a week already played and a
@@ -1532,31 +1565,28 @@ async function renderPicks(ticket) {
 
   root.classList.add("fit-screen");
   if (!paint(root, `
-  <div class="grid-2 pick-split">
+  <div class="pick-board">
   <div class="panel">
     <header><h2>Picks</h2>
-      <span class="hint" title="Confidence points are assigned highest-to-most-likely, which maximises expected score. Leverage mode deliberately gives some of that up to differentiate from a field that picks close to the market — the right trade only when finishing first is what pays.">most confident first</span>
+      <span class="hint" title="Ordered by how sure the blend is, most confident first. The number beside each pick is that confidence.">most confident first</span>
     </header>
-    <div class="controls pick-mode">
-      <select id="pickem-mode">
-        <option value="ev">Maximise expected points</option>
-        <option value="leverage">Leverage (large pools)</option>
-      </select>
-    </div>
     ${(board.picks || []).length ? `<div class="tiles pick-tiles">
       <div class="tile"><div class="label">Expected correct</div>
         <div class="value">${num(board.expected_correct, 1)}<span class="sub"> of ${board.n_games ?? 0}</span></div></div>
-      <div class="tile"><div class="label">Expected points</div>
-        <div class="value">${num(board.expected_points, 1)}</div>
-        <div class="sub">of ${board.max_points ?? 0} possible</div></div>
     </div>` : ""}
     <div class="pickem-list">${pickRows || `<div class="empty">${
       esc(why).replace(/\s+/g, " ") || "No games to pick."}</div>`}</div>
     ${(board.picks || []).length ? wagerNotice() : ""}
   </div>
 
-  <div class="pick-col">
-  <div class="panel survivor-now">
+  <!-- Survivor and its run are one panel in two halves rather than two
+       panels: the choice on the left, the sixteen weeks that choice commits
+       you to on the right. They were stacked, which gave the run a sliver of
+       height and meant reading four weeks at a time of a thing that is only
+       useful whole. Side by side the run gets the column's full height, and
+       joined they read as one subject, which is what they are. -->
+  <div class="panel survivor-pair">
+  <section class="sv-half survivor-now">
     <header><h2>Survivor</h2>
       <span class="hint">${survivor.horizon ? `planned ${survivor.horizon} weeks ahead` : ""}</span></header>
     ${survivor.recommendation ? `
@@ -1590,26 +1620,19 @@ async function renderPicks(ticket) {
     ` : `<div class="empty">${esc(survivor.note || "").replace(/\s+/g, " ")
       || esc(why).replace(/\s+/g, " ")
       || "No survivor plan available."}</div>`}
-  </div>
+  </section>
 
   ${survivor.recommendation ? `
-  <div class="panel survivor-run">
+  <section class="sv-half survivor-run">
     <header><h2>The rest of the run</h2>
-      <span class="hint" title="The recommendation is not always this week's safest team. Spending a strong team now can cost more later than it gains today, so the optimiser solves the whole remaining path — which is why the cost of switching, shown beside this week's options, is measured over this run rather than over Sunday.">every week from here · scroll ↓</span></header>
+      <span class="hint" title="The recommendation is not always this week's safest team. Spending a strong team now can cost more later than it gains today, so the optimiser solves the whole remaining path — which is why the cost of switching, shown beside this week's options, is measured over this run rather than over Sunday.">every week from here</span></header>
     <div class="table-scroll"><table class="slate">
       <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
         <th class="num">Win prob</th></tr></thead>
       <tbody>${path}</tbody></table></div>
-  </div>` : ""}
+  </section>` : ""}
   </div>
   </div>`)) return;
-
-  const modeSelect = $("#pickem-mode");
-  modeSelect.value = state.pickemMode || "ev";
-  modeSelect.addEventListener("change", () => {
-    state.pickemMode = modeSelect.value;
-    render();
-  });
 
   wireLogos(root);
   /* Clicking a mark toggles it and replans immediately. Typing a
@@ -1631,6 +1654,16 @@ async function renderPicks(ticket) {
   });
 }
 
+/* A story's time as a number, so a missing or unparseable date sorts last
+   under "newest" rather than jumping to the top as NaN.
+
+   Not named `when`: format.js already exports one, it is imported at the top
+   of this file, and it formats a date for display rather than measuring it. */
+function storyTime(item) {
+  const t = Date.parse(item && item.published_at);
+  return Number.isNaN(t) ? 0 : t;
+}
+
 // -------------------------------------------------------------------- news
 /* Two columns, not folded. This page is read by scanning rather than by
    looking one thing up: the question is "has anything changed that I should
@@ -1641,7 +1674,44 @@ async function renderNews(ticket) {
   const root = $("#view");
   const data = await api("/api/news?limit=80");
   if (stale(ticket)) return;
-  const items = data.items.map((n) => `<div class="news-item">
+
+  /* Sortable by every field the rows already carry.
+
+     The feed arrives ordered by estimated relevance, which is the right
+     default and the wrong one for half the questions people bring to this
+     page: "what has just happened", "what moves a line most", "is there
+     anything on my team". Those are re-orderings of the same list, not
+     different lists, so they are a control rather than three more panels.
+
+     Sorted here rather than refetched: eighty rows are already in the
+     browser, and a round trip to reorder a list you are looking at is a
+     round trip you can feel. Every comparator falls back to time, so rows
+     that tie on the chosen field stay in a stable, sensible order instead of
+     shuffling on each render. */
+  const NEWS_SORTS = {
+    relevance: { label: "Estimated relevance",
+                 by: (a, b) => (b.line_impact ?? -1) - (a.line_impact ?? -1)
+                               || storyTime(b) - storyTime(a) },
+    newest:    { label: "Newest first", by: (a, b) => storyTime(b) - storyTime(a) },
+    oldest:    { label: "Oldest first", by: (a, b) => storyTime(a) - storyTime(b) },
+    impact:    { label: "Biggest line impact",
+                 by: (a, b) => Math.abs(b.line_impact ?? 0) - Math.abs(a.line_impact ?? 0)
+                               || storyTime(b) - storyTime(a) },
+    category:  { label: "Category",
+                 by: (a, b) => String(a.category).localeCompare(String(b.category))
+                               || storyTime(b) - storyTime(a) },
+    team:      { label: "Team",
+                 by: (a, b) => String((a.teams || [])[0] || "~")
+                                 .localeCompare(String((b.teams || [])[0] || "~"))
+                               || storyTime(b) - storyTime(a) },
+    source:    { label: "Source",
+                 by: (a, b) => String(a.source).localeCompare(String(b.source))
+                               || storyTime(b) - storyTime(a) },
+  };
+  const sortKey = NEWS_SORTS[state.newsSort] ? state.newsSort : "relevance";
+  const sorted = [...(data.items || [])].sort(NEWS_SORTS[sortKey].by);
+
+  const items = sorted.map((n) => `<div class="news-item">
     <div class="news-tags">
       <span class="badge ${esc(n.category)}">${esc(n.category)}</span>
       ${(n.teams || []).map((t) => `<span class="badge">${esc(t)}</span>`).join("")}
@@ -1708,7 +1778,12 @@ async function renderNews(ticket) {
 
     <div class="panel">
       <header><h2>News &amp; changes</h2>
-        <span class="hint">by estimated relevance, not recency</span></header>
+        <div class="controls news-sort">
+          <label for="news-sort" class="hint">Sort by</label>
+          <select id="news-sort">${Object.entries(NEWS_SORTS).map(([k, v]) =>
+            `<option value="${k}"${k === sortKey ? " selected" : ""}>${esc(v.label)}</option>`
+          ).join("")}</select>
+        </div></header>
       <div class="news-feed">${items || '<div class="empty">No news stored yet.</div>'}</div>
       <p class="note">The points estimate is a coarse prior from position and availability —
         a starting quarterback is worth two to three points, a backup almost nothing. It is a
@@ -1728,6 +1803,11 @@ async function renderNews(ticket) {
       state.injuryTeam = button.dataset.team;
       render();
     });
+  });
+
+  $("#news-sort", root)?.addEventListener("change", (ev) => {
+    state.newsSort = ev.target.value;
+    render();
   });
 }
 

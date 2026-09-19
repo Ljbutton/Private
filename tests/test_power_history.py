@@ -346,3 +346,45 @@ def test_the_repair_runs_before_the_week_is_checked(four_weeks):
     assert not four_weeks.ranking_cut_due(2025, 2), "the broken row hides the week"
     four_weeks.repair_power_cuts(2025)
     assert four_weeks.ranking_cut_due(2025, 2), "once it is gone the week is due"
+
+
+def test_the_teams_endpoint_answers_about_the_week_it_was_asked(four_weeks, client):
+    """A frozen ranking you cannot look at is not much use.
+
+    The endpoint took no arguments at all: the week selector sits on every
+    page, this is the page it drives hardest, and the query string it sent was
+    discarded. Every week returned the current week's cut, so choosing week
+    two in December showed December's table under a week-two heading -- which
+    is precisely what freezing a ranking is meant to make impossible.
+    """
+    for week, first in ((2, "KC"), (3, "BUF")):
+        rows = [(first, 1), ("DEN", 2)] if week == 2 else [(first, 1), ("KC", 2)]
+        for team, rank in rows:
+            db.execute(
+                "INSERT OR REPLACE INTO power_snapshots"
+                "(season, week, team, rank, power, elo, pythagorean,"
+                " wins, losses, ties, source, captured_at, projection) "
+                "VALUES(2025, ?, ?, ?, 0, 1500, 0.5, ?, 0, 0, 'live', 'then',"
+                " '{\"exp_wins\": 11.0}')",
+                (week, team, rank, week - 1))
+
+    two = client.get("/api/teams?season=2025&week=2").json()
+    three = client.get("/api/teams?season=2025&week=3").json()
+    assert two["teams"][0]["team"] == "KC"
+    assert three["teams"][0]["team"] == "BUF"
+    assert two["teams"][0]["team"] != three["teams"][0]["team"], (
+        "two different weeks must not answer with the same table")
+
+
+def test_asking_for_no_week_still_means_this_week(four_weeks, client):
+    """The default has to stay what it was, or every page that does not name a
+    week starts reading week one."""
+    db.execute(
+        "INSERT OR REPLACE INTO power_snapshots"
+        "(season, week, team, rank, power, elo, pythagorean,"
+        " wins, losses, ties, source, captured_at, projection) "
+        "VALUES(2025, 2, 'KC', 1, 0, 1500, 0.5, 1, 0, 0, 'live', 'then',"
+        " '{\"exp_wins\": 11.0}')")
+    named = client.get("/api/teams?season=2025&week=2").json()
+    bare = client.get("/api/teams").json()
+    assert named["teams"] and bare["teams"]
