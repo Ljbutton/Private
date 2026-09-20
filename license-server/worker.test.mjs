@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { validate } from "./worker.js";
+import { REPORT_MAX, report, validate } from "./worker.js";
 
 function fakeWhop(membership, { status = 200, patchStatus = 200 } = {}) {
   const calls = [];
@@ -134,4 +134,88 @@ test("the membership lookup uses the key and the bearer token", async () => {
   const calls = fakeWhop({ ...base, metadata: { edge_machines: "m1" } });
   await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
   assert.equal(calls[0].url, "https://api.whop.com/api/v1/memberships/ABC-123");
+});
+
+// ------------------------------------------------------------------- report
+
+test("a report is forwarded to the configured destination", async () => {
+  const sent = [];
+  globalThis.fetch = async (url, init = {}) => {
+    sent.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response("{}", { status: 200 });
+  };
+  const out = await report(
+    { license_key: "ABC-123", report: "the bracket showed the wrong seed" },
+    { REPORT_WEBHOOK: "https://hooks.example/abc" },
+  );
+  assert.equal(out.sent, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "https://hooks.example/abc");
+  assert.match(sent[0].body.text, /wrong seed/);
+});
+
+test("only the last four characters of the key travel with it", async () => {
+  // A support channel is not a place to keep someone's licence, and four
+  // characters are enough to tell two reporters apart.
+  const sent = [];
+  globalThis.fetch = async (url, init = {}) => {
+    sent.push(JSON.parse(init.body));
+    return new Response("{}", { status: 200 });
+  };
+  await report({ license_key: "SECRET-KEY-9Z4Q", report: "hello" },
+               { REPORT_WEBHOOK: "https://hooks.example/abc" });
+  const body = JSON.stringify(sent[0]);
+  assert.match(sent[0].from, /9Z4Q$/);
+  assert.ok(!body.includes("SECRET-KEY-9Z4Q"), "the key itself must not be sent");
+});
+
+test("with no destination configured it says so and sends nothing", async () => {
+  let called = false;
+  globalThis.fetch = async () => { called = true; return new Response("{}"); };
+  const out = await report({ license_key: "ABC-123", report: "hi" }, {});
+  assert.equal(out.sent, false);
+  assert.equal(out.reason, "not_configured");
+  assert.equal(called, false);
+});
+
+test("it is not an open relay", async () => {
+  let called = false;
+  globalThis.fetch = async () => { called = true; return new Response("{}"); };
+  const env2 = { REPORT_WEBHOOK: "https://hooks.example/abc" };
+  assert.equal((await report({ report: "hi" }, env2)).reason, "no_key");
+  assert.equal((await report({ license_key: "no spaces allowed", report: "hi" }, env2)).reason,
+               "no_key");
+  assert.equal(called, false, "nothing is forwarded without a key");
+});
+
+test("an empty report is not sent", async () => {
+  let called = false;
+  globalThis.fetch = async () => { called = true; return new Response("{}"); };
+  const out = await report({ license_key: "ABC-123", report: "   " },
+                           { REPORT_WEBHOOK: "https://hooks.example/abc" });
+  assert.equal(out.reason, "empty");
+  assert.equal(called, false);
+});
+
+test("a very long report is truncated rather than refused", async () => {
+  // Someone with a real problem should not lose the report for writing too
+  // much, and the destination should not be handed a megabyte either.
+  const sent = [];
+  globalThis.fetch = async (url, init = {}) => {
+    sent.push(JSON.parse(init.body));
+    return new Response("{}", { status: 200 });
+  };
+  const out = await report({ license_key: "ABC-123", report: "x".repeat(50_000) },
+                           { REPORT_WEBHOOK: "https://hooks.example/abc" });
+  assert.equal(out.sent, true);
+  assert.equal(sent[0].text.length, REPORT_MAX);
+});
+
+test("a destination that refuses is reported, not swallowed", async () => {
+  globalThis.fetch = async () => new Response("nope", { status: 500 });
+  const out = await report({ license_key: "ABC-123", report: "hi" },
+                           { REPORT_WEBHOOK: "https://hooks.example/abc" });
+  assert.equal(out.sent, false);
+  assert.equal(out.reason, "upstream");
+  assert.match(out.message, /500/);
 });

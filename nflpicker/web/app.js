@@ -2689,8 +2689,10 @@ const DESK_HELP = [
     q: "Something is wrong and I want to report it",
     a: `The panel at the bottom of this page writes the report for you: which
        build, which page, which feeds are answering, and any errors this
-       session hit. It copies to the clipboard and is posted nowhere — read
-       it first, then send it wherever you are reporting to.`,
+       session hit. Show it first — nothing leaves until you press send,
+       and it carries no API keys and none of your picks. If sending is not
+       set up on your copy, or the machine is offline, copy it instead and
+       send it however you like.`,
   },
 ];
 
@@ -2771,15 +2773,18 @@ async function renderSoon(ticket) {
     <textarea id="bug-what" class="bug-what" rows="4"
       placeholder="Clicked a game on Home and the dialog stayed on Loading…"></textarea>
     <div class="bug-actions">
-      <button class="btn primary" id="bug-copy">Copy report</button>
-      <button class="btn" id="bug-show">Show what will be copied</button>
+      <button class="btn primary" id="bug-send">Send report</button>
+      <button class="btn" id="bug-copy">Copy instead</button>
+      <button class="btn" id="bug-show">Show what will be sent</button>
       <span id="bug-result" class="muted"></span>
     </div>
     <pre class="bug-preview" id="bug-preview" hidden></pre>
     <p class="note">The report carries the build, this computer's platform,
       which page you were on, when each feed last answered, and any errors the
       page has thrown this session. It does not carry your API keys, your
-      picks, or anything you have not typed above.</p>
+      picks, or anything you have not typed above. Nothing is sent until you
+      press send — read it first with the button above. If sending is not set
+      up, or cannot reach the internet, copy it instead.</p>
   </div>`)) return;
 
   /* What a report says. Built fresh each time it is asked for, so it
@@ -2823,6 +2828,33 @@ async function renderSoon(ticket) {
     const pre = $("#bug-preview", root);
     pre.textContent = bugReport();
     pre.hidden = !pre.hidden;
+  });
+
+  /* Sending. Nothing leaves until this is pressed, and every way it can fail
+     leaves the report exactly where it was so it can still be copied. */
+  $("#bug-send", root)?.addEventListener("click", async () => {
+    const out = $("#bug-result", root);
+    const button = $("#bug-send", root);
+    const text = bugReport();
+    out.textContent = "Sending…";
+    out.className = "muted";
+    button.disabled = true;
+    try {
+      const reply = await api("/api/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report: text }),
+      });
+      out.textContent = reply.message
+        || (reply.sent ? "Report sent. Thank you." : "The report was not sent.");
+      out.className = reply.sent ? "pos" : "neg";
+    } catch (err) {
+      out.textContent = `Could not send the report — ${
+        err.message}. Copy it instead.`;
+      out.className = "neg";
+    } finally {
+      button.disabled = false;
+    }
   });
 
   $("#bug-copy", root)?.addEventListener("click", async () => {
@@ -3471,7 +3503,7 @@ function repaintNext(key = state.tab) {
   painted.delete(key);
 }
 
-async function render({ keepPlace = false } = {}) {
+async function render({ keepPlace = false, animate = false } = {}) {
   const ticket = ++renderTicket;
   // Connections show on Settings and the game everywhere else, so this follows
   // the tab rather than the data.
@@ -3493,6 +3525,23 @@ async function render({ keepPlace = false } = {}) {
     if (viewEl.parentElement) {
       viewEl.parentElement.classList.toggle(
         "fits", viewEl.classList.contains("fit-screen"));
+    }
+    /* The fade belongs to the arriving page, not to the click.
+
+       It used to start in `setTab`, the moment the tab was pressed -- and the
+       new page does not exist yet at that moment. The view function is async:
+       it fetches, and only then paints. So the animation ran on the *outgoing*
+       content and had usually finished by the time the new page appeared,
+       which is a fade of the wrong thing followed by a hard cut. Started here,
+       when the new markup is in the DOM, it is the new page that moves.
+
+       Removed and re-added with a forced reflow between, because an animation
+       on an element that already carries the class does not replay -- which is
+       why switching quickly between two tabs animated once and then stopped. */
+    if (animate) {
+      viewEl.classList.remove("swapping");
+      void viewEl.offsetWidth;
+      viewEl.classList.add("swapping");
     }
     measureFitSettled();
     markScrollFades($("#view"));
@@ -3788,15 +3837,7 @@ function setTab(tab, { fromHash = false } = {}) {
   // time you were on it -- so without this the paint is skipped and "Loading…"
   // is the page. Every tab you revisited would have been a dead end.
   repaintNext(tab);
-  /* One movement instead of two hard cuts. The class is removed and re-added
-     so the animation restarts on every switch -- a CSS animation on an element
-     that already has the class does not replay, which is why switching between
-     two tabs quickly used to animate once and then stop. */
-  const view = $("#view");
-  view.classList.remove("swapping");
-  void view.offsetWidth;                      // force the restart
-  view.classList.add("swapping");
-  render();
+  render({ animate: true });
 }
 
 function initRouting() {
@@ -3812,7 +3853,23 @@ function initRouting() {
 function setTheme(next) {
   document.documentElement.setAttribute("data-theme", next);
   try { localStorage.setItem("theedge-theme", next); } catch { /* not fatal */ }
+  paintTitlebar(next);
   render();
+}
+
+/* The one strip of the window CSS cannot reach.
+
+   On Windows the frame with the close button is drawn by the system, and
+   drawn light unless the window asks otherwise -- so a dark app had a white
+   bar across the top of it. The host can ask; the page cannot, so it goes
+   through the bridge. In a browser tab there is no bridge and nothing to
+   paint, which is correct: the tab's chrome is the browser's business. */
+function paintTitlebar(theme) {
+  const api = window.pywebview?.api?.set_titlebar_theme;
+  if (!api) return;
+  const dark = theme === "dark"
+    || (!theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  try { api(dark); } catch { /* an older host without it */ }
 }
 
 function initTheme() {
@@ -3822,6 +3879,11 @@ function initTheme() {
   try { saved = localStorage.getItem("theedge-theme") || localStorage.getItem("nflpicker-theme"); }
   catch { /* private window, blocked storage */ }
   document.documentElement.setAttribute("data-theme", saved || "dark");
+  // The bridge is not up yet on the first frame, so this is also done once it
+  // announces itself.
+  paintTitlebar(saved || "dark");
+  addEventListener("pywebviewready", () => paintTitlebar(
+    document.documentElement.getAttribute("data-theme")), { once: true });
   $("#theme").addEventListener("click", () => {
     const current = document.documentElement.getAttribute("data-theme");
     const isDark = current === "dark" ||

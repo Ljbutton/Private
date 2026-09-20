@@ -158,6 +158,17 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         wanted = [s.strip() for s in stages.split(",")] if stages else None
         return await scheduler.refresh_now(wanted, full=full)
 
+    @app.post("/api/report")
+    def send_report(payload: dict = Body(default={})) -> dict:  # noqa: B008
+        """Send a bug report, without the page knowing where it goes.
+
+        The report is assembled in the browser, shown in full before it moves,
+        and posted only when someone presses send. This endpoint exists so the
+        destination stays on the licence server rather than in the page, where
+        anyone could read it out of the source.
+        """
+        return licensing.send_report(str(payload.get("report") or ""))
+
     @app.get("/api/updates")
     def updates_check(force: bool = Query(default=False)) -> dict:
         """Whether a newer build has been published.

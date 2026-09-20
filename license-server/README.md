@@ -85,3 +85,27 @@ unlicensed exactly as before, so nothing breaks in the meantime.
 ```bash
 node --test license-server/worker.test.mjs
 ```
+
+
+## Bug reports
+
+The app's Desk page writes a report -- build, platform, which page, feed health
+and any errors the page threw -- and posts it to `POST /v1/report` here. The
+Worker forwards it to `REPORT_WEBHOOK`.
+
+```
+npx wrangler secret put REPORT_WEBHOOK
+```
+
+Anything that accepts a JSON POST works: a Discord or Slack incoming webhook
+reads the `content` field, an email API reads `text` and `from`. It is a
+secret rather than a setting in the app for two reasons -- a support address
+does not belong in a binary anyone can unpack, and changing where reports go
+is then one setting here rather than a new build for everybody.
+
+With it unset the endpoint answers `not_configured` and the app falls back to
+putting the report on the clipboard, which is what it did before this existed.
+
+What travels: the report text, truncated to 16,000 characters, and the last
+four characters of the licence key so two reporters can be told apart. Not the
+key itself -- a support channel is not a place to keep someone's licence.

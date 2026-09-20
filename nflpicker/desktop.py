@@ -352,6 +352,23 @@ class _WindowBridge:
         windows = getattr(webview, "windows", None) or []
         return windows[0] if windows else None
 
+    def set_titlebar_theme(self, dark: bool = True) -> bool:
+        """Paint the window's own title bar to match the page.
+
+        Windows draws the frame -- the strip with the minimise, maximise and
+        close buttons -- and it draws it light unless the window asks
+        otherwise. So an app that is dark everywhere else had a white bar
+        across the top of it, which is the one part of the window the page
+        cannot reach with CSS.
+
+        `DWMWA_USE_IMMERSIVE_DARK_MODE` is the ask. It was attribute 19 in the
+        first builds that had it and 20 from Windows 10 20H1 on, and passing
+        the wrong one is a harmless non-zero return, so both are tried. On
+        anything that is not Windows, or a Windows too old to have either,
+        this does nothing and says so rather than failing.
+        """
+        return _set_titlebar_dark(self._window(), bool(dark))
+
     def toggle_fullscreen(self) -> bool:
         window = self._window()
         if window is None:
@@ -362,6 +379,64 @@ class _WindowBridge:
         # property that stays false the whole time in this environment.
         self._full = not getattr(self, "_full", False)
         return self._full
+
+
+
+# The frame Windows draws, which the page cannot reach.
+#
+# Kept out of the bridge class because pywebview builds the JavaScript API by
+# walking `dir()` over that instance -- a module function is not exposed, and
+# this one takes a window object the page must never be handed.
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19
+
+
+def _window_handle(window) -> int:
+    """The HWND, whichever backend is underneath.
+
+    The WinForms backend hands out a Form whose `Handle` is the window; the
+    Edge/CEF ones vary. Falling back to finding it by title is crude and
+    works, and a wrong answer here is a title bar that stays white rather
+    than anything worse.
+    """
+    native = getattr(window, "native", None)
+    for attr in ("Handle", "handle", "winId"):
+        value = getattr(native, attr, None)
+        if value is None:
+            continue
+        with contextlib.suppress(Exception):
+            return int(value() if callable(value) else value)
+    with contextlib.suppress(Exception):
+        import ctypes
+
+        found = ctypes.windll.user32.FindWindowW(None, WINDOW_TITLE)
+        if found:
+            return int(found)
+    return 0
+
+
+def _set_titlebar_dark(window, dark: bool = True) -> bool:
+    """True if Windows accepted the change."""
+    if sys.platform != "win32" or window is None:
+        return False
+    try:
+        import ctypes
+
+        hwnd = _window_handle(window)
+        if not hwnd:
+            return False
+        value = ctypes.c_int(1 if dark else 0)
+        for attribute in (DWMWA_USE_IMMERSIVE_DARK_MODE,
+                          DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1):
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd), ctypes.c_uint(attribute),
+                ctypes.byref(value), ctypes.sizeof(value))
+            if result == 0:
+                log.info("title bar set to %s", "dark" if dark else "light")
+                return True
+    except Exception:                                         # noqa: BLE001
+        log.debug("could not set the title bar theme", exc_info=True)
+    return False
 
 
 def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
@@ -397,6 +472,11 @@ def run(*, width: int = 1400, height: int = 950, debug: bool = False) -> int:
         min_size=(900, 640), confirm_close=False,
         js_api=bridge,
     )
+    # The frame is painted once the window exists, and again whenever the page
+    # asks -- the theme toggle calls the bridge so the bar follows the app.
+    with contextlib.suppress(Exception):
+        window.events.shown += lambda: _set_titlebar_dark(window, True)
+
     started = time.monotonic()
     try:
         webview.start(debug=debug)

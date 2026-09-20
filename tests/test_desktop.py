@@ -519,7 +519,12 @@ def test_the_bridge_exposes_nothing_but_its_own_methods():
     from nflpicker.desktop import _WindowBridge
 
     public = [n for n in dir(_WindowBridge()) if not n.startswith("_")]
-    assert public == ["toggle_fullscreen"], f"also exposed: {public}"
+    # Exactly the two things the page is meant to be able to ask the host for:
+    # take the window full screen, and paint the frame Windows draws. Anything
+    # else appearing here is something leaking through `dir()`, which is what
+    # this test exists to catch -- add to this list deliberately or not at all.
+    assert public == ["set_titlebar_theme", "toggle_fullscreen"], (
+        f"also exposed: {public}")
 
 
 def test_a_refused_window_records_why(monkeypatch):

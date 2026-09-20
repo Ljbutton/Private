@@ -223,3 +223,94 @@ def test_license_server_offline_is_quiet(licensed, monkeypatch):
     _release(monkeypatch)
     server["down"] = True
     assert updates.check(force=True)["newer"] is False
+
+
+# --------------------------------------------------------------- bug reports
+
+def test_a_report_needs_a_server_and_a_key(temp_env, monkeypatch):
+    from nflpicker import licensing
+
+    """Every way this fails has to leave the report where it was.
+
+    Someone reporting a bug is already having a bad time; losing what they
+    wrote because the support server is unreachable would be a second one. So
+    nothing raises -- each failure comes back as a reason the page shows next
+    to the copy button, which always works.
+    """
+    monkeypatch.setattr(licensing, "server_url", lambda: "")
+    out = licensing.send_report("something is wrong")
+    assert out["sent"] is False and out["reason"] == "no_server"
+
+    monkeypatch.setattr(licensing, "server_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(licensing, "saved_key", lambda: "")
+    out = licensing.send_report("something is wrong")
+    assert out["sent"] is False and out["reason"] == "no_key"
+
+    monkeypatch.setattr(licensing, "saved_key", lambda: "ABC-123")
+    assert licensing.send_report("   ")["reason"] == "empty"
+
+
+def test_an_unreachable_server_is_a_reason_not_a_crash(temp_env, monkeypatch):
+    import httpx
+
+    from nflpicker import licensing
+
+    monkeypatch.setattr(licensing, "server_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(licensing, "saved_key", lambda: "ABC-123")
+
+    class _Boom:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, *a, **k):
+            raise httpx.ConnectError("no route")
+
+    monkeypatch.setattr(licensing, "_http", lambda timeout=10.0: _Boom())
+    out = licensing.send_report("the bracket is wrong")
+    assert out["sent"] is False and out["reason"] == "unreachable"
+
+
+def test_the_report_goes_to_the_licence_server_with_the_key(temp_env, monkeypatch):
+    from nflpicker import licensing
+
+    """The app does not know where reports end up, and cannot be made to say.
+
+    It posts to the licence server it already talks to; the destination is a
+    secret on that server, so it is not in a binary anyone can unpack.
+    """
+    seen = {}
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, json=None):
+            seen["url"] = url
+            seen["json"] = json
+
+            class _R:
+                @staticmethod
+                def raise_for_status():
+                    return None
+
+                @staticmethod
+                def json():
+                    return {"sent": True, "message": "Report sent. Thank you."}
+
+            return _R()
+
+    monkeypatch.setattr(licensing, "server_url", lambda: "https://edge.example")
+    monkeypatch.setattr(licensing, "saved_key", lambda: "ABC-123")
+    monkeypatch.setattr(licensing, "_http", lambda timeout=10.0: _Client())
+
+    out = licensing.send_report("the bracket showed the wrong seed")
+    assert out["sent"] is True
+    assert seen["url"] == "https://edge.example/v1/report"
+    assert seen["json"] == {"license_key": "ABC-123",
+                            "report": "the bracket showed the wrong seed"}

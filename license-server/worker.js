@@ -6,6 +6,7 @@
 // to this Worker; only this Worker holds the key.
 //
 // Endpoints
+//   POST /v1/report     {license_key, report}       -> {sent}
 //   POST /v1/validate   {license_key, machine_id}  -> {valid, status, reason, message}
 //   GET  /v1/latest                                 -> {commit, built_at, notes, download_url}
 //   GET  /v1/download?key=...&asset=...             -> 302 to the installer (valid keys only)
@@ -26,6 +27,13 @@
 //   RELEASE_TAG       optional, default "latest".
 //   DOWNLOAD_PAGE     optional. Where "Download update" sends people if the
 //                     direct download is not set up (e.g. your Whop product page).
+//   REPORT_WEBHOOK    secret, optional. Where a bug report is forwarded -- an
+//                     email API, a Slack or Discord webhook, whatever you read.
+//                     It is a secret so the destination never ships inside the
+//                     app: the app posts to this Worker and does not know, and
+//                     cannot be made to reveal, where the report ends up. With
+//                     it unset the endpoint answers "not configured" and the
+//                     app falls back to putting the report on the clipboard.
 
 const WHOP = "https://api.whop.com/api/v1";
 
@@ -35,6 +43,9 @@ export default {
     try {
       if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
       if (url.pathname === "/" ) return cors(new Response("ok"));
+      if (url.pathname === "/v1/report" && request.method === "POST") {
+        return json(await report(await request.json().catch(() => ({})), env));
+      }
       if (url.pathname === "/v1/validate" && request.method === "POST") {
         return json(await validate(await request.json().catch(() => ({})), env));
       }
@@ -50,6 +61,61 @@ export default {
     }
   },
 };
+
+// -------------------------------------------------------------------- report
+
+// A bug report, forwarded to wherever the owner reads them.
+//
+// The destination is a secret on this Worker rather than a URL in the app, for
+// two reasons. It keeps a support address out of a binary that anybody can
+// unpack, and it means the app can be told where reports go by changing one
+// setting here rather than by shipping a new build to everyone.
+//
+// A licence key is required -- not to check that it is *valid*, which would
+// make reporting a bug impossible for exactly the people most likely to have
+// one, but so this is not an open relay that anyone on the internet can post
+// through. The size cap is the other half of that.
+export const REPORT_MAX = 16_000;
+
+export async function report(body, env) {
+  const key = String(body.license_key || "").trim();
+  const text = String(body.report || "").trim();
+  if (!/^[A-Za-z0-9_-]{4,100}$/.test(key)) {
+    return { sent: false, reason: "no_key",
+             message: "A licence key is needed to send a report." };
+  }
+  if (!text) {
+    return { sent: false, reason: "empty", message: "The report was empty." };
+  }
+  if (!env.REPORT_WEBHOOK) {
+    return { sent: false, reason: "not_configured",
+             message: "Sending is not set up. Copy the report instead." };
+  }
+
+  const payload = {
+    // Four characters of the key: enough to tell two reporters apart and to
+    // find the subscription, and not the key itself. A support channel is not
+    // a place to keep someone's licence.
+    from: `…${key.slice(-4)}`,
+    at: new Date().toISOString(),
+    text: text.slice(0, REPORT_MAX),
+  };
+  const response = await fetch(env.REPORT_WEBHOOK, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // Both shapes in one body: `content` is what Slack and Discord read,
+    // `text` and `from` are there for anything that expects fields.
+    body: JSON.stringify({
+      ...payload,
+      content: `**The Edge — bug report** (${payload.from})\n\n${payload.text}`,
+    }),
+  });
+  if (!response.ok) {
+    return { sent: false, reason: "upstream",
+             message: `The report could not be delivered (${response.status}).` };
+  }
+  return { sent: true, message: "Report sent. Thank you." };
+}
 
 // ------------------------------------------------------------------ validate
 
