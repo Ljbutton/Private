@@ -26,6 +26,16 @@
         <span class="logo-text">The<span>Edge</span></span>
       </div>
       <div class="logo-sub">Model &amp; prediction tracker</div>
+      <!-- Which version this is, and the one place that says a newer one
+           exists. The slot to its left is empty almost always, and that is
+           the point: an update notice that is only ever a banner gets
+           dismissed and never seen again, while a corner that is blank until
+           it is not can be checked at a glance. -->
+      <div class="brand-meta">
+        <button class="update-slot" id="update-slot" type="button" hidden>
+          Update available</button>
+        <span class="app-version" id="app-version"></span>
+      </div>
     </div>
 
     <nav class="side-nav" role="tablist">
@@ -204,7 +214,6 @@
       </div>
     </header>
 
-    <div class="update-banner" id="update-banner" role="status" hidden></div>
     <div class="update-banner warn" id="license-banner" role="status" hidden></div>
 
     <div id="view"><div class="panel"><div class="empty">Loading…</div></div></div>

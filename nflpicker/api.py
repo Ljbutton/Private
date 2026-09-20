@@ -11,7 +11,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import buildinfo, db, identity, licensing
+from . import __version__, buildinfo, db, identity, licensing
 from .availability import is_notable_injury
 from .config import get_config
 from .market import movement
@@ -146,6 +146,10 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             # in circles -- the window looks identical either way.
             "build": buildinfo.build_info(),
             "build_label": buildinfo.label(),
+            # The version a person can say out loud. The build commit answers
+            # "is this the copy with the fix"; this answers "which version am
+            # I on", and a seven-character hash has never answered that.
+            "version": __version__,
         }
 
     @app.post("/api/refresh")

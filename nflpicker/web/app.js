@@ -126,27 +126,27 @@ async function paintLicense() {
 
 /* --------------------------------------------------------- update notice */
 
-function dismissedUpdate() {
-  try { return localStorage.getItem("edge.update.dismissed") || ""; } catch { return ""; }
-}
+/* A slot in the corner, not a banner across the top.
 
+   The banner this replaces had a Later button, which is the whole problem
+   with it: dismissing the notice dismissed the only thing that ever said a
+   newer version existed, and the copy went on being out of date silently.
+   The slot beside the version number cannot be dismissed because it never
+   demanded anything -- it is blank until there is something to say, and it
+   stays lit for as long as that is still true. */
 async function checkForUpdate() {
-  const banner = $("#update-banner");
+  const slot = $("#update-slot");
+  if (!slot) return;
   const up = await fetch("/api/updates").then((r) => r.json()).catch(() => null);
-  if (!up || !up.newer || !up.latest) { banner.hidden = true; return; }
-  if (dismissedUpdate() === up.latest) { banner.hidden = true; return; }
+  if (!up || !up.newer || !up.latest) { slot.hidden = true; return; }
   const day = (up.published_at || "").slice(0, 10);
-  banner.innerHTML =
-    `<span class="grow"><b>A new version of The Edge is available</b>` +
-    `${day ? ` (${esc(day)})` : ""}. ${up.notes ? esc(up.notes) + " " : ""}` +
-    `Install it over this one. Your picks and settings are kept.</span>` +
-    (up.url ? `<a class="pill" href="${esc(up.url)}" target="_blank" rel="noopener">Download update</a>` : "") +
-    `<button class="link" id="update-later" type="button">Later</button>`;
-  banner.hidden = false;
-  $("#update-later").addEventListener("click", () => {
-    try { localStorage.setItem("edge.update.dismissed", up.latest); } catch { /* fine */ }
-    banner.hidden = true;
-  });
+  slot.title = `A newer version was published${day ? ` on ${day}` : ""}.`
+    + (up.notes ? ` ${up.notes}` : "")
+    + " Install it over this one — your picks and settings are kept.";
+  slot.hidden = false;
+  slot.onclick = () => {
+    if (up.url) window.open(up.url, "_blank", "noopener");
+  };
 }
 
 
@@ -2522,12 +2522,28 @@ const DESK_HELP = [
        Settings → Data sources takes the key.`,
   },
   {
+    q: "What do the colours on a game mean",
+    a: `Green is right and red is wrong, once a game is final — on the pick,
+       on the spread and on the total alike. Grey is neither: a total that
+       landed exactly on the number, a spread that pushed, or a game the model
+       called 50/50 and therefore never called at all. The blend column is
+       blue because it is a price, not a verdict.`,
+  },
+  {
     q: "Nothing is updating",
-    a: `Fetching is manual by default. The refresh button beside LIVE does
-       everything except the betting lines, and runs itself once a minute while
-       the app is open. The lines have their own button at the bottom left,
-       because each press spends three requests of a monthly allowance. Settings
-       → Model → "Fetch automatically" puts the timers back.`,
+    a: `Fetching is manual by default. Refresh, at the bottom of the sidebar,
+       does everything except the betting lines — scores, schedule, injuries,
+       news — and it also runs itself once a minute while the app is open. The
+       lines have their own button on Settings, because each press spends
+       three requests of a monthly allowance. Settings → Model → "Fetch
+       automatically" puts the rest of the timers back.`,
+  },
+  {
+    q: "Where do I make my survivor pick",
+    a: `On Home. Every team on the board carries an S beside its record —
+       press it and that is your pick for the week. The plan on Picks then
+       replans the rest of the season around it, because a survivor pick is
+       only good if the weeks after it still have teams left.`,
   },
   {
     q: "The power rankings have not moved",
@@ -2538,82 +2554,80 @@ const DESK_HELP = [
        the Move column starts in week three.`,
   },
   {
+    q: "Where do the playoff odds and the bracket come from",
+    a: `The rest of the season is simulated twenty thousand times, game by
+       game, from the same projections the board shows. The odds are how often
+       a team made it; the seeding follows the league's real tiebreakers. The
+       bracket button beside the week shows both — the tree fills in with
+       actual scores as rounds are played, and z, y, x and e are the clinch
+       marks: the conference's top seed, a division, a place, and eliminated.`,
+  },
+  {
+    q: "Closing line value is empty for some games",
+    a: `It needs two numbers: where the line opened and where it closed. An
+       opening line exists once, so a game the app first saw on Saturday has a
+       closing number and nothing to compare it against. Games priced from
+       early in the week onward are the ones that count, and the figure lives
+       on Settings under Betting lines.`,
+  },
+  {
     q: "The assistant is slow, or will not start",
     a: `It runs entirely on this machine — nothing is sent anywhere — which is
-       why it needs a model downloaded first. The Assistant tab sets that up in
-       one press. On a laptop the first answer after a cold start is the slow
-       one; the model stays warm for an hour after that.`,
+       why it needs a model downloaded first. The Assistant button in the top
+       bar sets that up in one press. On a laptop the first answer after a cold
+       start is the slow one; the model stays warm for an hour after that. The
+       button can be hidden in Settings → Assistant.`,
   },
   {
-    q: "Windows says the app is not trusted",
-    a: `The build is unsigned. More info → Run anyway. Signing a Windows binary
-       means buying a certificate, and it is on the list below rather than
-       done.`,
+    q: "Moving to another computer, or keeping a copy",
+    a: `Picks, settings and the season's history are one database file, and
+       the licence is a small file beside it. Both live in the data folder —
+       Settings → Backup writes a dated copy of the database and says exactly
+       which folder that is. Copying that whole folder to the same place on
+       the new machine brings everything across; copying only the backup
+       brings the data but not the licence.`,
+  },
+  {
+    q: "Something is wrong and I want to report it",
+    a: `The panel at the bottom of this page writes the report for you: which
+       build, which page, which feeds are answering, and any errors this
+       session hit. It copies to the clipboard and is posted nowhere — read
+       it first, then send it wherever you are reporting to.`,
   },
 ];
 
-const DESK_SOON = [
-  {
-    title: "Prediction markets",
-    state: "in progress",
-    items: [
-      "Kalshi and Polymarket prices beside the book on every game",
-      "Where a contract and a sportsbook disagree, and by how much",
-      "Contract volume, so a price nobody trades reads differently",
-    ],
-    note: `Both venues answer and the right games come back. What is missing is
-      the books: the events endpoint returns each contract without a bid or an
-      ask. Asking the markets endpoint directly is written and shipped — whether
-      it is enough is the next thing to find out.`,
-  },
-  {
-    title: "Closing line value",
-    state: "partly there",
-    items: [
-      "Already on Performance where an opening and closing line both exist",
-      "Per-week and per-team breakdowns",
-      "One running figure for how much of the season's edge was real",
-    ],
-  },
-  {
-    title: "Your pool, not the model's",
-    state: "planned",
-    items: [
-      "Pick'em scored by your own league's rules",
-      "More than one survivor entry at a time",
-      "Importing a pool's results instead of marking teams used by hand",
-    ],
-  },
-  {
-    title: "Shipping",
-    state: "planned",
-    items: ["A signed Windows build", "A signed and notarised Mac build"],
-  },
-];
+/* The update log. Written by hand: a changelog generated from commit
+   messages is a list of commits, not a list of changes.
 
-/* What changed, newest first. Written by hand: a changelog generated from
-   commit messages is a list of commits, not a list of changes. */
+   Nothing has shipped yet, so there is exactly one entry and it is the whole
+   app. Every version before this one was a build somebody was handed to look
+   at, not a release, and listing those as history would invent a past the
+   app does not have. It stays v1.0 until there is a v1.1 to write. */
 const DESK_CHANGES = [
   {
-    when: "This build",
+    when: "v1.0",
+    note: "The first release.",
     items: [
-      "Power rankings follow projected wins, so the order agrees with the PROJ column",
-      "A week's ranking waits for the previous week's last game to go final",
-      "Records and projections are frozen into the ranking with it",
-      "The betting lines have their own button and their own budget",
-      "Everything else refreshes itself once a minute",
-      "The assistant knows which week is which, and its formatting renders",
-      "A moon in dark mode and a sun in light",
-    ],
-  },
-  {
-    when: "Earlier",
-    items: [
-      "Winners read in gold, and finished games say Upset or Expected",
-      "Lines and totals freeze at kickoff instead of tracking the in-play market",
-      "The survivor tracker keeps the original run and scores it against yours",
-      "Connections moved to Settings; the sidebar shows the live game",
-      "The assistant stopped printing its working",
+      "A projection for every game: margin, win probability and a total, "
+        + "from a model trained on play-by-play rather than on results",
+      "Book lines and totals beside each projection, with the disagreement "
+        + "between them called out",
+      "Power rankings cut once a week and then left alone, so movement "
+        + "against them means something",
+      "A full season simulated twenty thousand times for playoff odds, seeds "
+        + "and a win distribution per team",
+      "Survivor planned to the end of the season, not one week at a time, "
+        + "and scored against the run you actually made",
+      "Pick'em for the week with the model's confidence on each side",
+      "A playoff bracket that fills in as rounds are played, beside the "
+        + "seeding picture and who is still in the hunt",
+      "Performance: record against the spread, against the total, and "
+        + "closing-line value where an opening line exists",
+      "Injuries and news per team, from the league's own feed",
+      "An assistant that answers questions about the season and runs "
+        + "entirely on this machine",
+      "Scores that update while games are being played",
+      "Dark and light, fullscreen, and a board that fits one screen",
     ],
   },
 ];
@@ -2624,28 +2638,19 @@ async function renderSoon(ticket) {
   const help = DESK_HELP.map((h) => `<details class="desk-q">
     <summary>${esc(h.q)}</summary>
     <p>${esc(h.a).replace(/\s+/g, " ")}</p></details>`).join("");
-  const soon = DESK_SOON.map((s) => `<div class="desk-item">
-    <div class="desk-head"><b>${esc(s.title)}</b>
-      <span class="soon-state ${esc(s.state.replace(/\s+/g, "-"))}">${esc(s.state)}</span></div>
-    <ul class="soon-list">${s.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
-    ${s.note ? `<p class="note">${esc(s.note).replace(/\s+/g, " ")}</p>` : ""}
-  </div>`).join("");
   const changes = DESK_CHANGES.map((c) => `<div class="desk-item">
-    <div class="desk-head"><b>${esc(c.when)}</b></div>
+    <div class="desk-head"><b>${esc(c.when)}</b>
+      ${c.note ? `<span class="hint">${esc(c.note)}</span>` : ""}</div>
     <ul class="soon-list">${c.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
   </div>`).join("");
 
-  if (!paint(root, `<div class="grid-3 desk">
+  if (!paint(root, `<div class="grid-2 desk">
     <div class="panel">
       <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
       ${help}
     </div>
     <div class="panel">
-      <header><h2>Being built</h2><span class="hint">and honestly not finished</span></header>
-      ${soon}
-    </div>
-    <div class="panel">
-      <header><h2>What changed</h2><span class="hint">newest first</span></header>
+      <header><h2>Update logs</h2><span class="hint">newest first</span></header>
       ${changes}
     </div>
   </div>
@@ -3604,6 +3609,15 @@ async function loadState() {
     build.textContent = meta.build_label || "";
     build.title = meta.build?.source === "release"
       ? "The build you installed" : "Running from a source checkout";
+  }
+  // The version, in the corner where people look for it. Trailing zeros are
+  // dropped so 1.0.0 reads "v1.0" -- the number anyone would actually say.
+  const version = $("#app-version");
+  if (version && meta.version) {
+    const parts = String(meta.version).split(".");
+    while (parts.length > 2 && parts[parts.length - 1] === "0") parts.pop();
+    version.textContent = `v${parts.join(".")}`;
+    version.title = meta.build_label || "";
   }
   paintOdds();
   paintAssistantButton();

@@ -88,3 +88,25 @@ def test_an_unknown_build_claims_nothing(monkeypatch):
     out = updates.check(force=True)
     assert out["newer"] is False
     assert "does not say which commit" in out["reason"]
+
+
+def test_the_window_can_say_which_version_it_is(temp_env):
+    """A commit hash is not a version.
+
+    "build 12bc6ee" answers whether this is the copy with the fix, which is a
+    developer's question. It does not answer the one a customer asks, which is
+    which version they are on -- so the number they can say out loud rides
+    alongside it in the same payload.
+    """
+    from fastapi.testclient import TestClient
+
+    from nflpicker import __version__
+    from nflpicker.api import create_app
+
+    with TestClient(create_app()) as client:
+        state = client.get("/api/state").json()
+
+    assert state["version"] == __version__
+    assert state["version"].count(".") == 2, "a full semantic version"
+    # The build stays, because the two answer different questions.
+    assert "build_label" in state and "build" in state

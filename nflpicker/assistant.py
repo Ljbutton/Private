@@ -111,7 +111,7 @@ def _model_name() -> str:
 def _is_loopback(url: str) -> bool:
     """Is this address on this machine?
 
-    The promise the Assistant tab makes is that the conversation never leaves
+    The promise the assistant makes is that the conversation never leaves
     the machine, and a promise that depends on the user pasting the right thing
     is not a promise. Anything that is not loopback is refused.
     """
