@@ -487,3 +487,79 @@ def test_the_prompt_forbids_quoting_a_record_without_its_period():
     prompt = assistant.SYSTEM_PROMPT
     assert "Every record has a period attached" in prompt
     assert "this_week.state" in prompt
+
+
+# ------------------------------------------------- the window the model reads
+
+def test_the_context_window_is_set_and_big_enough(monkeypatch):
+    """The reason a chat had no memory.
+
+    Ollama defaults to 2048 tokens and silently drops whatever does not fit,
+    oldest first. The instructions and the attached board come to roughly 2,800
+    before anything is asked, so every request was already over -- the history
+    was sent in full each time and discarded on arrival. Nothing in the app
+    could see it happen: the transcript was correct, the request was correct,
+    and the model answered as though it had just met you.
+    """
+    import httpx
+
+    from nflpicker import assistant
+
+    sent = {}
+
+    class _Reply:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": "ok"}, "done_reason": "stop"}
+
+    def _post(url, json=None, timeout=None, **kw):
+        sent.update(json or {})
+        return _Reply()
+
+    monkeypatch.setattr(httpx, "post", _post)
+    assistant._ask_ollama("http://x", {"model": "m", "messages": [
+        {"role": "user", "content": "hi"}]}, 5.0)
+
+    options = sent.get("options") or {}
+    assert "num_ctx" in options, "unset means 2048, which is the bug"
+    assert options["num_ctx"] == assistant.CONTEXT_TOKENS
+    # Room for the instructions, the board, a conversation and an answer.
+    assert options["num_ctx"] >= 4096
+    assert options["num_ctx"] > options["num_predict"] * 4
+
+
+def test_the_whole_conversation_is_sent(monkeypatch, temp_env):
+    """Turn two carries turn one, so a follow-up can be a follow-up."""
+    import httpx
+
+    from nflpicker import assistant
+
+    seen = []
+
+    class _Reply:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": "ok"}, "done_reason": "stop"}
+
+    monkeypatch.setattr(assistant, "status", lambda: {
+        "ready": True, "model": "m", "endpoint": "http://x/v1", "message": ""})
+    monkeypatch.setattr(httpx, "post",
+                        lambda url, json=None, timeout=None, **kw: (
+                            seen.append(json), _Reply())[1])
+
+    chat = assistant.create_chat("t")["id"]
+    for question in ("who plays thursday?", "and the total?"):
+        assistant.append_message(chat, "user", question)
+        assistant.ask(assistant.chat_messages(chat), 2026, 6)
+        assistant.append_message(chat, "assistant", "ok")
+
+    second = [m["content"] for m in seen[-1]["messages"] if m["role"] != "system"]
+    assert second == ["who plays thursday?", "ok", "and the total?"]

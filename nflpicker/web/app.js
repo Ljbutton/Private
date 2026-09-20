@@ -5,26 +5,24 @@ import {
   signed, statusClass, when,
 } from "./format.js";
 
-/* The last few things the page has thrown, for a bug report to carry.
-
-   An error that only ever reached a console nobody has open is an error that
-   never gets reported with anything useful attached. Bounded, because a page
-   that throws in a loop must not also fill memory with the evidence. */
-const pageErrors = [];
-const PAGE_ERROR_LIMIT = 20;
-addEventListener("error", (ev) => {
-  const where = ev.filename ? ` (${String(ev.filename).split("/").pop()}:${ev.lineno})` : "";
-  pageErrors.push(`${new Date().toISOString().slice(11, 19)} ${ev.message}${where}`);
-  if (pageErrors.length > PAGE_ERROR_LIMIT) pageErrors.shift();
-});
-addEventListener("unhandledrejection", (ev) => {
-  pageErrors.push(`${new Date().toISOString().slice(11, 19)} unhandled: ${
-    ev.reason && ev.reason.message ? ev.reason.message : String(ev.reason)}`);
-  if (pageErrors.length > PAGE_ERROR_LIMIT) pageErrors.shift();
-});
-
 const state = { season: null, week: null, weeks: [], tab: "home", meta: null,
   busy: false, trackTeam: null };
+
+/* Which pages take exactly one screen, and when that is decided.
+
+   `render` used to clear `fit-screen` as its first act and wait for the view
+   -- which is async -- to put it back. For the frame in between, the board was
+   unconstrained: it grew to its full height, the window gained a scrollbar,
+   and the scroll position inside it was lost and then restored. One frame, and
+   entirely visible, which is what "refresh glitches the bottom of the screen"
+   was. Nothing is stripped now; a view says it fits while it renders and the
+   class is settled once, after the paint. */
+let fitRequested = false;
+
+function fitsOneScreen(root) {
+  fitRequested = true;
+  root.classList.add("fit-screen");
+}
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -716,7 +714,7 @@ async function renderPerformance(ticket) {
       >${esc(label)}<span class="sort-arrow">${on ? (sort.dir === "desc" ? "▾" : "▴") : "⇅"}</span></th>`;
   };
 
-  root.classList.add("fit-screen");
+  fitsOneScreen(root);
   /* Three answers down the left, the league down the right.
 
      Two by two gave the by-team table a quarter of the page for thirty-two
@@ -1324,7 +1322,7 @@ async function renderHome(ticket) {
      slate -- and the one thing you go back up for is the week. The panel
      takes the height it is given and the grid of cards scrolls within it, the
      same contract Picks and Performance are already on. */
-  root.classList.add("fit-screen");
+  fitsOneScreen(root);
   if (!paint(root, `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
       <span class="hint">Home team listed second · Blind = before the line ·
@@ -1957,16 +1955,36 @@ async function fillGame(dlg, body, gameId) {
           const team = side === "home" ? g.home : g.away;
           const a = g.availability?.[side];
           if (!a || !a.missing?.length) return [];
-          return a.missing.map((m, i) => `<tr>
+          return a.missing.map((m, i) => {
+            /* A zero here does not mean "no effect".
+
+               When the replacement starter has been fed to the model as a
+               feature, the downgrade is already inside the projection and
+               charging it again here would double it -- so the offset is
+               zero and the cost column showed a dash, which reads as the
+               injury having been ignored. It has not been; it has been
+               counted somewhere this table was not saying. */
+            const inModel = a.qb_in_model
+              && String(m.position || "").toUpperCase() === "QB";
+            const cost = m.cost ? `−${num(m.cost, 2)}`
+              : inModel ? `<span class="muted" title="The replacement starter is\
+ a feature of the projection, so this is already priced into the number rather\
+ than added on top of it.">in model</span>`
+              : "–";
+            return `<tr>
             <td class="team">${i === 0 ? `${esc(team)} <span class="muted">(${signed(a.adjustment)})</span>` : ""}</td>
             <td>${esc(m.player || "–")}</td><td>${esc(m.position || "–")}</td>
-            <td>${esc(m.status || "–")}</td><td>${m.cost ? `−${num(m.cost, 2)}` : "–"}</td></tr>`);
+            <td>${esc(m.status || "–")}</td><td>${cost}</td></tr>`;
+          });
         }).join("")}</tbody>
       </table></div>
       <p class="note">Injury history is not in the training data, so this is applied to the
         projection rather than learned. It mostly removes false disagreement — a model that
         has not noticed a ruled-out starter claims its biggest edge on the game it understands
-        least. A quarterback's cost is the measured gap to his backup, not a flat constant.</p>
+        least. A quarterback's cost is the measured gap to his backup, with a floor: a
+        listed starter being ruled out is never worth less than the league-average cost
+        of losing one. Where a row reads "in model", the replacement has been given to
+        the projection as a feature and is already priced into the number.</p>
     </div>` : ""}
     ${(g.news || []).length ? `<div class="panel" style="background:var(--surface-sunken)">
       <header><h2>News touching this game</h2></header>
@@ -2207,7 +2225,6 @@ async function renderPicks(ticket) {
      sixteen games, not a four-game round -- so a playoff week here is a
      question with no answer rather than an empty board. */
   if (state.postWeeks?.has(Number(state.week))) {
-    root.classList.remove("fit-screen");
     paint(root, `<div class="panel"><div class="empty">
       Picks and survivor are a regular-season contest — a pool is settled by
       week 18 and a pick'em board is a full slate, not a four-game round.
@@ -2305,7 +2322,7 @@ async function renderPicks(ticket) {
         : (a.cost > 0 ? `−${pct(a.cost, 2)}` : `+${pct(-a.cost, 2)}`)}</span>
   </div>`).join("");
 
-  root.classList.add("fit-screen");
+  fitsOneScreen(root);
   if (!paint(root, `
   <div class="pick-board">
   <div class="panel">
@@ -2685,15 +2702,6 @@ const DESK_HELP = [
        the new machine brings everything across; copying only the backup
        brings the data but not the licence.`,
   },
-  {
-    q: "Something is wrong and I want to report it",
-    a: `The panel at the bottom of this page writes the report for you: which
-       build, which page, which feeds are answering, and any errors this
-       session hit. Show it first — nothing leaves until you press send,
-       and it carries no API keys and none of your picks. If sending is not
-       set up on your copy, or the machine is offline, copy it instead and
-       send it however you like.`,
-  },
 ];
 
 /* The update log. Written by hand: a changelog generated from commit
@@ -2753,137 +2761,10 @@ async function renderSoon(ticket) {
       <header><h2>Update logs</h2><span class="hint">newest first</span></header>
       ${changes}
     </div>
-  </div>
-
-  <!-- Reporting a bug.
-
-       Assembled here and copied to the clipboard rather than posted
-       anywhere. This app talks to a handful of sports feeds and to nothing
-       else; quietly opening a channel to a bug tracker would be a new kind
-       of thing for it to do, and the report carries the state of someone's
-       machine. So it is written, shown in full, and it goes when they send
-       it -- which is also the only version of this that works on a laptop
-       with no network. -->
-  <div class="panel" id="bug-panel">
-    <header><h2>Report a bug</h2>
-      <span class="hint">assembled here, copied by you — nothing is sent
-        automatically</span></header>
-    <label class="bug-label" for="bug-what">What happened, and what you
-      expected instead</label>
-    <textarea id="bug-what" class="bug-what" rows="4"
-      placeholder="Clicked a game on Home and the dialog stayed on Loading…"></textarea>
-    <div class="bug-actions">
-      <button class="btn primary" id="bug-send">Send report</button>
-      <button class="btn" id="bug-copy">Copy instead</button>
-      <button class="btn" id="bug-show">Show what will be sent</button>
-      <span id="bug-result" class="muted"></span>
-    </div>
-    <pre class="bug-preview" id="bug-preview" hidden></pre>
-    <p class="note">The report carries the build, this computer's platform,
-      which page you were on, when each feed last answered, and any errors the
-      page has thrown this session. It does not carry your API keys, your
-      picks, or anything you have not typed above. Nothing is sent until you
-      press send — read it first with the button above. If sending is not set
-      up, or cannot reach the internet, copy it instead.</p>
   </div>`)) return;
-
-  /* What a report says. Built fresh each time it is asked for, so it
-     describes the moment the button was pressed rather than the moment the
-     page was drawn. */
-  const bugReport = () => {
-    const meta = state.meta || {};
-    const said = ($("#bug-what")?.value || "").trim();
-    const feeds = (meta.sources || []).map(
-      (f) => `  ${f.source}: ${f.ok ? "ok" : "FAILED"} ${ago(f.ts)}${
-        f.detail && !f.ok ? ` — ${f.detail}` : ""}`).join("\n");
-    return [
-      "The Edge — bug report",
-      "",
-      said || "(no description given)",
-      "",
-      `Build:     ${meta.build_label || "unknown"}`,
-      `Model:     ${meta.model?.version || "?"} (${
-        meta.model?.trained ? "trained" : "not trained"})`,
-      `Season:    ${state.season} · week ${state.week}`,
-      // The page as it is named on screen. `state.tab` is the internal id --
-      // a report saying "soon" sends whoever reads it looking for a page that
-      // does not exist, when the person was standing on The Desk.
-      `Page:      ${$(`.tab[data-tab="${state.tab}"] span`)?.textContent
-                    || state.tab}`,
-      `Platform:  ${navigator.platform || "?"} · ${window.innerWidth}x${window.innerHeight}`,
-      `Demo data: ${meta.demo ? "yes" : "no"}`,
-      `Odds key:  ${meta.has_odds_key ? "set" : "not set"}`,
-      "",
-      "Feeds:",
-      feeds || "  (none recorded)",
-      "",
-      "Errors this session:",
-      pageErrors.length
-        ? pageErrors.map((e) => `  ${e}`).join("\n")
-        : "  (none)",
-    ].join("\n");
-  };
-
-  $("#bug-show", root)?.addEventListener("click", () => {
-    const pre = $("#bug-preview", root);
-    pre.textContent = bugReport();
-    pre.hidden = !pre.hidden;
-  });
-
-  /* Sending. Nothing leaves until this is pressed, and every way it can fail
-     leaves the report exactly where it was so it can still be copied. */
-  $("#bug-send", root)?.addEventListener("click", async () => {
-    const out = $("#bug-result", root);
-    const button = $("#bug-send", root);
-    const text = bugReport();
-    out.textContent = "Sending…";
-    out.className = "muted";
-    button.disabled = true;
-    try {
-      const reply = await api("/api/report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ report: text }),
-      });
-      out.textContent = reply.message
-        || (reply.sent ? "Report sent. Thank you." : "The report was not sent.");
-      out.className = reply.sent ? "pos" : "neg";
-    } catch (err) {
-      out.textContent = `Could not send the report — ${
-        err.message}. Copy it instead.`;
-      out.className = "neg";
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  $("#bug-copy", root)?.addEventListener("click", async () => {
-    const out = $("#bug-result", root);
-    const text = bugReport();
-    try {
-      await navigator.clipboard.writeText(text);
-      out.textContent = "Copied. Paste it wherever you are reporting this.";
-      out.className = "pos";
-    } catch {
-      // A clipboard write can be refused, and a report you cannot get at is
-      // not a report. Showing it is the fallback that always works.
-      const pre = $("#bug-preview", root);
-      pre.textContent = text;
-      pre.hidden = false;
-      out.textContent = "Could not reach the clipboard — select the text below.";
-      out.className = "neg";
-    }
-  });
 }
 
-// --------------------------------------------------------------- settings
-/* What you have to tell this app, and where it goes.
 
-   Everything here was an environment variable, which is fine in a terminal and
-   useless in a packaged app: there is no shell to export from. Each field says
-   what breaks without it, because "Odds API key" answers nothing on its own —
-   the question being asked is "what do I need to fill in, and what happens if
-   I don't". */
 async function renderSettings(ticket) {
   const root = $("#view");
   // The backup list is not worth failing the whole page over: settings still
@@ -3509,9 +3390,10 @@ async function render({ keepPlace = false, animate = false } = {}) {
   // the tab rather than the data.
   if (state.meta) sideFoot(state.meta);
   const view = VIEWS[state.tab] || renderHome;
-  // Only Picks asks for the viewport's height; every other page is as tall as
-  // it needs to be. Cleared here so a class one view sets cannot outlive it.
-  $("#view").classList.remove("fit-screen");
+  // Not cleared here. Stripping it before an async view can put it back left
+  // the board unconstrained for a frame, which is the flicker this used to
+  // cause; it is settled below, once the new page is actually on screen.
+  fitRequested = false;
   // The hero reports which season and week are on screen, so it has to follow
   // the selectors rather than only the last state load.
   if (state.meta) renderHero(state.meta);
@@ -3519,12 +3401,14 @@ async function render({ keepPlace = false, animate = false } = {}) {
   try {
     await view(renderTicket);
     if (ticket !== renderTicket) return;
-    // The column has to know too: a fitted view takes what is left of one
-    // viewport, and there is nothing left of a container sized to its content.
+    // Settled once, now that the new page is on screen: whether this view
+    // asked to fit, and the column that has to agree with it -- a fitted view
+    // takes what is left of one viewport, and there is nothing left of a
+    // container sized to its own content.
     const viewEl = $("#view");
+    viewEl.classList.toggle("fit-screen", fitRequested);
     if (viewEl.parentElement) {
-      viewEl.parentElement.classList.toggle(
-        "fits", viewEl.classList.contains("fit-screen"));
+      viewEl.parentElement.classList.toggle("fits", fitRequested);
     }
     /* The fade belongs to the arriving page, not to the click.
 

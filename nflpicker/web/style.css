@@ -46,6 +46,8 @@
 
   --scroll-thumb:       rgba(11, 11, 11, 0.22);
   --scroll-thumb-hover: rgba(11, 11, 11, 0.38);
+  --scroll-thumb-strong:    rgba(11, 11, 11, 0.38);
+  --scroll-thumb-strongest: rgba(11, 11, 11, 0.55);
 
   --radius: 14px;
   --radius-sm: 9px;
@@ -87,6 +89,8 @@
     --success-text: #2ee6a0;
     --scroll-thumb:       rgba(244, 245, 246, 0.20);
     --scroll-thumb-hover: rgba(244, 245, 246, 0.36);
+    --scroll-thumb-strong:    rgba(244, 245, 246, 0.36);
+    --scroll-thumb-strongest: rgba(244, 245, 246, 0.55);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 3px rgba(0, 0, 0, .25);
     --shadow-md: 0 2px 4px rgba(0, 0, 0, .3), 0 8px 20px rgba(0, 0, 0, .35);
     --shadow-lg: 0 8px 16px rgba(0, 0, 0, .4), 0 24px 48px rgba(0, 0, 0, .5);
@@ -114,6 +118,8 @@
     --success-text: #2ee6a0;
     --scroll-thumb:       rgba(244, 245, 246, 0.20);
     --scroll-thumb-hover: rgba(244, 245, 246, 0.36);
+    --scroll-thumb-strong:    rgba(244, 245, 246, 0.36);
+    --scroll-thumb-strongest: rgba(244, 245, 246, 0.55);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 3px rgba(0, 0, 0, .25);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, .3), 0 8px 20px rgba(0, 0, 0, .35);
   --shadow-lg: 0 8px 16px rgba(0, 0, 0, .4), 0 24px 48px rgba(0, 0, 0, .5);
@@ -1192,6 +1198,25 @@ td.team { font-weight: 600; }
      sliced off by the panel's edge -- which reads as the page having broken
      rather than as there being more below. */
   padding: 0 4px 10px 0;
+  /* A bar you can actually see, and a gutter that is always there.
+
+     The board has scrolled since it was made to fit the window, but on a
+     sixteen-game Sunday nothing said so: these are overlay scrollbars, which
+     appear while you drag and are invisible the rest of the time, and the
+     fade at the foot is too quiet to read as "there are eight more games
+     below". Reserving the gutter keeps the cards from shifting when the bar
+     appears, and a thumb at full contrast is the difference between a slate
+     that looks complete and one that looks truncated. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb-strong) transparent;
+}
+#view.fit-screen > .panel.board > .gboard::-webkit-scrollbar { width: 10px; }
+#view.fit-screen > .panel.board > .gboard::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb-strong); background-clip: padding-box;
+}
+#view.fit-screen > .panel.board > .gboard::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-strongest); background-clip: padding-box;
 }
 #view.fit-screen > .panel.board > .note { flex: none; margin-bottom: 0; }
 /* Three columns: the picks, survivor's choice, and the run that choice
@@ -1318,19 +1343,20 @@ td.team { font-weight: 600; }
    which is exactly what it used to be, and exactly the confusion to avoid now
    that it also filters the news beside it. */
 .news-filter { padding: 10px 12px; margin-bottom: 14px; }
-/* Thirty-three crests, flush at both ends.
+/* Thirty-three crests, together in the middle.
 
-   The columns used to be `1fr` while the crest inside them stayed capped at
-   22px and centred, so every pixel the window gained went into the cells --
-   and the last crest drifted away from the right edge while the first stayed
-   put. At 2560 that was 53px of dead space on the right against 16px on the
-   left, which is the gap that kept getting reported. Fixed columns with the
-   slack shared between them keeps the row even and both edges flush at every
-   width. */
+   The columns were `1fr` once, with the crest inside them capped at 22px and
+   centred, so every pixel the window gained went into the cells and the row
+   spread itself thinner as the window grew. Spreading them to the edges
+   instead fixed the drift but kept the same problem in another form: on a
+   wide screen thirty-three crests strung across two thousand pixels are a
+   line of unrelated dots rather than one row of teams. Fixed columns packed
+   to the centre keep them a group. The slack goes to the outside, where it
+   costs nothing. */
 .team-picker.wide {
   display: grid; grid-template-columns: repeat(33, 22px);
-  justify-content: space-between;
-  gap: 3px; max-height: none; overflow: visible;
+  justify-content: center;
+  gap: 6px; max-height: none; overflow: visible;
 }
 .team-picker.wide .team-pick { padding: 3px 0; }
 /* The league mark stands for "all of it", so it reads as a word rather than a
@@ -1350,12 +1376,14 @@ td.team { font-weight: 600; }
 }
 /* A shield is not a roundel: let it fill the square it is given. */
 .tbadge.league.hasimg { background: transparent; border-color: transparent; }
-/* No margin. It took five pixels out of the league button's grid cell, so
-   that button sat narrower than the thirty-two beside it -- a gap that was
-   invisible at rest and, once the button was selected and drew a background,
-   read as a hole punched in the row where the counts used to be. The grid's
-   own gap already separates them. */
-.team-pick.league.on .tbadge.league { border-color: var(--series-1); }
+/* Selected, the league mark takes the same single ring as every other crest.
+
+   It used to draw its own green border as well as the button's, so the one
+   badge in the row that has a border of its own showed two concentric green
+   rings while the thirty-two beside it showed one. The button's ring is the
+   selection; the badge's border is only there to give a flat wordmark an
+   edge, so it stays neutral. */
+.team-pick.league.on .tbadge.league { border-color: var(--border); }
 /* Which filter is in force, said once on each panel that obeys it. */
 .filter-who {
   margin-left: auto; font-weight: 700; color: var(--series-1);
@@ -2724,22 +2752,3 @@ dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
    talks to a handful of sports feeds and to nothing else; opening a channel
    to a bug tracker would be a new kind of thing for it to do, and the report
    carries the state of someone's machine. */
-#bug-panel { margin-top: 18px; }
-.bug-label { display: block; font-size: 12px; font-weight: 650;
-  color: var(--text-secondary); margin-bottom: 6px; }
-.bug-what {
-  width: 100%; font: inherit; font-size: 13px; padding: 9px 11px;
-  border-radius: var(--radius-sm); border: 1px solid var(--border);
-  background: var(--surface-sunken); color: var(--text-primary);
-  resize: vertical; min-height: 74px;
-}
-.bug-what:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--series-1); }
-.bug-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px;
-  flex-wrap: wrap; }
-.bug-preview {
-  margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm);
-  background: var(--surface-sunken); border: 1px solid var(--border);
-  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
-  white-space: pre-wrap; max-height: 320px; overflow: auto;
-  color: var(--text-secondary);
-}

@@ -432,6 +432,22 @@ def _ollama_base(url: str) -> str | None:
     return url[: -len("/v1")] if url.endswith("/v1") else None
 
 
+# How much the model is allowed to read at once.
+#
+# This has to be set, and it was not. Ollama defaults to a 2048-token window
+# and silently discards whatever does not fit -- from the front, which is the
+# oldest turns first. The system prompt and the attached state come to about
+# 2,800 tokens before a single question is asked, so every request was already
+# over budget: the conversation was being sent in full and thrown away on
+# arrival. That is what "it does not remember the previous question" was.
+#
+# The budget: ~530 for the instructions, ~2,250 for the board, a dozen turns
+# of conversation, and MAX_TOKENS of answer. Eight thousand leaves room for
+# all of it and for the state to grow, and is comfortably within what the two
+# models offered here support.
+CONTEXT_TOKENS = 8192
+
+
 def _ask_ollama(base: str, payload: dict, timeout: float) -> dict | None:
     """Ask Ollama directly. Returns None if this is not Ollama after all.
 
@@ -454,7 +470,8 @@ def _ask_ollama(base: str, payload: dict, timeout: float) -> dict | None:
         "messages": payload["messages"],
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.2, "num_predict": MAX_TOKENS},
+        "options": {"temperature": 0.2, "num_predict": MAX_TOKENS,
+                    "num_ctx": CONTEXT_TOKENS},
     }
     try:
         response = httpx.post(f"{base}/api/chat", json=native, timeout=timeout)

@@ -47,6 +47,23 @@ STATUS_COST = {
 # game at roughly a starter's volume.
 DROPBACKS_PER_GAME = 35.0
 
+# The least a team's listed starter can cost by being ruled out.
+#
+# The measured gap is the right idea and it was reading far too small: a
+# backup's rating is shrunk toward zero by how little he has played, and zero
+# on this scale is an *average starter*, not a replacement. So an unproven
+# backup scores like a competent starter and the gap to him comes out near
+# nothing -- Darnold out for Seattle priced at 1.3 points, against a market
+# that moves several for any starting quarterback.
+#
+# Fixing the shrinkage target properly means carrying each passer's volume
+# into this calculation, and the rating those values feed was fitted against
+# them as they are. So the floor is the honest patch: never charge less for
+# losing a starter than the league-average cost of losing one, and let the
+# measured gap say how much *more* an elite starter is worth. It binds only
+# for the team's listed starter -- a backup being out is genuinely cheap.
+STARTER_QB_FLOOR = 3.0
+
 # No single team adjustment may exceed this. Injury reports in the NFL are
 # strategic and often incomplete, and a runaway sum of questionable tags would
 # swamp a rating built from a season of evidence.
@@ -163,6 +180,20 @@ def quarterback_cost(
         # Fall back to the position's league-average cost when either side of
         # the comparison is unknown.
         points = POSITION_IMPACT["QB"]
+
+    # The floor, for the passer this team would start if he were fit. See
+    # STARTER_QB_FLOOR: the measured gap understates this systematically,
+    # because the backup it is measured against is shrunk toward a rating that
+    # means "average starter" rather than one that means "replacement".
+    #
+    # "Best of the team's passers", not "first on the depth chart". That list
+    # is ordered by who started most recently, and a quarterback who is out
+    # stops being that the moment his replacement takes a snap -- which is
+    # precisely the case this floor exists for. Ranking by value instead gets
+    # both directions right: the starter being out is floored, his backup
+    # being out is not.
+    if starter is not None and replacement is not None and starter > replacement:
+        points = max(points, STARTER_QB_FLOOR)
 
     return max(0.0, points) * cost_share, cost_share >= 0.75
 
