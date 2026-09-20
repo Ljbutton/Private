@@ -640,19 +640,6 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # the moment the week before it finished -- so until that Monday night
         # game goes final there is no cut for the week, nothing to compare, and
         # nothing an arrow could honestly point at.
-        if week not in weeks:
-            return {
-                "season": season, "week": week, "weeks": weeks,
-                "compared_to": None, "teams": [], "sources": {},
-                "note": (
-                    "There is no week one ranking: nothing has been played "
-                    "yet, so there is nothing to rank on."
-                    if week is not None and week < 2 else
-                    f"No ranking has been taken for week {week} yet. A week's "
-                    "cut is frozen the moment the week before it finishes, so "
-                    f"this fills in once week {week - 1}'s last game is final."
-                ),
-            }
         # Which weeks were cut while the app was running for them.
         live_cuts = {
             r["week"]: True for r in db.query(
@@ -660,6 +647,44 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                 "WHERE season = ? AND source = 'live'", (season,),
             )
         }
+        # A rebuilt week is not a ranking, so it is not shown as one.
+        #
+        # The distinction already governed what a week could be compared
+        # *against*; it has to govern what a week *is*, too. A rebuilt snapshot
+        # is this code's reconstruction of a week nobody was running for, made
+        # afterwards from the games that had finished by then -- fine for a
+        # trend line, and not a cut that was ever taken. Treating it as one is
+        # how week three showed a full column of arrows against a week two
+        # that was also a reconstruction: two backfills differenced, presented
+        # as a fortnight of movement.
+        # Which weeks are a record and which are a reconstruction. Answered
+        # whether or not the week asked about has a ranking: it describes the
+        # history, not the request, and a caller that cannot see it has no way
+        # to tell a backfilled season from a recorded one.
+        sources = {r["week"]: r["source"] for r in db.query(
+            "SELECT week, MIN(source) AS source FROM power_snapshots "
+            "WHERE season = ? GROUP BY week", (season,),
+        )}
+        if week not in weeks or not live_cuts.get(week):
+            never_ranked = week in weeks          # present, but only rebuilt
+            return {
+                "season": season, "week": week, "weeks": weeks,
+                "compared_to": None, "teams": [], "sources": sources,
+                "ranked": False,
+                "note": (
+                    "There is no week one ranking: nothing has been played "
+                    "yet, so there is nothing to rank on."
+                    if week is not None and week < 2 else
+                    f"Week {week} was never ranked live -- this copy of the app "
+                    "was not running for it, so what history exists is a "
+                    "reconstruction rather than a cut that was taken at the "
+                    "time."
+                    if never_ranked else
+                    f"No ranking has been taken for week {week} yet. A week's "
+                    "cut is frozen the moment the week before it finishes, so "
+                    f"this fills in once week {week - 1}'s last game is final."
+                ),
+            }
 
         rows = db.query(
             "SELECT team, rank, power, elo, pythagorean, wins, losses, ties,"
@@ -699,13 +724,10 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "week": week,
             "weeks": weeks,
             "compared_to": earlier[-1] if earlier else None,
+            "ranked": True,
             "teams": rows,
-            # Which weeks are a record and which are a reconstruction. Shown
-            # rather than smoothed over: they are not the same claim.
-            "sources": {r["week"]: r["source"] for r in db.query(
-                "SELECT week, MIN(source) AS source FROM power_snapshots "
-                "WHERE season = ? GROUP BY week", (season,),
-            )},
+            # Shown rather than smoothed over: they are not the same claim.
+            "sources": sources,
         }
 
     # ------------------------------------------------------------ picks
@@ -820,11 +842,28 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "SELECT week, home, away, home_score, away_score, status FROM games "
             "WHERE season = ? AND season_type = 'REG'", (season,),
         )
-        out = track(original.get("path") or [],
-                    db.get_meta(USED_WEEKS_KEY, {}) or {}, games)
+        used_weeks = db.get_meta(USED_WEEKS_KEY, {}) or {}
+        out = track(original.get("path") or [], used_weeks, games)
         out["season"] = season
         out["saved_at"] = original.get("saved_at")
         out["from_week"] = original.get("from_week")
+
+        # What the original run would do from here, had it survived.
+        #
+        # Once the plan busts, its column stops being a rival and becomes a
+        # gravestone -- a list of weeks with a red mark partway down and
+        # nothing after it. The interesting question does not die with it:
+        # given where the season actually is, and given the teams *you* have
+        # spent, what would the optimiser pick next? So the counterfactual is
+        # planned from the current week with your used list, which is the
+        # constraint that genuinely binds -- a team you have burned is gone
+        # whatever an imaginary run would like to do with it.
+        if out["original"]["out_week"] is not None:
+            with contextlib.suppress(Exception):
+                built = pipeline.picks_for_week(
+                    season, pipeline.current_week(season),
+                    used_teams=sorted(used_weeks))
+                out["original"]["continuation"] = built.get("survivor")
         return out
 
     # ------------------------------------------------------------- news

@@ -842,6 +842,17 @@ async function renderPerformance(ticket) {
       panel.querySelector(".empty")?.remove();
       panel.querySelector(".track-split")?.remove();
       panel.querySelector(".verdict")?.remove();
+      panel.querySelector(".track-foot")?.remove();
+      /* A busted plan is not the end of the question.
+
+         Once the plan goes out its column stops being a rival and becomes a
+         gravestone: weeks, a cross partway down, and nothing after it. What
+         it would do *from here* is still worth seeing, and it is the only way
+         to keep judging the optimiser against your own picks for the rest of
+         the season. Tucked in the corner rather than opened on the page --
+         it is a counterfactual, and a counterfactual laid out beside real
+         results is one more thing to mistake for them. */
+      const continuation = (t.original || {}).continuation;
       panel.insertAdjacentHTML("beforeend", `
         ${t.verdict ? `<p class="verdict">${esc(t.verdict)}</p>` : ""}
         <div class="table-scroll"><table class="slate run-track track-split">
@@ -853,8 +864,37 @@ async function renderPerformance(ticket) {
             <td class="team">W${r.week}</td>
             ${runCell(r.plan)}${runCell(r.mine)}
           </tr>`).join("")}</tbody>
-        </table></div>`);
+        </table></div>
+        ${continuation ? `<div class="track-foot">
+          <button class="btn tiny" id="plan-if-alive"
+            title="What the optimiser would pick from here if the plan had survived, with the teams you have already spent taken out">
+            If the plan had lived →</button>
+        </div>` : ""}`);
       wireLogos(panel);
+      $("#plan-if-alive", panel)?.addEventListener("click", () => {
+        const dlg = $("#detail");
+        paintDialogNav(null);
+        $(".dialog-title", dlg).textContent =
+          `If the plan had lived — from week ${continuation.week}`;
+        const rows = (continuation.path || []).map((step) => `<tr>
+          <td class="team">W${esc(String(step.week))}</td>
+          <td><span class="run-cell">${teamMark(step.team)}<b>${esc(step.team)}</b></span></td>
+          <td class="num">${pct(step.win_prob, 1)}</td>
+          <td class="muted">${esc(step.opponent || "")}</td></tr>`).join("");
+        $(".dialog-body", dlg).innerHTML = `
+          <p class="note">The plan went out in week ${esc(String(
+            (t.original || {}).out_week))}. This is what the optimiser would
+            take from here if it had not — planned around the teams you have
+            actually spent, because those are gone either way. It is a
+            counterfactual, not a record: nothing below has been played.</p>
+          <div class="table-scroll"><table class="slate">
+            <thead><tr><th>Wk</th><th>Team</th><th class="num">Win prob</th>
+              <th>Opponent</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="4" class="muted">No weeks left to plan.</td></tr>'}</tbody>
+          </table></div>`;
+        wireLogos($(".dialog-body", dlg));
+        if (!dlg.open) dlg.showModal();
+      });
     })
     .catch(() => {});
 
@@ -2123,28 +2163,33 @@ async function renderTeams(ticket) {
   const table = (teams) => `<table class="rank-table">${head}
     <tbody>${teams.map(row).join("")}</tbody></table>`;
 
+  /* A week with no cut of its own shows nothing, not today's order.
+
+     It used to fall back to the live ranking with a note under it, which put
+     the current standings beneath a week-three heading -- and a reader takes
+     a table at its heading, not at its footnote. A week that was never ranked
+     has no ranking to show, and saying so is the whole answer. */
+  const ranked = history.ranked !== false;
+  /* One panel now that the win distribution opens on a click, so the page
+     fits the window again and the two halves of the ranking scroll inside
+     it -- the same way every other page that fits is built. */
+  fitsOneScreen(root);
   if (!paint(root, `
-  <div class="panel">
+  <div class="panel rankings">
     <header><h2>Power rankings</h2>
       <span class="hint">by projected finish, the Pythagorean, the rating and
         title odds — not by record · click a team for the rest</span></header>
-    <div class="rank-split">
+    ${ranked ? `<div class="rank-split">
       <div class="table-scroll">${table(data.teams.slice(0, half))}</div>
       <div class="table-scroll">${table(data.teams.slice(half))}</div>
-    </div>
-    ${rankNote ? `<p class="note">${esc(rankNote)} Until then this is the
-      ranking as it stands today, with no movement against a week that has not
-      been ranked.</p>` : ""}
+    </div>` : `<div class="empty">${esc(rankNote
+      || "This week has not been ranked yet.")}</div>`}
+    ${ranked && rankNote ? `<p class="note">${esc(rankNote)}</p>` : ""}
     ${hasWinTotals ? "" : `<p class="note">No season win-total lines are
       available from the odds feed right now, so the market columns in each
       card are blank. Nothing else is affected.</p>`}
   </div>
-  <div class="panel" id="team-detail-panel">
-    <header><h2>Simulated win distribution</h2>
-      <span class="hint" id="dist-who"></span></header>
-    <div class="team-card" id="team-card"></div>
-    <div id="team-dist" style="height:200px"></div>
-  </div>`)) return;
+`)) return;
 
   const card = (t) => {
     const cell = (label, value, hint) => `<div class="fact"${
@@ -2173,14 +2218,31 @@ async function renderTeams(ticket) {
     ].join("");
   };
 
+  /* The distribution opens over the page instead of sitting under it.
+
+     It used to be a second panel below the rankings, permanently showing
+     whichever team was clicked last -- and on first load, whichever happened
+     to be first. That is a chart about one team taking a third of a page
+     about thirty-two, answering a question nobody had asked yet. It is the
+     answer to clicking a team, so it arrives when a team is clicked. */
   const show = (abbr) => {
     const team = data.teams.find((t) => t.team === abbr);
     if (!team) return;
-    $("#dist-who").textContent = `click any team above · showing ${team.name}`;
-    $("#team-card").innerHTML =
-      `<div class="card-head">${teamMark(team.team)}<b>${esc(team.name)}</b>
-        <span class="muted">#${team.rank} · ${num(team.exp_wins, 1)} expected wins</span>
-      </div><div class="facts">${card(team)}</div>`;
+    const dlg = $("#detail");
+    paintDialogNav(null);
+    $(".dialog-title", dlg).textContent = `${team.name} — simulated season`;
+    $(".dialog-body", dlg).innerHTML = `
+      <div class="team-card" id="team-card">
+        <div class="card-head">${teamMark(team.team)}<b>${esc(team.name)}</b>
+          <span class="muted">#${team.rank} · ${num(team.exp_wins, 1)} expected wins</span>
+        </div><div class="facts">${card(team)}</div>
+      </div>
+      <div class="panel" style="background:var(--surface-sunken);margin-top:14px">
+        <header><h2>Simulated win distribution</h2>
+          <span class="hint">20,000 runs of the remaining schedule</span></header>
+        <div id="team-dist" style="height:220px"></div>
+      </div>`;
+    if (!dlg.open) dlg.showModal();
     /* The crest here is written long after the page was wired.
        `teamMark` draws the logo at opacity 0 and `wireLogos` reveals it once
        the image reports itself loaded -- so a mark inserted after that pass
@@ -2188,8 +2250,6 @@ async function renderTeams(ticket) {
        bare abbreviation underneath. Every other late write on this page
        already re-wires; this one did not. */
     wireLogos($("#team-card"));
-    $$("#view tr[data-team]").forEach(
-      (tr) => tr.classList.toggle("on", tr.dataset.team === abbr));
     const dist = team.distribution || {};
     const bars = [];
     for (let w = 0; w <= 17; w++) {
@@ -2214,7 +2274,6 @@ async function renderTeams(ticket) {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(tr.dataset.team); }
     });
   });
-  if (data.teams.length) show(data.teams[0].team);
 }
 
 // ------------------------------------------------------------------- picks

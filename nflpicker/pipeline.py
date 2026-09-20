@@ -1784,7 +1784,8 @@ class Pipeline:
         )
         return survivor
 
-    def picks_for_week(self, season: int, week: int) -> dict:
+    def picks_for_week(self, season: int, week: int,
+                       used_teams: list[str] | None = None) -> dict:
         """Build this week's two boards from predictions already stored.
 
         Both contests were only ever computed for the week the season is on,
@@ -1848,7 +1849,13 @@ class Pipeline:
         if by_week:
             out["survivor"] = plan_survivor(
                 season, week, by_week,
-                used_teams=db.get_meta("survivor_used_teams", []) or [],
+                # Passed in by a caller that already knows, read from the
+                # stored list otherwise. The tracker's counterfactual knows:
+                # it is holding the week-by-week map the list is derived from,
+                # and making it depend on a second key staying in step with
+                # the first is a way for the two to disagree.
+                used_teams=(used_teams if used_teams is not None
+                            else db.get_meta("survivor_used_teams", []) or []),
                 through_week=self.config.survivor_last_week).to_dict()
         return out
 

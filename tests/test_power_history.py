@@ -439,3 +439,53 @@ def test_week_one_is_told_it_has_no_ranking_rather_than_a_missing_one(
     assert one["teams"] == []
     assert "no week one ranking" in one["note"].lower()
     assert "week 0" not in one["note"]
+
+
+# --------------------------------------- a reconstruction is not a ranking
+
+def test_a_rebuilt_week_is_not_offered_as_a_ranking(client, four_weeks):
+    """The distinction already governed what a week could be compared
+    *against*. It has to govern what a week *is*, too.
+
+    A rebuilt snapshot is this code's reconstruction of a week nobody was
+    running for, made afterwards from the games that had finished by then.
+    Useful for a trend line; not a cut that was ever taken. Shown as one, week
+    three carried a full column of arrows against a week two that was also a
+    reconstruction -- two backfills differenced and presented as a fortnight
+    of movement that no reader had any way to recognise as invented.
+    """
+    four_weeks.rebuild_power_history(2025)
+    assert set(r["source"] for r in db.query(
+        "SELECT DISTINCT source FROM power_snapshots WHERE season = 2025")) == {"rebuilt"}
+
+    for week in (2, 3, 4):
+        body = client.get(f"/api/power/history?season=2025&week={week}").json()
+        assert body["ranked"] is False, f"week {week} was never cut live"
+        assert body["teams"] == []
+        assert body["compared_to"] is None
+        assert "never ranked live" in body["note"]
+
+
+def test_a_week_that_was_cut_live_is_a_ranking(client, four_weeks):
+    four_weeks.rebuild_power_history(2025)
+    db.execute("UPDATE power_snapshots SET source = 'live' "
+               "WHERE season = 2025 AND week = 3")
+    body = client.get("/api/power/history?season=2025&week=3").json()
+    assert body["ranked"] is True
+    assert body["teams"], "a live cut has a ranking to show"
+
+
+def test_movement_still_needs_two_live_cuts(client, four_weeks):
+    """One live week is a ranking with nothing behind it; two are movement."""
+    four_weeks.rebuild_power_history(2025)
+    db.execute("UPDATE power_snapshots SET source = 'live' "
+               "WHERE season = 2025 AND week = 4")
+    alone = client.get("/api/power/history?season=2025&week=4").json()
+    assert alone["ranked"] is True and alone["compared_to"] is None
+    assert all(t["move"] is None for t in alone["teams"])
+
+    db.execute("UPDATE power_snapshots SET source = 'live' "
+               "WHERE season = 2025 AND week = 3")
+    paired = client.get("/api/power/history?season=2025&week=4").json()
+    assert paired["compared_to"] == 3
+    assert any(t["move"] is not None for t in paired["teams"])
