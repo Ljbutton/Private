@@ -296,16 +296,40 @@ function sideFoot(meta) {
     .filter((g) => g.status === "scheduled" && g.kickoff)
     .sort((a, b) => String(a.kickoff).localeCompare(String(b.kickoff)))[0];
 
+  /* A card, not a caption.
+
+     It reads as a matchup on the board, and it is clickable the same ways:
+     the card itself goes to Home and the week the game is in, either team
+     opens that matchup. It looked like a status line, so nobody tried -- the
+     box is what says it can be pressed.
+
+     The percentage is what the model gave that team *before* kickoff, which
+     is the number worth having beside a score: it is what the game is being
+     measured against. Predictions are written once and kept, so it stays the
+     pre-game figure while the game is played rather than drifting into a
+     live readout. */
   const line = (g, kicking) => {
     const score = (side) => {
       const v = g[`${side}_score`];
       return v === null || v === undefined ? "" : v;
     };
-    return `<div class="side-game${kicking ? "" : " on"}">
-      <div class="sg-row"><span class="sg-team">${esc(g.away)}</span>
-        <span class="sg-score">${score("away")}</span></div>
-      <div class="sg-row"><span class="sg-team">${esc(g.home)}</span>
-        <span class="sg-score">${score("home")}</span></div>
+    const homeProb = g.prediction && g.prediction.home_win_prob;
+    const prob = (side) => {
+      if (homeProb === null || homeProb === undefined) return "";
+      const value = side === "home" ? Number(homeProb) : 1 - Number(homeProb);
+      return `<span class="sg-prob" title="What the model gave ${
+        esc(g[side])} before kickoff">${pct(value, 0)}</span>`;
+    };
+    const row = (side) => `<div class="sg-row" data-side-team="${esc(g[side])}"
+        role="button" tabindex="0" title="${esc(g[side])} — open this matchup">
+      <span class="sg-team">${esc(g[side])}</span>
+      ${prob(side)}
+      <span class="sg-score">${score(side)}</span></div>`;
+    return `<div class="side-game${kicking ? "" : " on"}"
+        data-side-game="${esc(g.game_id)}" data-side-week="${esc(String(g.week))}"
+        role="button" tabindex="0" title="Open this week on Home">
+      ${row("away")}
+      ${row("home")}
       <div class="sg-when">${kicking
         ? esc(untilKickoff(g.kickoff))
         : esc(g.clock || "in progress")}</div>
@@ -322,6 +346,36 @@ function sideFoot(meta) {
     now.innerHTML = '<div class="side-label">Next up</div>'
       + '<div class="side-game"><div class="sg-when">No games scheduled.</div></div>';
   }
+  wireSideGames(now);
+}
+
+/* Clicks on the sidebar card.
+
+   A team opens its matchup; anywhere else goes to Home on that game's week.
+   The team handler stops the event so one press does not do both -- which it
+   did, landing you on Home behind a dialog you did not mean to open. */
+function wireSideGames(root) {
+  const go = (node, fn) => {
+    node.addEventListener("click", fn);
+    node.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); fn(ev); }
+    });
+  };
+  $$("[data-side-game]", root).forEach((card) => {
+    go(card, () => {
+      const week = Number(card.dataset.sideWeek);
+      if (Number.isFinite(week) && week) state.week = week;
+      const sel = $("#week");
+      if (sel) sel.value = String(state.week);
+      setTab("home");
+    });
+  });
+  $$("[data-side-team]", root).forEach((node) => {
+    go(node, (ev) => {
+      ev.stopPropagation();
+      openGame(node.closest("[data-side-game]").dataset.sideGame);
+    });
+  });
 }
 
 /* "in 2h 14m", and it has to be recomputed rather than rendered once -- the
@@ -3433,7 +3487,14 @@ async function render({ keepPlace = false } = {}) {
   try {
     await view(renderTicket);
     if (ticket !== renderTicket) return;
-    measureFit();
+    // The column has to know too: a fitted view takes what is left of one
+    // viewport, and there is nothing left of a container sized to its content.
+    const viewEl = $("#view");
+    if (viewEl.parentElement) {
+      viewEl.parentElement.classList.toggle(
+        "fits", viewEl.classList.contains("fit-screen"));
+    }
+    measureFitSettled();
     markScrollFades($("#view"));
     restorePlace(place);
   } catch (err) {
@@ -3524,36 +3585,45 @@ function busyBeingRead() {
     || active.isContentEditable;
 }
 
-/* How much of the window the chrome above and below the view is using.
+/* The header's height, for the wordmark that is centred against it.
 
-   A page that must fit the screen has to know what is left of it, and that
-   used to be a constant: 162px, standing for the header plus the page's own
-   padding. The header changed height and the constant did not, so Picks
-   overflowed by exactly the difference and the page it was built to fit
-   scrolled again. Measuring it means the next header change costs nothing. */
+   This used to also compute how much of the window the chrome was using, so
+   that a page which must fit the screen could size itself with `calc`. That
+   sum is gone: `.main` is a flex column one viewport tall and the view takes
+   what is left, which is the same answer with nothing to measure and nothing
+   to get out of step. What remains is genuinely a measurement -- the sidebar
+   cannot know the header's height from CSS alone -- and it is read with the
+   floor lifted, so it reports the content's height rather than the floor it
+   is about to set.
+
+   Re-run on the next frame as well, because the first read after a render is
+   of a page the browser has not finished with: a webfont still swapping lands
+   it a pixel or two out. */
+let fitSettleQueued = false;
+
 function measureFit() {
-  const view = $("#view");
-  if (!view) return;
-  const main = view.parentElement;
-  const below = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
-  const top = view.getBoundingClientRect().top + window.scrollY;
-  document.documentElement.style.setProperty(
-    "--fit-offset", `${Math.round(top + below)}px`);
-  /* And the header's own height, so the wordmark can be centred in the same
-     band as the rest of the top bar. Measured for the same reason the offset
-     above is: the header's height depends on its contents, and a constant
-     here would be wrong the next time any of them changed. */
   const hero = $(".hero");
-  if (hero) {
-    document.documentElement.style.setProperty(
-      "--hero-h", `${Math.round(hero.getBoundingClientRect().height)}px`);
-  }
+  if (!hero) return;
+  hero.style.minHeight = "0";
+  const natural = Math.round(hero.getBoundingClientRect().height);
+  hero.style.minHeight = "";
+  document.documentElement.style.setProperty("--hero-h", `${natural}px`);
+}
+
+function measureFitSettled() {
+  measureFit();
+  if (fitSettleQueued) return;
+  fitSettleQueued = true;
+  requestAnimationFrame(() => {
+    fitSettleQueued = false;
+    measureFit();
+  });
 }
 
 /* Every box on the page that fades its bottom edge while more is below.
    Kept in one place because the rule is the same everywhere and the bug was
    that it had been written three times as static CSS. */
-const FADE_BOXES = ".table-scroll.tall, .news-feed, .survivor-run .table-scroll";
+const FADE_BOXES = ".table-scroll.tall, .news-feed, .survivor-run .table-scroll, #view.fit-screen > .panel.board > .gboard";
 
 function markScrollFades(root = document) {
   $$(FADE_BOXES, root).forEach((box) => {
@@ -3938,7 +4008,12 @@ async function main() {
   // is any state to render around it.
   // A narrower window rewraps rows, which changes whether a box still has
   // anything below the fold.
-  addEventListener("resize", () => markScrollFades(), { passive: true });
+  addEventListener("resize", () => { measureFitSettled(); markScrollFades(); },
+                   { passive: true });
+  // The webfont is the slow half of "the page has settled".
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => measureFitSettled()).catch(() => {});
+  }
 
   setBrandClock(new Date());
   setInterval(() => {

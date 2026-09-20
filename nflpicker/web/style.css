@@ -293,7 +293,18 @@ a { color: var(--series-1); }
 }
 .side-nav .tab[aria-selected="true"] svg { opacity: 1; }
 
-.side-foot { margin-top: auto; padding: 0 10px; }
+/* The foot is pushed to the bottom and is allowed to shrink.
+
+   `.side` is exactly one viewport tall and does not scroll, so anything that
+   does not fit is simply cut off -- and on a short window during the Sunday
+   early window, with ten games on at once, what got cut off was the settings
+   cog at the very bottom. The game list is the part that gives: it scrolls
+   inside itself and the controls under it stay put. */
+.side-foot {
+  margin-top: auto; padding: 0 10px;
+  display: flex; flex-direction: column; gap: 12px; min-height: 0;
+}
+#side-now, #side-conns { min-height: 0; overflow-y: auto; }
 .side-label {
   font-size: 10px; font-weight: 600; text-transform: uppercase;
   letter-spacing: .14em; color: var(--text-muted); margin-bottom: 9px;
@@ -320,7 +331,29 @@ a { color: var(--series-1); }
 .icon-btn.on { color: var(--series-1); border-color: var(--series-1); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.main { min-width: 0; padding: 0 30px 40px; }
+/* A column exactly one viewport tall, so a page that must fit can simply
+   take what is left of it.
+
+   This used to be arithmetic: measure where the view starts, subtract from
+   100vh, write the result into a custom property and size the view with
+   `calc`. It worked, but it was a measurement of a layout that the same
+   function was also changing -- it set the header's min-height from a
+   variable it had just written -- so the first pass on a cold page came out
+   a few pixels wrong and corrected itself on the next render. Which looked,
+   from outside, like the board jumping the first time you pressed anything.
+
+   Flex does the same subtraction with no measurement, no custom property and
+   nothing to get out of step. */
+.main {
+  min-width: 0; padding: 0 30px 40px;
+  display: flex; flex-direction: column; min-height: 100vh;
+}
+/* Exactly one viewport, and no more, for the pages that must fit inside it.
+   `min-height` lets the column grow to its content, which is right for a page
+   that scrolls and useless for a page that must not -- a child cannot take
+   "what is left" of a container that is as tall as the child. app.js marks
+   the column when the view it is holding is a fitted one. */
+.main.fits { height: 100vh; min-height: 0; }
 /* The top strip is one colour across the whole window: the sidebar's ground
    runs up and over the header rather than stopping at the nav. The header
    bleeds out through .main's side padding to reach both edges, which is why
@@ -1125,13 +1158,12 @@ td.team { font-weight: 600; }
    usable on a short window; below that the page scrolls again, which is the
    honest failure mode. */
 #view.fit-screen {
-  /* The offset is measured, not guessed. It used to be a hard-coded 162px
-     standing for "the header and the page padding", and the first time the
-     header changed height the number was wrong and Picks grew a scrollbar
-     again -- the one thing this whole section exists to prevent. app.js
-     writes what the gap actually is after every render; the fallback is only
-     for the frame before it has. */
-  height: calc(100vh - var(--fit-offset, 184px)); min-height: 460px;
+  /* Whatever is left of the column after the header. No constant, no
+     measurement: `.main` is one viewport tall and this takes the remainder,
+     so it is right on the first frame and stays right when the header
+     changes height. `min-height` keeps it usable on a short window; below
+     that the page scrolls again, which is the honest failure mode. */
+  flex: 1 1 0; min-height: 460px;
   display: flex; flex-direction: column;
 }
 #view.fit-screen > .grid-2,
@@ -1147,7 +1179,11 @@ td.team { font-weight: 600; }
 #view.fit-screen > .panel.board > header { flex: none; }
 #view.fit-screen > .panel.board > .gboard {
   flex: 1; min-height: 0; overflow-y: auto; align-content: start;
-  padding-right: 4px;
+  /* Room at the foot so the scroll ends on space rather than through a row
+     of figures. The cut used to land mid-glyph -- the tops of the totals
+     sliced off by the panel's edge -- which reads as the page having broken
+     rather than as there being more below. */
+  padding: 0 4px 10px 0;
 }
 #view.fit-screen > .panel.board > .note { flex: none; margin-bottom: 0; }
 /* Three columns: the picks, survivor's choice, and the run that choice
@@ -2226,17 +2262,42 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 /* What is on now, or what is on next, where the connection list used to be.
    Connections answer a question you only ask on Settings; this answers the one
    you have on every other page. */
-.side-game { padding: 7px 0 2px; }
-.side-game .sg-row {
-  display: flex; align-items: baseline; gap: 8px; font-size: 13px;
-  padding: 1px 0;
+/* A card, like a matchup on the board.
+
+   It was a bare caption, so nothing about it said it could be pressed --
+   and it can: the card opens its week on Home, either team opens the
+   matchup. Borrowing the board's shape is what makes that legible without
+   a label explaining it. */
+.side-game {
+  padding: 7px 8px 6px; margin-top: 6px; cursor: pointer;
+  border: 1px solid var(--grid); border-radius: 10px;
+  background: var(--surface-sunken);
+  transition: border-color var(--fast) var(--ease),
+              background var(--fast) var(--ease);
 }
+.side-game:hover { border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--text-primary) 4%, var(--surface-sunken)); }
+.side-game:focus-visible { outline: none; box-shadow: var(--ring); }
+.side-game .sg-row {
+  display: flex; align-items: baseline; gap: 6px; font-size: 13px;
+  padding: 2px 3px; margin: 0 -3px; border-radius: 6px; cursor: pointer;
+}
+.side-game .sg-row:hover {
+  background: color-mix(in srgb, var(--series-1) 14%, transparent);
+}
+.side-game .sg-row:focus-visible { outline: none; box-shadow: var(--ring); }
 .side-game .sg-team { font-weight: 650; color: var(--text-primary); }
+/* What the model gave that side before kickoff -- the number the game is
+   being measured against, which is why it sits beside the score and not
+   instead of it. Quiet: it is context, not the headline. */
+.side-game .sg-prob {
+  font-size: 10px; font-variant-numeric: tabular-nums; color: var(--text-muted);
+}
 .side-game .sg-score {
   margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 700;
 }
 .side-game .sg-when {
-  font-size: 11px; color: var(--text-muted); margin-top: 3px;
+  font-size: 11px; color: var(--text-muted); margin-top: 4px;
 }
 /* A game actually in progress gets the live colour; a countdown does not --
    the point of the colour is that something is happening now. */
