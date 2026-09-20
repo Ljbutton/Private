@@ -12,6 +12,17 @@
 
   <aside class="side">
     <div class="side-brand">
+      <!-- Which version this is, and the one place that says a newer one
+           exists. Above the wordmark rather than under it: the version is a
+           label on the whole app, and a notice that only ever appeared as a
+           banner got dismissed once and then never told anyone anything
+           again. The slot is empty almost always, which is the point -- a
+           corner that is blank until it is not can be checked at a glance. -->
+      <div class="brand-meta">
+        <button class="update-slot" id="update-slot" type="button" hidden>
+          Update available</button>
+        <span class="app-version" id="app-version"></span>
+      </div>
       <div class="logo">
         <!-- The mark itself: the market's flat line, the long stroke
              climbing away from it, the short one falling off the peak, and
@@ -26,16 +37,6 @@
         <span class="logo-text">The<span>Edge</span></span>
       </div>
       <div class="logo-sub">Model &amp; prediction tracker</div>
-      <!-- Which version this is, and the one place that says a newer one
-           exists. The slot to its left is empty almost always, and that is
-           the point: an update notice that is only ever a banner gets
-           dismissed and never seen again, while a corner that is blank until
-           it is not can be checked at a glance. -->
-      <div class="brand-meta">
-        <button class="update-slot" id="update-slot" type="button" hidden>
-          Update available</button>
-        <span class="app-version" id="app-version"></span>
-      </div>
     </div>
 
     <nav class="side-nav" role="tablist">
@@ -54,9 +55,9 @@
       <button class="tab" role="tab" data-tab="performance" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h3v-7H4zm6.5 0h3V4h-3zM17 20h3v-11h-3z"/></svg>
         <span>Performance</span></button>
-      <!-- The assistant is not a page. It opens over whichever one you are
-           on, from the button in the top bar -- a question about the board is
-           asked while you are looking at the board. -->
+      <button class="tab" role="tab" data-tab="assistant" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-9 9c0 1.7.5 3.3 1.3 4.7L3 21l4.4-1.2A9 9 0 1 0 12 3zm-3.5 8.5h7v1.5h-7zm0-3h7V10h-7z"/></svg>
+        <span>Assistant</span></button>
       <button class="tab" role="tab" data-tab="soon" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 5v5.6l4 2.3-1 1.7-5-2.9V7z"/></svg>
         <span>The Desk</span></button>
@@ -180,14 +181,6 @@
            the whole right-hand side on one line and gives the page back the
            height. -->
       <div class="hero-right">
-        <!-- The assistant, between the clock and the controls. It opens as a
-             window over the page rather than as a tab, because a question
-             about the board is asked while you are looking at the board. -->
-        <button class="btn hero-act" id="assistant-open"
-          title="Ask about this week — opens over the page">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-9 9c0 1.7.5 3.3 1.3 4.7L3 21l4.4-1.2A9 9 0 1 0 12 3zm-3.5 8.5h7v1.5h-7zm0-3h7V10h-7z"/></svg>
-          <span>Assistant</span>
-        </button>
         <!-- The bracket, beside the week it is the end of. Its own control
              rather than a tab, because it is one picture you go and look at
              rather than a page you work on. -->
@@ -196,7 +189,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 5h5v2H3zM3 11h5v2H3zM3 17h5v2H3zM10 6h2v6h-2zM10 12h2v6h-2zM12 11h4v2h-4zM18 5h3v2h-3zM18 17h3v2h-3z"/>
           </svg>
-          <span>Bracket</span>
+          <span>Playoffs</span>
         </button>
         <button class="icon-btn" id="fullscreen" title="Full screen (F11)" aria-label="Toggle full screen">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg>
@@ -245,17 +238,6 @@
       Don't have a key? Get a subscription</a>
   </form>
 </div>
-
-<!-- The assistant's window. Its own dialog rather than the detail one,
-     because the two are opened for different reasons and closing a game card
-     should not throw away a conversation. -->
-<dialog class="detail wide" id="assistant-dlg">
-  <div class="dialog-head">
-    <h2 class="dialog-title" style="font-size:15px">Assistant</h2>
-    <button class="btn" id="close-assistant" style="margin-left:auto">Close</button>
-  </div>
-  <div class="dialog-body"></div>
-</dialog>
 
 <dialog class="detail" id="detail">
   <div class="dialog-head">

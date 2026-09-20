@@ -258,7 +258,7 @@ a { color: var(--series-1); }
    the banner that used to do this job got dismissed once and then never told
    anyone anything again. */
 .brand-meta {
-  display: flex; align-items: center; gap: 7px; margin-top: 7px;
+  display: flex; align-items: center; gap: 7px; margin-bottom: 7px;
   min-height: 18px;
 }
 .app-version {
@@ -856,7 +856,14 @@ td.team { font-weight: 600; }
   letter-spacing: .02em; color: var(--text-muted);
   padding: 4px 0 0 2px; cursor: help;
   border-top: 1px solid var(--grid);
+  display: flex; align-items: center; gap: 3px;
 }
+/* Over, under, or exactly on it. Small enough to read as a mark on the label
+   rather than as a fourth figure in the row. */
+.ou { font-size: 7.5px; line-height: 1; cursor: help; }
+.ou.over  { color: var(--good); }
+.ou.under { color: var(--critical); }
+.ou.push  { color: var(--text-muted); font-size: 8.5px; font-weight: 800; }
 .gtot {
   font-size: 10.5px; font-variant-numeric: tabular-nums; text-align: center;
   color: var(--text-secondary); padding: 4px 1px 0; white-space: nowrap;
@@ -1018,13 +1025,16 @@ td.team { font-weight: 600; }
 /* Neither. A source that called it a dead heat, a spread that landed on the
    number, a total that landed on the line -- all of them used to resolve to a
    green or a red by whichever way a float comparison fell. */
-.gcell.push .gprob, .gline.push, .gtot.push { color: var(--text-muted); }
-/* The spread and the total grade themselves, against the number each was
-   leaning away from. */
+.gcell.push .gprob, .gline.push { color: var(--text-muted); }
+/* The spread grades itself, against the number it was leaning away from. */
 .gline.hit  { color: var(--good); font-weight: 650; }
 .gline.miss { color: var(--critical); font-weight: 650; }
-.gtot.hit   { color: var(--good); font-weight: 700; }
-.gtot.miss  { color: var(--critical); font-weight: 700; }
+/* The total does not. Over or under is one fact about the game and it is now
+   said once, by the arrow on the row's label -- colouring all three figures
+   said it three times, and said it in the two colours that mean "right" and
+   "wrong" everywhere else on the card, about numbers that were not being
+   judged. The figures stay as figures. */
+.gtot.hit, .gtot.miss, .gtot.push { color: var(--text-secondary); font-weight: 400; }
 
 /* A narrow window gets one card per line and tighter columns rather than
    fewer of them: dropping a source is dropping the comparison the board is
@@ -1264,22 +1274,38 @@ td.team { font-weight: 600; }
    which is exactly what it used to be, and exactly the confusion to avoid now
    that it also filters the news beside it. */
 .news-filter { padding: 10px 12px; margin-bottom: 14px; }
+/* Thirty-three crests, flush at both ends.
+
+   The columns used to be `1fr` while the crest inside them stayed capped at
+   22px and centred, so every pixel the window gained went into the cells --
+   and the last crest drifted away from the right edge while the first stayed
+   put. At 2560 that was 53px of dead space on the right against 16px on the
+   left, which is the gap that kept getting reported. Fixed columns with the
+   slack shared between them keeps the row even and both edges flush at every
+   width. */
 .team-picker.wide {
-  display: grid; grid-template-columns: repeat(33, minmax(0, 1fr));
+  display: grid; grid-template-columns: repeat(33, 22px);
+  justify-content: space-between;
   gap: 3px; max-height: none; overflow: visible;
 }
-.team-picker.wide .team-pick { padding: 3px 2px; }
+.team-picker.wide .team-pick { padding: 3px 0; }
 /* The league mark stands for "all of it", so it reads as a word rather than a
    crest and is set apart from the thirty-two that follow it. */
 .tbadge.league {
   display: grid; place-items: center;
-  background: var(--surface-sunken); border: 1px solid var(--border);
-  --team: var(--text-secondary);
+  background: #013369; border: 1px solid var(--border);
+  --team: #013369;
 }
+/* The lettering only shows when the shield has not loaded, and it has to
+   hold on its own when that happens -- grey on near-black read as the one
+   crest in the row that had failed, which is exactly what it was reported
+   as. White on the league's navy reads as a mark. */
 .tbadge.league .mono {
   font-size: 7.5px; letter-spacing: .02em; opacity: 1; line-height: 1;
-  color: var(--text-secondary); text-shadow: none;
+  color: #fff; text-shadow: none;
 }
+/* A shield is not a roundel: let it fill the square it is given. */
+.tbadge.league.hasimg { background: transparent; border-color: transparent; }
 /* No margin. It took five pixels out of the league button's grid cell, so
    that button sat narrower than the thirty-two beside it -- a gap that was
    invisible at rest and, once the button was selected and drew a background,
@@ -2446,7 +2472,7 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    current seeding produces -- and a bracket that only appears once it is
    being played is a bracket you cannot use to think about December. */
 .bracket-split {
-  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
   gap: 22px; align-items: start;
 }
 .bracket-tree { min-width: 0; }
@@ -2485,7 +2511,19 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   border-color: var(--gold);
   background: color-mix(in srgb, var(--gold) 8%, var(--surface-sunken));
 }
-.bracket-picture { min-width: 0; display: grid; gap: 12px; align-content: start; }
+/* The two conferences beside each other, with the legend under both. */
+.bracket-picture {
+  min-width: 0; display: grid; gap: 12px 18px; align-content: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.bracket-picture > .note.legend { grid-column: 1 / -1; }
+/* Under about 1200px of window there is no room for four columns of anything,
+   so the picture drops back to one and the window scrolls -- which is the
+   honest failure mode on a small screen. */
+@media (max-width: 1200px) {
+  .bracket-split { grid-template-columns: minmax(0, 1fr); }
+  .bracket-picture { grid-template-columns: minmax(0, 1fr); }
+}
 .br-game {
   background: var(--surface-sunken); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 6px 8px; display: grid; gap: 3px;
@@ -2520,28 +2558,39 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    behaves is a different errand from reading a page of it, and a seventh row
    in the nav made it look like a seventh page. */
 .side-bottom { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+/* Settings is a cog rather than a word, so the shape has to do the work the
+   label used to. A bare glyph on a dark panel reads as decoration; the
+   rounded square around it is what says "this is a button you can press". */
 .cog-btn {
   appearance: none; cursor: pointer; flex: none; padding: 0;
-  width: 30px; height: 30px; display: grid; place-items: center;
-  border-radius: var(--radius-sm); border: 1px solid transparent;
-  background: transparent; color: var(--text-muted);
+  width: 40px; height: 40px; display: grid; place-items: center;
+  border-radius: 11px; border: 1px solid var(--grid);
+  background: var(--surface-sunken); color: var(--text-secondary);
   transition: color var(--fast) var(--ease), background var(--fast) var(--ease),
+              border-color var(--fast) var(--ease),
               transform var(--slow) var(--ease);
 }
-.cog-btn svg { width: 19px; height: 19px; fill: currentColor; }
+.cog-btn svg { width: 24px; height: 24px; fill: currentColor; }
 .cog-btn:hover { color: var(--text-primary);
-  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--text-primary) 10%, var(--surface-sunken));
   transform: rotate(35deg); }
 .cog-btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .cog-btn[aria-selected="true"] {
   color: var(--series-1);
-  background: color-mix(in srgb, var(--series-1) 14%, transparent);
+  border-color: color-mix(in srgb, var(--series-1) 45%, var(--grid));
+  background: color-mix(in srgb, var(--series-1) 14%, var(--surface-sunken));
 }
-.side-bottom .build-line { margin: 0; }
+.side-bottom .build-line { display: none; }
 
 /* The assistant's window is wider than a game card: it holds a conversation
    and a list of them side by side. */
-dialog.detail.wide { width: min(1120px, 96vw); max-height: 90vh; }
+/* Wide enough for the tree and both conference tables at once.
+
+   At 1120px the two tables had to stack, which put thirty-two rows in a
+   column and gave the window a scrollbar -- and a seeding table you have to
+   scroll is one you cannot compare across. Side by side they both fit. */
+dialog.detail.wide { width: min(1560px, 97vw); max-height: 92vh; }
 dialog.detail.wide .dialog-body { padding: 0; }
 dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
 

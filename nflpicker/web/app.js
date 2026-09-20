@@ -877,6 +877,22 @@ function teamMark(abbr) {
   </span>`;
 }
 
+/* The league's own mark, built exactly like a team's.
+
+   It was a text-only badge, and beside thirty-two real crests a grey word on
+   a near-black circle does not read as "all teams" -- it reads as the one
+   logo that failed to load. Same CDN, same `hasimg` swap, same fallback: if
+   the image does not arrive the lettering stands on the league's navy, which
+   looks like a mark rather than like a hole in the row. */
+const LEAGUE_LOGO = "https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png";
+
+function leagueMark() {
+  return `<span class="tbadge league">
+    <span class="mono">NFL</span>
+    <img class="tlogo" alt="" src="${LEAGUE_LOGO}" />
+  </span>`;
+}
+
 function wireLogos(root) {
   $$("img.tlogo", root).forEach((img) => {
     const badge = img.closest(".tbadge");
@@ -1180,6 +1196,30 @@ async function renderHome(ticket) {
         value === null ? "–" : value}</div>`;
     };
 
+    /* Which way the game went, as an arrow rather than a colour.
+
+       Over or under is a fact about the game, not a verdict on anybody's
+       number, and it is the same fact for all three cells in the row -- so it
+       is said once, on the row's label, instead of tinting three figures that
+       each mean something different. It also frees green and red on this row
+       to keep meaning what they mean everywhere else on the card. */
+    const overUnder = () => {
+      if (finalTotal === null || bookTotal === null || bookTotal === undefined) {
+        return "";
+      }
+      const by = finalTotal - Number(bookTotal);
+      if (Math.abs(by) < 0.05) {
+        return `<span class="ou push" title="Landed on the total — ${
+          esc(String(finalTotal))} against a line of ${esc(num(bookTotal, 1))}"
+          aria-label="pushed">=</span>`;
+      }
+      const over = by > 0;
+      return `<span class="ou ${over ? "over" : "under"}" title="${
+        over ? "Over" : "Under"} — ${esc(String(finalTotal))} against a line of ${
+        esc(num(bookTotal, 1))}" aria-label="${over ? "over" : "under"}">${
+        over ? "▲" : "▼"}</span>`;
+    };
+
     /* Did the favourite win. Judged against the book rather than against our
        own number, because "upset" is a claim about what the world expected --
        and the book is the closest thing to a public answer. A game the market
@@ -1213,7 +1253,8 @@ async function renderHome(ticket) {
              grid: each figure then sits under the column it came from, so
              "which of these three is the book's" is answered by position
              instead of by remembering the order in a tooltip. -->
-        <div class="gtot-label" title="Projected total points for the game">Total</div>
+        <div class="gtot-label" title="Projected total points for the game">Total${
+          overUnder()}</div>
         ${totalCell(blindTotal, "Blind model's projected total")}
         ${totalCell(ourTotal, "Our blend's projected total")}
         ${totalCell(bookTotal === null || bookTotal === undefined
@@ -1307,43 +1348,23 @@ async function renderHome(ticket) {
   });
 }
 
-// ----------------------------------------------- the assistant, as a window
-/* Open over whatever page you are on, and keep it there.
+// ------------------------------------------------- the assistant, as a page
+/* A tab, not a window over the page.
 
-   The conversation is held in `chat`, which outlives the dialog, so closing
-   the window and reopening it lands you back where you were rather than on a
-   new chat. The dialog is its own element for the same reason: a game card
-   opening and closing over the board must not take a conversation with it. */
-let assistantTicket = 0;
-
-async function openAssistant() {
-  const dlg = $("#assistant-dlg");
-  if (!dlg) return;
-  const body = $(".dialog-body", dlg);
-  if (!dlg.open) {
-    body.innerHTML = '<div class="empty">Loading…</div>';
-    dlg.showModal();
-  }
-  // Its own ticket: the page behind it renders on its own schedule and the
-  // two must not cancel each other.
-  const ticket = ++assistantTicket;
-  try {
-    await renderAssistant(ticket, body);
-  } catch (err) {
-    body.innerHTML = `<div class="empty">The assistant could not start — ${
-      esc(err.message)}</div>`;
-  }
-}
-
-/* Whether the button is offered at all. Someone who does not want a language
-   model in their football app can turn it off, and then it is not there --
-   not greyed out, not asking to be set up. */
+   It was tried as a dialog and the dialog could not render twice. `paint`
+   caches the last markup under `state.tab`, which for a window is whatever
+   page is *behind* it -- so the second open found its own markup in Home's
+   slot, decided the DOM already matched, and left "Loading..." on screen for
+   good. A page renders under its own key and cannot collide with anything. */
+/* Whether the Assistant is offered at all. Someone who does not want a
+   language model in their football app can turn it off, and then the tab is
+   not there -- not greyed out, not asking to be set up. */
 function paintAssistantButton() {
-  const btn = $("#assistant-open");
-  if (!btn) return;
+  const tab = $('.tab[data-tab="assistant"]');
+  if (!tab) return;
   const on = state.meta?.settings?.assistant_button !== false;
-  btn.hidden = !on;
-  if (!on && $("#assistant-dlg")?.open) $("#assistant-dlg").close();
+  tab.hidden = !on;
+  if (!on && state.tab === "assistant") setTab("home");
 }
 
 // ------------------------------------------------------- the postseason
@@ -1458,44 +1479,64 @@ async function openBracket() {
     </div>`;
   };
 
-  /* One conference's half of the tree. The higher seed hosts every round, and
-     the top seed plays whoever is left of the lowest -- which is the rule that
-     makes a bracket a bracket rather than a ladder. */
+  /* One conference's half of the tree.
+
+     Only what has actually happened. The wild-card round is drawn from the
+     seeding because that pairing *is* the seeding -- 2v7, 3v6, 4v5, with the
+     top seed idle -- so it is a fact about the table rather than a guess. Every
+     round after it is left blank until a game exists to fill it. Projecting
+     them meant the bracket asserted a Super Bowl in October, drawn from three
+     rounds of assumed results, and a picture that confident about January is
+     worse than an empty one: it reads as information and is not.
+
+     `advance` is what turns a played round into the next round's teams, and it
+     returns nothing at all until every game in the round it is fed has a
+     winner. A half-played round cannot seed the next one. */
   const half = (conf) => {
     const seeds = (d.conferences[conf] || []).filter((r) => r.seed <= 7);
     if (seeds.length < 7) return {};
     const at = (n) => seeds[n - 1];
+    const row = (team) => seeds.find((r) => r.team === team) || null;
+    const blank = () => slot(null, null, null, null, null);
+
     const pairs = [[2, 7], [3, 6], [4, 5]];
     const wcGames = pairs.map(([hi, lo]) =>
       findGame("Wild Card", at(hi).team, at(lo).team));
     const wc = pairs.map(([hi, lo], i) =>
       slot(wcGames[i], at(hi).team, at(lo).team, hi, lo)).join("");
 
-    // Who came through, or who is projected to: the higher seed until a
-    // result says otherwise.
-    const through = pairs.map(([hi], i) => {
-      const g = wcGames[i];
-      const team = g && g.winner ? g.winner : at(hi).team;
-      return seeds.find((r) => r.team === team) || at(hi);
-    }).sort((x, y) => x.seed - y.seed);
+    // Winners of a completed round, highest seed first. Null if any game in
+    // the round has not been played.
+    const advance = (games, fallbackRows) => {
+      if (!games.length || games.some((g) => !g || !g.winner)) return null;
+      const rows = games.map((g, i) => row(g.winner) || fallbackRows[i]);
+      return rows.filter(Boolean).sort((x, y) => x.seed - y.seed);
+    };
 
-    const divPairs = [[at(1), through[through.length - 1]], [through[0], through[1]]];
-    const divGames = divPairs.map(([x, y]) => findGame("Divisional", x.team, y.team));
-    const div = divPairs.map(([x, y], i) =>
-      slot(divGames[i], x.team, y.team, x.seed, y.seed)).join("");
+    const through = advance(wcGames, pairs.map(([hi]) => at(hi)));
+    let div = blank() + blank();
+    let divGames = [];
+    let divPairs = [];
+    if (through && through.length === 3) {
+      // The top seed takes the lowest survivor; the other two meet.
+      divPairs = [[at(1), through[2]], [through[0], through[1]]];
+      divGames = divPairs.map(([x, y]) => findGame("Divisional", x.team, y.team));
+      div = divPairs.map(([x, y], i) =>
+        slot(divGames[i], x.team, y.team, x.seed, y.seed)).join("");
+    }
 
-    const divThrough = divPairs.map(([x], i) => {
-      const g = divGames[i];
-      const team = g && g.winner ? g.winner : x.team;
-      return seeds.find((r) => r.team === team) || x;
-    }).sort((x, y) => x.seed - y.seed);
+    const divThrough = divPairs.length
+      ? advance(divGames, divPairs.map(([x]) => x)) : null;
+    let champ = blank();
+    let champGame = null;
+    if (divThrough && divThrough.length === 2) {
+      champGame = findGame("Conference", divThrough[0].team, divThrough[1].team);
+      champ = slot(champGame, divThrough[0].team, divThrough[1].team,
+                   divThrough[0].seed, divThrough[1].seed);
+    }
 
-    const champGame = findGame("Conference", divThrough[0].team, divThrough[1].team);
-    const champ = slot(champGame, divThrough[0].team, divThrough[1].team,
-                       divThrough[0].seed, divThrough[1].seed);
-    const winner = champGame && champGame.winner ? champGame.winner : divThrough[0].team;
-    return { wc, div, champ, winner,
-             seed: (seeds.find((r) => r.team === winner) || {}).seed };
+    const winner = champGame && champGame.winner ? champGame.winner : null;
+    return { wc, div, champ, winner, seed: (row(winner) || {}).seed || null };
   };
 
   const afc = half("AFC");
@@ -1514,7 +1555,10 @@ async function openBracket() {
         <div class="br-col">${afc.div}</div>
         <div class="br-col">${afc.champ}</div>
       </div>
-      <div class="br-final">${slot(sbGame, afc.winner, nfc.winner, afc.seed, nfc.seed)}</div>
+      <div class="br-final">${
+        afc.winner && nfc.winner
+          ? slot(sbGame, afc.winner, nfc.winner, afc.seed, nfc.seed)
+          : slot(null, null, null, null, null)}</div>
       <div class="br-conf">
         <span class="br-conf-tag">NFC</span>
         <div class="br-col wc">${nfc.wc}</div>
@@ -2402,7 +2446,7 @@ async function renderNews(ticket) {
      without clicking. */
   const picker = `<button class="team-pick league${team === ALL ? " on" : ""}"
       data-team="${ALL}" title="Every team — all injuries and all news">
-      <span class="tbadge league"><span class="mono">NFL</span></span></button>`
+      ${leagueMark()}</button>`
     + known.map((t) => {
       const n = (counts[t] || 0) + (newsCounts[t] || 0);
       return `<button class="team-pick${t === team ? " on" : ""}${
@@ -2573,10 +2617,10 @@ const DESK_HELP = [
   {
     q: "The assistant is slow, or will not start",
     a: `It runs entirely on this machine — nothing is sent anywhere — which is
-       why it needs a model downloaded first. The Assistant button in the top
-       bar sets that up in one press. On a laptop the first answer after a cold
-       start is the slow one; the model stays warm for an hour after that. The
-       button can be hidden in Settings → Assistant.`,
+       why it needs a model downloaded first. The Assistant tab sets that up
+       in one press. On a laptop the first answer after a cold start is the
+       slow one; the model stays warm for an hour after that. The tab can be
+       hidden in Settings → Assistant.`,
   },
   {
     q: "Moving to another computer, or keeping a copy",
@@ -3313,7 +3357,7 @@ async function renderAssistant(ticket, root = $("#view")) {
 const VIEWS = { home: renderHome, teams: renderTeams,
   picks: renderPicks, news: renderNews,
   performance: renderPerformance,
-  settings: renderSettings, soon: renderSoon };
+  settings: renderSettings, soon: renderSoon, assistant: renderAssistant };
 
 /* Which render is allowed to write to the page.
 
@@ -3625,12 +3669,6 @@ async function loadState() {
 }
 
 function setTab(tab, { fromHash = false } = {}) {
-  if (tab === "assistant") {
-    // The old address for what is now a window. Open it over Home rather than
-    // dropping someone who bookmarked it on a page that no longer exists.
-    openAssistant();
-    tab = state.tab && VIEWS[state.tab] ? state.tab : "home";
-  }
   if (!VIEWS[tab]) tab = "home";
   state.tab = tab;
   $$(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
@@ -3769,16 +3807,6 @@ async function main() {
     paintDialogNav(null);
   });
   $("#bracket")?.addEventListener("click", () => openBracket());
-  $("#assistant-open")?.addEventListener("click", () => openAssistant());
-  $("#close-assistant")?.addEventListener("click", () => $("#assistant-dlg").close());
-  $("#assistant-dlg")?.addEventListener("mousedown", (ev) => {
-    const dlg = ev.currentTarget;
-    if (ev.target !== dlg) return;
-    const box = dlg.getBoundingClientRect();
-    if (ev.clientX < box.left || ev.clientX > box.right
-        || ev.clientY < box.top || ev.clientY > box.bottom) dlg.close();
-  });
-
   /* Clicking away closes it.
 
      A modal <dialog> already closes on Escape, and the X was the only other
