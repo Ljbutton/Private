@@ -2612,7 +2612,7 @@ const DESK_HELP = [
        opening line exists once, so a game the app first saw on Saturday has a
        closing number and nothing to compare it against. Games priced from
        early in the week onward are the ones that count, and the figure lives
-       on Settings under Betting lines.`,
+       on Settings under Odds.`,
   },
   {
     q: "The assistant is slow, or will not start",
@@ -2927,20 +2927,23 @@ async function renderSettings(ticket) {
        with the month's usage beside it, it is a decision you make rather
        than a button you find. -->
   <div class="panel odds-panel">
-    <header><h2>Betting lines</h2>
+    <header><h2>Odds</h2>
       <span class="hint">the one feed with a bill attached · three requests
         of the monthly allowance per press</span></header>
     <div class="odds-row">
       <button class="btn primary odds-big" id="refresh-odds"
-        title="Fetch the betting lines now.">
+        title="Fetch the odds now.">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
         <span>Update odds</span>
       </button>
       <div class="odds-meta">
         <span id="odds-when" class="muted"></span>
-        <span class="tiny muted">Fetched once a day on its own, and whenever
-          an imminent game has no price yet. This is for when you want today's
-          number now.</span>
+        <!-- The countdown, because "once a day" was something you had to take
+             on trust -- which is how it came to be polling all day without
+             anyone being able to see that it was. -->
+        <span id="odds-next" class="tiny muted"></span>
+        <span class="tiny muted">Fetched once a day at 11:30 central. This is
+          for when you want today's number before then.</span>
       </div>
     </div>
   </div>
@@ -3572,6 +3575,22 @@ function markScrollFades(root = document) {
 /* When the lines were last fetched, and what is left of the allowance. Its own
    line because it is its own decision: the rest of the app refreshes on a
    minute and this does not. */
+/* How long until the next scheduled fetch, in the units a person would use.
+
+   Down to the minute rather than the second: this is a wait measured in
+   hours, and a seconds counter on it only draws the eye to something that is
+   not going to happen for most of a day. */
+function untilText(iso) {
+  const at = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(at)) return "";
+  const mins = Math.max(0, Math.round((at - Date.now()) / 60000));
+  if (mins < 1) return "any moment now";
+  if (mins < 60) return `in ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  return `in ${hours}h${rest ? ` ${rest}m` : ""}`;
+}
+
 function paintOdds() {
   const when = $("#odds-when");
   if (!when) return;
@@ -3584,6 +3603,14 @@ function paintOdds() {
     parts.push(`${usage.remaining_budget ?? usage.budget - usage.used} left this month`);
   }
   when.textContent = parts.join(" · ") || "not fetched yet";
+
+  const next = $("#odds-next");
+  if (next) {
+    const iso = state.meta?.scheduler?.next_odds_at;
+    const until = untilText(iso);
+    next.textContent = until ? `Next automatic fetch ${until}` : "";
+    next.title = iso ? new Date(iso).toLocaleString() : "";
+  }
 }
 
 function stale(ticket) {

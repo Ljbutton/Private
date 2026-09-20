@@ -98,20 +98,8 @@ def test_the_three_windows_count_independently(temp_env):
     assert (u["day_budget"], u["week_budget"], u["budget"]) == (50, 120, 480)
 
 
-def test_odds_poll_once_a_day_when_nothing_is_opening(temp_env):
-    """The one feed with a bill attached is asked once a day by default.
-
-    The interval used to be worked out from what was left of the monthly
-    allowance, which on the first of the month answers "every few minutes".
-    A line moves on a scale of days; the button covers wanting today's number
-    right now.
-    """
-    assert Scheduler.ODDS_INTERVAL_SECONDS == 24 * 3600
-    scheduler = Scheduler.__new__(Scheduler)
-    assert scheduler.odds_interval() == pytest.approx(24 * 3600)
-
-
 def _game(game_id, days_out, priced=False):
+    """A scheduled game, optionally with a price already on it."""
     when = now() + dt.timedelta(days=days_out)
     db.execute(
         "INSERT INTO games(game_id, season, week, kickoff, home, away, status,"
@@ -126,40 +114,61 @@ def _game(game_id, days_out, priced=False):
         )
 
 
-def test_an_imminent_unpriced_game_is_worth_polling_for(temp_env):
-    """An opening line exists once, and closing-line value is measured against
-    it. A number first seen on Saturday is not where the market started."""
+def test_the_lines_are_fetched_at_half_past_eleven_central(temp_env):
+    """A wall-clock time, not an interval since the last fetch.
+
+    Two schemes came before this and both found reasons to spend. One derived
+    the gap from what was left of the monthly allowance, which on the first of
+    the month answers "every few minutes". The next was a day with an
+    exception: twenty minutes whenever a game inside a week had no price yet,
+    which is most of any Tuesday -- so the exception was the rule and it was
+    polling all day again.
+
+    A fixed time cannot drift and cannot be triggered into firing more often.
+    """
+    assert (Scheduler.ODDS_HOUR, Scheduler.ODDS_MINUTE) == (11, 30)
+
+    nxt = Scheduler.next_odds_run()
+    local = nxt.astimezone(Scheduler.odds_zone())
+    assert (local.hour, local.minute) == (11, 30)
+    assert nxt > now(), "always the next one, never one that has gone"
+    assert nxt - now() <= dt.timedelta(days=1)
+
+
+def test_the_schedule_holds_either_side_of_the_clocks_changing(temp_env):
+    """11:30 central stays 11:30 central, which is the point of naming a zone.
+
+    Pinned to a UTC offset instead it would drift an hour twice a year, and
+    drift in the one job with a bill attached is how you end up fetching twice
+    in a day without meaning to.
+    """
+    zone = Scheduler.odds_zone()
+    for moment in (dt.datetime(2026, 1, 15, 3, 0, tzinfo=dt.timezone.utc),
+                   dt.datetime(2026, 7, 15, 3, 0, tzinfo=dt.timezone.utc)):
+        local = Scheduler.next_odds_run(moment).astimezone(zone)
+        assert (local.hour, local.minute) == (11, 30)
+
+
+def test_the_interval_is_the_wait_until_that_time(temp_env):
     scheduler = Scheduler.__new__(Scheduler)
-    _game("far-off", 90)
-    assert scheduler.odds_interval() == pytest.approx(24 * 3600), (
-        "books do not price week 15 in September; that is not a pending open")
-
-    _game("this-week", 3)
-    assert scheduler.odds_interval() == pytest.approx(20 * 60)
+    wait = scheduler.odds_interval()
+    assert 0 <= wait <= 24 * 3600
+    assert wait == pytest.approx(
+        (Scheduler.next_odds_run() - now()).total_seconds(), abs=5)
 
 
-def test_the_opening_line_exception_has_a_daily_ceiling(temp_env):
-    """What made this unaffordable was that it had no end.
+def test_nothing_on_the_board_can_make_it_poll_sooner(temp_env):
+    """The exception this replaced was open-ended by construction.
 
-    At a five-minute floor with no ceiling, a game the feed simply never
-    prices leaves the exception switched on for ever and spends the month in
-    a week.
+    A game the feed simply never prices left it switched on for ever, and an
+    unpriced game inside the horizon is the ordinary state of a Tuesday. No
+    amount of unpriced football moves the schedule now.
     """
     scheduler = Scheduler.__new__(Scheduler)
-    _game("this-week", 3)
-    for _ in range(Scheduler.OPENING_LINE_POLLS_PER_DAY):
-        assert scheduler.odds_interval() == pytest.approx(20 * 60)
-        db.execute(
-            "INSERT INTO fetch_log(source, ok, ts, duration_ms, detail) "
-            "VALUES('odds', 1, ?, 10, '')", (now().isoformat(),))
-    assert scheduler.odds_interval() == pytest.approx(24 * 3600), (
-        "past the day's allowance the ordinary cadence resumes")
-
-
-def test_a_priced_game_is_not_waiting_on_an_open(temp_env):
-    scheduler = Scheduler.__new__(Scheduler)
-    _game("this-week", 3, priced=True)
-    assert scheduler.odds_interval() == pytest.approx(24 * 3600)
+    before = scheduler.odds_interval()
+    for i in range(6):
+        _game(f"unpriced-{i}", 2)
+    assert scheduler.odds_interval() == pytest.approx(before, abs=5)
 
 
 def test_a_slower_setting_still_wins(temp_env, monkeypatch):
@@ -175,34 +184,37 @@ def test_a_slower_setting_still_wins(temp_env, monkeypatch):
     assert scheduler.odds_interval() == pytest.approx(72 * 3600)
 
 
-def test_opening_the_app_does_not_spend_a_credit(temp_env, monkeypatch):
+def _startup(since: float | None):
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.jobs = {"odds": None, "scores": None}
+
+    class _Pipeline:
+        def last_success(self, stage):
+            assert stage == "odds"
+            return since
+
+    scheduler.pipeline = _Pipeline()
+    return scheduler.startup_wait(Job(name="odds", stages=["odds"], interval=60.0))
+
+
+def test_opening_the_app_does_not_spend_a_credit(temp_env):
     """Launching is not a request for the lines.
 
     Every job fired the moment the scheduler started, so opening the app spent
     three credits before the window had drawn -- and opening it four times in
     an evening spent twelve on a line that had not moved.
     """
-    scheduler = Scheduler.__new__(Scheduler)
-    scheduler.jobs = {"odds": None, "scores": None}
-    job = Job(name="odds", stages=["odds"], interval=60.0)
+    since_slot = (now() - Scheduler.last_odds_run()).total_seconds()
 
-    class _Pipeline:
-        def __init__(self, since):
-            self.since = since
+    # Fetched since today's slot: wait for tomorrow's, however many times the
+    # app is opened in between.
+    assert _startup(since_slot / 2) == pytest.approx(
+        (Scheduler.next_odds_run() - now()).total_seconds(), abs=30)
 
-        def last_success(self, stage):
-            assert stage == "odds"
-            return self.since
-
-    # Fetched an hour ago: the rest of the day is still to wait.
-    scheduler.pipeline = _Pipeline(3600.0)
-    assert scheduler.startup_wait(job) == pytest.approx(23 * 3600, abs=30)
-
-    # Fetched two days ago, or never: go and get it now.
-    scheduler.pipeline = _Pipeline(2 * 24 * 3600.0)
-    assert scheduler.startup_wait(job) < 60
-    scheduler.pipeline = _Pipeline(None)
-    assert scheduler.startup_wait(job) < 60
+    # Today's slot came and went with no fetch, or there has never been one:
+    # take it now.
+    assert _startup(since_slot + 3600) < 60
+    assert _startup(None) < 60
 
 
 def test_a_free_feed_still_starts_immediately(temp_env):

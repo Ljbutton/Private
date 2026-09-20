@@ -702,13 +702,27 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
     def picks(week: int | None = None, season: int | None = None) -> dict:
         season = season or pipeline.season()
         week = week or pipeline.current_week(season)
+        pickem = latest_pick("pickem", season, week)
+        survivor = latest_pick("survivor", season, week)
+
+        # Any week, not only the one the season is on.
+        #
+        # Both boards are recorded when they are computed, and they were only
+        # ever computed for the current week -- so moving the selector to week
+        # 3 or week 12 found no row and drew an empty page. Anything missing is
+        # built on demand from the predictions already stored, which is a query
+        # and a solve rather than a recompute.
+        if pickem is None or survivor is None:
+            built = pipeline.picks_for_week(season, week)
+            pickem = pickem if pickem is not None else built.get("pickem")
+            survivor = survivor if survivor is not None else built.get("survivor")
         return {
             "season": season,
             "week": week,
             "ats": latest_pick("ats", season, week),
             "prediction_markets": latest_pick("prediction_markets", season, week),
-            "pickem": latest_pick("pickem", season, week),
-            "survivor": latest_pick("survivor", season, week),
+            "pickem": pickem,
+            "survivor": survivor,
             "survivor_used": db.get_meta("survivor_used_teams", []) or [],
         }
 

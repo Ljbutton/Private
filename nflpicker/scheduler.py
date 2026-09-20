@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from . import db
 from .config import get_config
 from .pipeline import Pipeline
-from .util import now, now_iso, to_utc
+from .util import UTC, now, now_iso, to_utc
 
 log = logging.getLogger("nflpicker.scheduler")
 
@@ -67,84 +67,67 @@ class Scheduler:
         }
 
     # ------------------------------------------------------------- intervals
-    # Once a day, and otherwise only when asked for.
+    # One fetch a day, at a fixed local time.
     #
-    # Every other feed in this app is free to poll. The odds are a metered
-    # monthly allowance and each fetch spends three of it, so the schedule is
-    # the one decision that has a bill attached -- and it was being made by a
-    # budget calculation that quietly answered "as often as the allowance can
-    # stand", which on a fresh month is every few minutes. Worse, the job fires
-    # as soon as the scheduler starts: opening the app spent three requests
-    # before the window had finished drawing, whatever it had cost to open it
-    # ten minutes earlier.
+    # Every other feed here is free to poll. The odds are a metered monthly
+    # allowance and each fetch spends three of it, so the schedule is the one
+    # decision with a bill attached -- and it kept finding reasons to spend.
+    # First it was derived from what was left of the allowance, which on the
+    # first of the month answers "every few minutes". Then it was a day, with
+    # an exception that shrank the gap to twenty minutes whenever a game
+    # inside a week had no price yet -- which is most of any Tuesday, so the
+    # exception was the rule and the app was polling all day again.
     #
-    # A day is the honest cadence for a number that moves on a scale of days,
-    # and the button covers the case where you want today's line right now.
-    ODDS_INTERVAL_SECONDS = 24 * 3600.0
-
-    # Catching an opening number, without the open-ended bill.
-    #
-    # An opening line exists once. Miss it and closing-line value has nothing
-    # to measure against for that game -- it compares what you took against
-    # where the market ended up, and a number first seen on Saturday is not
-    # where the market started. So when a game inside the horizon has no price
-    # at all, the gap shrinks to this.
-    #
-    # It is capped rather than open-ended, which is what made this unaffordable
-    # before: at a five-minute floor with no ceiling, a game the odds feed
-    # simply never prices leaves the exception switched on for ever, and the
-    # app spends the month in a week. A day's worth of these is enough to catch
-    # an open that appears at any hour; past that the daily cadence resumes and
-    # the open will be picked up on the next ordinary poll.
-    OPENING_LINE_INTERVAL_SECONDS = 20 * 60.0
-    OPENING_LINE_POLLS_PER_DAY = 8
-    # Books post lines about a week out. Beyond that a game having no price is
-    # the normal state of the world, not a market we are waiting on -- asking
-    # about the whole season made this true from September to December.
-    OPENING_LINE_HORIZON_DAYS = 8
-
-    def odds_interval(self) -> float:
-        """A day, unless an opening line is there to be caught.
-
-        The budget-stretched interval both of these replaced only ever made the
-        gap *longer* than the configured one, and a day is already longer than
-        the stretch would produce at any sane allowance -- so nothing is lost
-        by taking the larger of the two and a monthly cap is still respected.
-        """
-        slow = max(get_config().refresh_odds, self.ODDS_INTERVAL_SECONDS)
-        if not self._awaiting_opening_lines():
-            return slow
-        if self._odds_polls_today() >= self.OPENING_LINE_POLLS_PER_DAY:
-            return slow
-        return min(slow, self.OPENING_LINE_INTERVAL_SECONDS)
+    # A wall-clock time has neither failure mode. It cannot drift, it cannot
+    # be triggered into firing more often, and it is checkable: the app can
+    # say exactly when the next one is, which no interval-since-last-fetch
+    # scheme can. 11:30 central is late enough that the week's lines are up
+    # and early enough to be hours ahead of any kickoff.
+    ODDS_HOUR = 11
+    ODDS_MINUTE = 30
+    ODDS_TZ = "America/Chicago"
 
     @classmethod
-    def _awaiting_opening_lines(cls) -> bool:
-        """Are there *imminent* games the market has not priced for us yet?"""
-        horizon = (now() + dt.timedelta(days=cls.OPENING_LINE_HORIZON_DAYS)).isoformat()
-        row = db.query_one(
-            "SELECT COUNT(*) AS n FROM games g WHERE g.status = 'scheduled' "
-            "AND g.kickoff IS NOT NULL AND g.kickoff > ? AND g.kickoff <= ? "
-            "AND NOT EXISTS (SELECT 1 FROM consensus c WHERE c.game_id = g.game_id)",
-            (now_iso(), horizon),
-        )
-        return bool(row and row["n"])
+    def odds_zone(cls) -> dt.tzinfo:
+        """Central time, falling back to a fixed offset without tzdata.
 
-    @staticmethod
-    def _odds_polls_today() -> int:
-        """How many times the lines have been fetched since midnight UTC.
-
-        Read from the fetch log rather than held in memory, so closing the app
-        and reopening it does not hand the exception a fresh allowance -- which
-        is the same hole that had launching the app spend a credit every time.
+        A frozen build on a machine with no zoneinfo database must not lose
+        the schedule entirely; UTC-6 is central standard time, which is wrong
+        by an hour through the summer and right through the season.
         """
-        midnight = now().replace(hour=0, minute=0, second=0,
-                                 microsecond=0).isoformat()
-        row = db.query_one(
-            "SELECT COUNT(*) AS n FROM fetch_log "
-            "WHERE source = 'odds' AND ok = 1 AND ts >= ?", (midnight,),
-        )
-        return int(row["n"]) if row else 0
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(cls.ODDS_TZ)
+        except Exception:                                     # noqa: BLE001
+            return dt.timezone(dt.timedelta(hours=-6))
+
+    @classmethod
+    def next_odds_run(cls, after: dt.datetime | None = None) -> dt.datetime:
+        """The next 11:30 central, in UTC."""
+        zone = cls.odds_zone()
+        local = (after or now()).astimezone(zone)
+        target = local.replace(hour=cls.ODDS_HOUR, minute=cls.ODDS_MINUTE,
+                               second=0, microsecond=0)
+        if target <= local:
+            target += dt.timedelta(days=1)
+        return target.astimezone(UTC)
+
+    @classmethod
+    def last_odds_run(cls, before: dt.datetime | None = None) -> dt.datetime:
+        """The most recent 11:30 central that has already passed, in UTC."""
+        return cls.next_odds_run(before) - dt.timedelta(days=1)
+
+    def odds_interval(self) -> float:
+        """Seconds until the next scheduled fetch.
+
+        A configured interval longer than a day still wins -- someone
+        rationing a small allowance across a season asked for less than daily
+        and should get it.
+        """
+        wait = (self.next_odds_run() - now()).total_seconds()
+        configured = get_config().refresh_odds
+        return max(wait, 0.0) if configured <= 24 * 3600 else configured
 
     def scores_interval(self) -> float:
         """Poll scores hard while games are live, gently otherwise."""
@@ -179,9 +162,15 @@ class Scheduler:
         for a feed that costs nothing and wrong for the one that does not:
         opening the app spent three Odds API credits before the window had
         finished drawing, and opening it four times in an evening spent twelve
-        on a line that had not moved. A metered job picks up where it left off
-        instead -- if it ran an hour ago it has twenty-three hours to wait,
-        whether or not the process it ran in is still alive.
+        on a line that had not moved.
+
+        The metered job answers to the clock instead. It catches up only if
+        today's 11:30 has already gone by without a fetch -- opening the app
+        at nine in the evening having not opened it all day gets the day's
+        lines, and opening it four more times that evening gets nothing,
+        because the day's fetch has happened. Otherwise it waits for the next
+        one. Read from the fetch log, so closing the app and reopening it does
+        not hand the schedule a clean slate.
         """
         # Stagger startup so several jobs do not all fire in the same second.
         stagger = 2 + 3 * list(self.jobs).index(job.name)
@@ -190,7 +179,11 @@ class Scheduler:
         since = self.pipeline.last_success(job.name)
         if since is None:                      # never fetched: go and get it
             return stagger
-        return max(stagger, self.interval_for(job) - since)
+        due = self.last_odds_run()             # today's slot, if it has passed
+        fetched_at = now() - dt.timedelta(seconds=since)
+        if fetched_at < due:
+            return stagger                     # missed it; take it now
+        return max(stagger, self.odds_interval())
 
     async def _run_job(self, job: Job) -> None:
         """Run one job forever, sleeping its (possibly dynamic) interval."""
@@ -295,6 +288,11 @@ class Scheduler:
     def status(self) -> dict:
         return {
             "running": self.running,
+            # When the metered feed is next due, so the window can count down
+            # to it rather than leaving "once a day" as something you have to
+            # take on trust -- which is how it came to be polling all day
+            # without anyone being able to see that it was.
+            "next_odds_at": self.next_odds_run().isoformat(),
             "jobs": [
                 {**job.to_dict(), "next_interval_seconds": round(self.interval_for(job))}
                 for job in self.jobs.values()

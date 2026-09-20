@@ -1784,6 +1784,74 @@ class Pipeline:
         )
         return survivor
 
+    def picks_for_week(self, season: int, week: int) -> dict:
+        """Build this week's two boards from predictions already stored.
+
+        Both contests were only ever computed for the week the season is on,
+        so the selector could move to week 3 or week 12 and the page had
+        nothing to show -- which reads as a broken page rather than as one
+        that has been asked a question it was never wired to answer. Every
+        game already carries a prediction, whatever week it is in, so the
+        answer exists and was simply not being assembled.
+
+        For a week already played these are the numbers the model committed to
+        while the games were still upcoming, not a rerun with the results
+        known: predictions are written once and kept, and this reads the same
+        rows the board read on the day. Survivor is planned forward from the
+        week being asked about, because that is the decision that week faced.
+        """
+        games = db.query(
+            "SELECT game_id, week, home, away, kickoff FROM games "
+            "WHERE season = ? AND week >= ? AND season_type = 'REG' "
+            "ORDER BY week, kickoff",
+            (season, week),
+        )
+        if not games:
+            return {}
+        ids = [g["game_id"] for g in games]
+        placeholders = ",".join("?" for _ in ids)
+        predictions = {
+            r["game_id"]: r["home_win_prob"]
+            for r in db.query(
+                f"SELECT p.game_id, p.home_win_prob FROM predictions p "  # noqa: S608
+                f"JOIN (SELECT game_id, MAX(captured_at) m FROM predictions "
+                f"WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
+                "ON x.game_id = p.game_id AND x.m = p.captured_at",
+                ids,
+            )
+        }
+        market = {
+            r["game_id"]: r["home_win_prob"]
+            for r in db.query(
+                f"SELECT game_id, home_win_prob FROM consensus "  # noqa: S608
+                f"WHERE game_id IN ({placeholders})", ids,
+            )
+        }
+
+        entries, by_week = [], {}
+        for g in games:
+            prob = predictions.get(g["game_id"])
+            if prob is None:
+                continue
+            row = {"game_id": g["game_id"], "home": g["home"], "away": g["away"],
+                   "home_win_prob": prob, "kickoff": g["kickoff"]}
+            by_week.setdefault(int(g["week"]), []).append(row)
+            if int(g["week"]) == week:
+                entries.append({**row, "market_home_prob": market.get(g["game_id"])})
+
+        out: dict = {}
+        if entries:
+            out["pickem"] = {
+                mode: build_pickem(season, week, entries, mode=mode).to_dict()
+                for mode in ("ev", "leverage")
+            }
+        if by_week:
+            out["survivor"] = plan_survivor(
+                season, week, by_week,
+                used_teams=db.get_meta("survivor_used_teams", []) or [],
+                through_week=self.config.survivor_last_week).to_dict()
+        return out
+
     # ------------------------------------------------- weekly power history
     def _records_through(self, completed: list[dict], season: int) -> dict[str, list[float]]:
         """Wins, losses and ties per team, for the snapshot's record column."""
