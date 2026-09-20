@@ -878,6 +878,9 @@ td.team { font-weight: 600; }
   display: flex; align-items: baseline; gap: 5px; min-width: 0; flex: 1;
   font-size: 12.5px; font-weight: 660; letter-spacing: -0.01em;
 }
+/* The crest moved inside the clickable label, so the label is what takes the
+   row's slack and keeps the record and the S in a column. */
+.gteam > .tbadge { flex: none; }
 /* The name reads as the team; the abbreviation is the fallback for a card too
    narrow to hold it. Swapped outright rather than ellipsised, because a
    clipped "Buccaneer" says less than "TB" does. Both are in the markup so the
@@ -1467,6 +1470,21 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 }
 .byerankbig .sub { display: block; font-size: 11px; font-weight: 500;
   color: var(--text-muted); letter-spacing: 0; }
+.byeflag { color: var(--warning); font-weight: 600; }
+
+/* The team's name on a game card is its own target: the card opens the game,
+   the name opens the team. Same row, two answers, so the one you can click
+   has to look like it. */
+.tlabel {
+  display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;
+  cursor: pointer; border-radius: var(--radius-sm); padding: 1px 3px;
+  margin: -1px -3px;
+  transition: background var(--fast) var(--ease);
+}
+.tlabel:hover { background: color-mix(in srgb, var(--text-primary) 8%, transparent); }
+.tlabel:hover .nick, .tlabel:hover .abbr { text-decoration: underline;
+  text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.tlabel:focus-visible { outline: none; box-shadow: var(--ring); }
 /* The odds read as four numbers in a column; the bar is what makes "0.2%" and
    "56%" different sizes rather than different strings. */
 .oddsbar {
@@ -1499,15 +1517,59 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    keeps the column labels attached to the numbers while you reach it. */
 .perf-grid {
   flex: 1; min-height: 0;
-  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
-  gap: 16px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
 }
-.perf-grid > .panel {
+/* The league runs the full height of the right-hand column. Thirty-two rows
+   is the point of the table, and a quarter of a page shows seven of them. */
+.perf-grid > .perf-league { min-height: 0; }
+/* The other three stack down the left. A column of grid rows was tried first
+   and distributes badly: `auto` rows take their content's height whatever is
+   left over, so the season panel claimed more than half the column and the
+   run was squeezed into a hundred pixels. Flexing them means each starts at
+   its natural height and they give ground together when there is not enough,
+   which is the behaviour the panels' own scrollbars are there to absorb. */
+.perf-stack {
+  display: flex; flex-direction: column; gap: 16px; min-height: 0; min-width: 0;
+}
+/* The first two take the height they need and no more; shrinking is the
+   run's job. Flex shrinks in proportion to basis, so while all three could
+   give ground the run -- seventeen rows, far the tallest natural height --
+   kept the most of it and the two panels that are four rows and four tiles
+   were the ones cut in half. The cap stops either of them running away if a
+   season ever puts more in them. */
+.perf-stack > .panel { flex: 0 0 auto; min-height: 92px; max-height: 38%; }
+/* The run takes what is left, and never less than a few rows of it: at 42%
+   each the two above it left the run 141px, which is its heading and its
+   verdict and no run. */
+.perf-stack > #survivor-track {
+  flex: 1 1 0; max-height: none; min-height: 178px;
+}
+.perf-grid .perf-team { display: flex; align-items: center; gap: 7px; }
+.perf-grid .perf-team .tbadge { width: 18px; height: 18px; }
+/* Thirty-two rows in one column, which is the whole reason this panel got a
+   column: at the shared row height they did not fit and the back half of the
+   league was behind a scroll again. */
+.perf-league .slate td { height: 20px; padding: 0 6px; }
+.perf-league .slate th { padding-bottom: 2px; }
+.perf-league .slate { font-size: 12px; }
+/* Four rows and a heading, which is what this panel is once the working is
+   folded away. The picker descriptions were two lines each and four of them
+   was most of the panel; they are on the row's tooltip now. */
+.perf-stack .slate.totals td { height: 30px; }
+.perf-stack .slate.totals .who { padding: 0 9px; vertical-align: middle; }
+.perf-league .slate .rec { font-size: 10px; margin-left: 4px; }
+/* The last handful of pixels: without this the thirty-second team is half a
+   row below the fold, which is the same as not showing it. */
+.perf-league .panel-body { padding-bottom: 0; }
+.perf-league { padding-bottom: 10px; }
+.perf-league tbody tr { cursor: pointer; }
+.perf-league tbody tr:focus-visible { outline: none; box-shadow: var(--ring); }
+.perf-grid .panel {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
   margin-bottom: 0; padding-bottom: 6px;
 }
-.perf-grid > .panel > header { flex: none; }
-.perf-grid > .panel > .panel-body {
+.perf-grid .panel > header { flex: none; }
+.perf-grid .panel > .panel-body {
   flex: 1; min-height: 0; min-width: 0; overflow-y: auto; padding-right: 4px;
 }
 /* Inside that one scroller nothing else takes the vertical axis; a table too
@@ -1517,10 +1579,12 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    leaves the fourth alone on a row of its own, which reads as a fifth thing
    that failed to load. Two by two, and they are four of a set again. */
 .perf-grid .panel-body .tiles {
-  margin-top: 2px; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin-top: 2px; grid-template-columns: 1fr 1fr; gap: 8px;
 }
-.perf-grid .panel-body .tile { padding: 10px 12px; }
-.perf-grid .panel-body .tile .value { font-size: 22px; }
+.perf-grid .panel-body .tile { padding: 8px 11px; }
+.perf-grid .panel-body .tile .value { font-size: 20px; line-height: 1.25; }
+.perf-grid .panel-body .tile .label { font-size: 10px; }
+.perf-grid .panel-body .tile .sub { font-size: 10.5px; }
 /* The head travels with the body it labels. Without this, scrolling to a team
    in the twenties leaves five columns of bare percentages. Only for a table
    the body holds directly: a table nested further in sticks to its own
@@ -1544,6 +1608,30 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .perf-grid .run-track { font-size: 12px; }
 .perf-grid .run-track td { padding: 3px 5px; }
 .perf-grid .run-track .team { font-size: 11px; }
+
+/* ---- open for the working ---- */
+/* The number is the answer and the rows behind it are the working. A panel
+   that shows both at once spends most of its height saying that there is
+   more, rather than on the more. */
+.more { margin-top: 10px; border-top: 1px solid var(--grid); padding-top: 8px; }
+.more > summary {
+  display: flex; align-items: center; gap: 7px; cursor: pointer;
+  list-style: none; font-size: 12px; font-weight: 650;
+  color: var(--text-secondary); padding: 3px 0;
+  transition: color var(--fast) var(--ease);
+}
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary:hover { color: var(--series-1); }
+.more > summary:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 4px; }
+.more > summary .hint { margin-left: auto; font-weight: 450; }
+.more > summary .chev {
+  width: 0; height: 0; flex: none;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform var(--fast) var(--ease);
+}
+.more[open] > summary .chev { transform: rotate(90deg); }
+.more[open] > summary { margin-bottom: 6px; }
 
 .muted { color: var(--text-muted); }
 .empty { color: var(--text-muted); padding: 34px 22px; text-align: center; font-size: 13px; }
@@ -2229,3 +2317,72 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   background: none; border: 0; padding: 4px; font: inherit; font-size: 13px;
   color: var(--text-secondary); cursor: pointer;
 }
+
+/* ------------------------------------------------------- the postseason */
+/* The bracket sits beside the week it is the end of, as a control rather
+   than a tab: it is one picture you go and look at, not a page you work on. */
+.bracket-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; padding: 4px 10px; flex: none;
+  text-transform: none; letter-spacing: 0; font-weight: 600;
+}
+.bracket-btn svg { width: 13px; height: 13px; fill: currentColor; flex: none; }
+
+.bracket-card { margin-bottom: 0; }
+.conf-split { gap: 20px; }
+.conf-table .sub-head { margin-bottom: 4px; }
+.seedtable td { height: 26px; padding: 0 7px; font-size: 12.5px; }
+.seedtable .seedno { width: 22px; color: var(--text-muted); font-weight: 700; }
+.seedtable .small { font-size: 11px; }
+.seedtable tbody tr { cursor: pointer; }
+.seedtable tbody tr:focus-visible { outline: none; box-shadow: var(--ring); }
+/* Seven in, the rest out, and the line between them -- which is the whole
+   point of a standings table in December. */
+.seedtable tr.out td { opacity: .5; }
+.seedtable tr.cutline td { border-bottom: 2px solid var(--series-1); }
+.seedtable .perf-team { display: flex; align-items: center; gap: 7px; }
+.seedtable .perf-team .tbadge { width: 18px; height: 18px; }
+
+/* The league's own letters for what a team has settled. */
+.clinch {
+  display: inline-block; min-width: 13px; font-size: 10px; font-weight: 800;
+  text-align: center; border-radius: 3px; line-height: 14px;
+}
+.clinch.c-z { background: var(--gold); color: #1a1205; }
+.clinch.c-y { background: var(--series-1); color: #06130c; }
+.clinch.c-x { background: color-mix(in srgb, var(--series-1) 30%, transparent);
+  color: var(--series-1); }
+.clinch.c-e { background: color-mix(in srgb, var(--critical) 25%, transparent);
+  color: var(--critical); }
+.legend { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 4px 14px;
+  align-items: center; }
+
+/* Rounds run down the card, games within a round across it. A bracket drawn
+   as connected lines needs a fixed field of fourteen to be worth the width,
+   and this has to read the same in November -- when it is a projection with
+   nothing decided -- as in February. */
+.br-round { margin-top: 16px; }
+.br-games { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px; margin-top: 6px; }
+.br-game {
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 6px 8px; display: grid; gap: 3px;
+}
+.br-game.done { border-color: var(--border-strong); }
+.br-side {
+  display: flex; align-items: center; gap: 7px; font-size: 12.5px;
+  font-weight: 620; border-radius: 5px; padding: 2px 3px; cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+.br-side:hover { background: color-mix(in srgb, var(--text-primary) 8%, transparent); }
+.br-side:focus-visible { outline: none; box-shadow: var(--ring); }
+.br-side .tbadge { width: 19px; height: 19px; }
+.br-side .tbadge.ghost { background: var(--grid); }
+.br-seed { width: 13px; font-size: 10px; color: var(--text-muted);
+  font-weight: 700; text-align: right; flex: none; }
+.br-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.br-score { font-variant-numeric: tabular-nums; font-weight: 700; }
+/* The winner is named in gold, the same as on the board. */
+.br-side.won .br-name, .br-side.won .br-score { color: var(--gold); }
+.br-side.lost { opacity: .55; }

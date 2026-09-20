@@ -366,19 +366,41 @@ def build_adjustments(
 # Lives here rather than in the API because the pipeline needs the same test:
 # it decides when a player's spell on the report started, and "started" has to
 # mean the same thing there as the filter on screen means.
-NOTABLE_INJURY = {
-    "out", "doubtful", "questionable", "injured reserve", "ir",
-    "physically unable to perform", "pup", "did not participate",
-    "limited participation", "non football injury", "nfi", "suspended",
-    "reserve/covid-19", "practice squad/injured",
+# The rule is an exclusion, not an inclusion, and the direction matters.
+#
+# This was a list of statuses that counted, plus a few substrings. Anything
+# unrecognised fell through as "not a report" and the player vanished from the
+# page -- so every label the list happened not to contain deleted people
+# silently. "Day-To-Day" is one of the feed's commonest statuses and was one of
+# them; so were "Suspension" (the list had "suspended"), "Game Time Decision"
+# and "IR-R". Whole groups of players were missing from teams that plainly had
+# players hurt, and nothing anywhere said so.
+#
+# Turned round, the failure mode turns round with it: a status nobody has seen
+# before keeps a player on the report, where it is visible and can be dealt
+# with, instead of removing them where it cannot. The list to maintain is the
+# short, stable one -- the handful of ways a feed says "fine" -- rather than
+# the open-ended one of every way it might say "not fine".
+AVAILABLE_STATUS = {
+    "active", "healthy", "probable", "full participation", "full practice",
+    "full", "cleared", "available", "no injury", "none", "-", "--",
 }
 
 
 def is_notable_injury(status: str | None) -> bool:
+    """Whether this status belongs on an injury report.
+
+    Anything that is not a blank and not one of the ways a feed says the
+    player is fine. An injury report is the list of people whose availability
+    is in question, and a status we cannot interpret is a question.
+    """
     value = (status or "").strip().lower()
-    if not value or value in {"active", "full participation", "probable", "healthy"}:
+    if not value:
         return False
-    return value in NOTABLE_INJURY or any(k in value for k in ("out", "doubtful",
-                                                              "questionable",
-                                                              "reserve", "pup",
-                                                              "injured"))
+    if value in AVAILABLE_STATUS:
+        return False
+    # "Full Participation In Practice", "Active/Healthy" and friends: the same
+    # answer with more words around it. Matched on the word rather than as a
+    # substring, so "Limited Participation" is not read as participation.
+    words = {w.strip("/,.()") for w in value.replace("/", " ").split()}
+    return not (words & {"active", "healthy", "probable", "cleared", "available"})

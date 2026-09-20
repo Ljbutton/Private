@@ -237,3 +237,53 @@ def test_a_small_report_still_clears_normally(pipeline, temp_env, monkeypatch, c
     ])
     pipeline.refresh_news(RefreshResult())
     assert len(_listed(client, "KC")) == 1
+
+
+# --------------------------------------------------- which statuses count
+
+def test_a_status_the_filter_has_never_seen_keeps_the_player(temp_env):
+    """The rule is an exclusion, and it used to be an inclusion.
+
+    A list of statuses that counted meant every label not on it removed the
+    player from the page without a word. "Day-To-Day" is one of the feed's
+    commonest statuses and was one of those; so were "Suspension" (the list
+    had "suspended"), "Game Time Decision" and "IR-R". Teams that plainly had
+    players hurt showed a short list and nothing said why.
+    """
+    from nflpicker.availability import is_notable_injury
+
+    for status in ("Day-To-Day", "Day To Day", "Suspension", "IR-R",
+                   "Game Time Decision", "Reserve/Retired",
+                   "Something ESPN Renames It To Next Season"):
+        assert is_notable_injury(status), f"{status} belongs on the report"
+
+
+def test_the_ways_a_feed_says_fine_are_still_excluded(temp_env):
+    """An injury report that lists everybody is not an injury report."""
+    from nflpicker.availability import is_notable_injury
+
+    for status in ("Active", "active", " Healthy ", "Probable",
+                   "Full Participation", "Active/Healthy", "Cleared",
+                   "Available", "-", "", "   ", None):
+        assert not is_notable_injury(status), f"{status!r} is not an injury"
+
+
+def test_limited_participation_is_not_read_as_participation(temp_env):
+    """The exclusion matches whole words, so the presence of "participation"
+    in a status does not make a limited practice a clean bill of health."""
+    from nflpicker.availability import is_notable_injury
+
+    assert is_notable_injury("Limited Participation")
+    assert is_notable_injury("Did Not Participate")
+    assert not is_notable_injury("Full Participation")
+
+
+def test_a_day_to_day_player_reaches_the_page(pipeline, temp_env, client):
+    """End to end: the status that was being dropped now arrives on screen."""
+    db.execute("DELETE FROM injuries")
+    db.execute(
+        "INSERT INTO injuries(team, player, status, injury, first_seen, updated_at) "
+        "VALUES('CHI','Day To Day Guy','Day-To-Day','Ankle',"
+        "'2025-09-01T00:00:00Z','2025-09-01T00:00:00Z')"
+    )
+    assert "Day To Day Guy" in _listed(client, "CHI")

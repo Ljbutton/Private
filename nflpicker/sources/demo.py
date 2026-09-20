@@ -210,8 +210,94 @@ def generate_season(season: int, through_week: int = 0) -> dict:
             )
         games.append(game)
 
+    games.extend(_postseason(season, games, strengths, rng, through_week))
     quotes = _generate_quotes(games, rng, through_week)
     return {"season": season, "games": games, "quotes": quotes, "strengths": strengths}
+
+
+def _postseason(season: int, games: list[dict], strengths: dict,
+                rng: random.Random, through_week: int) -> list[dict]:
+    """Fourteen teams, four rounds, seeded off the synthetic regular season.
+
+    The real schedule feed carries these and the demo one did not, so the
+    bracket had nothing to draw and the playoff rounds never appeared in the
+    week selector -- which made the whole of January untestable without
+    waiting for January. Seeded by the same rules the app uses on real
+    results, so what comes out is the shape the real thing produces.
+    """
+    from ..standings import build_records, seed_conference
+
+    # No bracket until there is a field to put in it.
+    #
+    # The real schedule feed has nothing to say about January until the
+    # regular season is over, so a demo that ships a postseason in November
+    # is a demo of a state the app will never be in -- and it hides the case
+    # that actually matters then, which is the bracket drawn from the seeding
+    # as a projection.
+    if through_week < 18:
+        return []
+
+    records = build_records(games)
+    seeds = {conf: seed_conference(conf, records) for conf in ("AFC", "NFC")}
+    out: list[dict] = []
+    # Four rounds, played out once the regular season is behind them.
+    played = through_week > 18
+
+    def _play(round_no: int, home: str, away: str, index: int) -> dict:
+        # Numbered on from the regular season, the same as the real feed's
+        # rows are once they are read -- see espn.REGULAR_SEASON_WEEKS. A
+        # postseason week stored as "1" sorts alongside September.
+        week = 18 + round_no
+        kickoff = _kickoff(season, week, index)
+        margin = strengths[home] - strengths[away] + 1.9
+        game = {
+            "game_id": f"demo-{season}-P{round_no}-{away}-{home}",
+            "season": season, "week": week, "season_type": "POST",
+            "kickoff": kickoff.isoformat(), "home": home, "away": away,
+            "status": "scheduled", "home_score": None, "away_score": None,
+            "neutral_site": round_no == 4, "roof": TEAMS[home].roof,
+            "venue": f"{TEAMS[home].location} Stadium",
+            "_true_margin": round(margin, 3), "_true_total": 44.0,
+        }
+        if played:
+            m = rng.gauss(margin, MARGIN_SD)
+            total = max(20.0, rng.gauss(44.0, 10.0))
+            hs, as_ = int(round((total + m) / 2)), int(round((total - m) / 2))
+            if hs == as_:                       # a playoff game cannot tie
+                hs += 1 if m >= 0 else -1
+            game.update(home_score=max(0, hs), away_score=max(0, as_),
+                        status="final")
+        return game
+
+    def _winner(game: dict) -> str:
+        if game["status"] != "final":
+            return game["home"]              # the bracket still has a shape
+        return (game["home"] if game["home_score"] > game["away_score"]
+                else game["away"])
+
+    alive = {conf: [row["team"] for row in rows[:7]] for conf, rows in seeds.items()}
+    finals: dict[str, str] = {}
+    for conf in ("AFC", "NFC"):
+        field = alive[conf]
+        if len(field) < 7:
+            continue
+        # Wild card: 2v7, 3v6, 4v5. The top seed sits it out.
+        wc = [_play(1, field[1], field[6], 0),
+              _play(1, field[2], field[5], 1),
+              _play(1, field[3], field[4], 2)]
+        out.extend(wc)
+        # Divisional: the top seed takes the lowest survivor.
+        survivors = sorted((_winner(g) for g in wc), key=field.index)
+        div = [_play(2, field[0], survivors[-1], 0),
+               _play(2, survivors[0], survivors[1], 1)]
+        out.extend(div)
+        champ = [_play(3, *sorted((_winner(div[0]), _winner(div[1])),
+                                  key=field.index), 0)]
+        out.extend(champ)
+        finals[conf] = _winner(champ[0])
+    if len(finals) == 2:
+        out.append(_play(4, finals["AFC"], finals["NFC"], 0))
+    return out
 
 
 def _generate_quotes(games: list[dict], rng: random.Random, through_week: int) -> list[dict]:

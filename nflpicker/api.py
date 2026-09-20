@@ -109,6 +109,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "weeks": [r["week"] for r in db.query(
                 "SELECT DISTINCT week FROM games WHERE season = ? AND season_type='REG' "
                 "ORDER BY week", (season,))],
+            # The same list the selector draws, with the postseason on the end
+            # under its own names. `weeks` stays the regular season alone,
+            # because that is what survivor and the pick board are about --
+            # there is no survivor pool in January and no pick'em board for a
+            # bracket. Anything that offers a week to choose reads this;
+            # anything that reasons about the season reads `weeks`.
+            "week_options": week_options(season),
             "seasons": pipeline.stored_seasons(),
             "teams": reference(),
             "demo": pipeline.demo,
@@ -174,6 +181,16 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
     def games(week: int | None = None, season: int | None = None) -> dict:
         season = season or pipeline.season()
         week = week or pipeline.current_week(season)
+        # A playoff round is a week like any other as far as the board is
+        # concerned; it just lives under a different season_type with its own
+        # numbering. Byes and survivor do not apply to it -- fourteen teams
+        # are not on a bye in January, they are out.
+        if week_kind(season, week) == "POST":
+            return {
+                "season": season, "week": week, "season_type": "POST",
+                "games": game_cards(season, week, season_type="POST"),
+                "byes": [], "survivor_pick": None, "survivor_used_weeks": {},
+            }
 
         # Who is not playing, and what there is to say about them. A bye week
         # leaves a hole in the board where two or three games would be; the
@@ -472,6 +489,103 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             row["record_rank"] = record_rank.get(row["team"])
         return {"season": season, "teams": rows, "divisions": DIVISIONS}
 
+    @app.get("/api/team/{abbr}")
+    def team_detail(abbr: str, season: int | None = None,
+                    week: int | None = None) -> dict:
+        """One team's season, for the card a click on its name opens.
+
+        The bye cards grew this first, because a team with no game this week
+        has nothing else to show. It turned out to be the more useful answer
+        for every other team too -- a game card says what happens on Sunday,
+        and "are they actually any good, and where does this end up" is the
+        question the crest invites. So it is an endpoint rather than something
+        the bye payload carries, and both callers read the same one.
+        """
+        abbr = abbr.strip().upper()
+        if abbr not in TEAMS:
+            raise HTTPException(status_code=404, detail=f"unknown team: {abbr}")
+        season = season or pipeline.season()
+        week = week or pipeline.current_week(season)
+        team = TEAMS[abbr]
+
+        projection = (latest_team_rows(season, "season_projections")
+                      .get(abbr) or {})
+        rating = latest_team_rows(season, "team_ratings").get(abbr) or {}
+        cut = db.query_one(
+            "SELECT rank, power FROM power_snapshots WHERE season = ? "
+            "AND week = ? AND source = 'live' AND team = ?", (season, week, abbr),
+        ) or {}
+
+        # This week's game and the next one are different questions and a team
+        # can have either, both or neither: on a bye there is no game now but
+        # there is one coming, and in week 18 it is the other way round.
+        this_week = db.query_one(
+            "SELECT game_id, week, home, away, kickoff, status, home_score,"
+            " away_score FROM games WHERE season = ? AND week = ? "
+            "AND season_type = 'REG' AND (home = ? OR away = ?)",
+            (season, week, abbr, abbr),
+        )
+        return {
+            "team": abbr,
+            "name": team.name,
+            "full_name": team.full_name,
+            "conference": team.conference,
+            "division": team.division,
+            "color": team.color,
+            "record": records_before(season, week + 1).get(abbr, ""),
+            "rank": cut.get("rank"),
+            "power": cut.get("power", rating.get("power")),
+            "pythagorean": rating.get("pythagorean"),
+            "on_bye": this_week is None,
+            "this_week": _game_line(this_week, abbr) if this_week else None,
+            "next": _next_opponents(season, week, [abbr]).get(abbr),
+            **{
+                key: projection.get(key)
+                for key in ("playoff_prob", "division_prob", "bye_prob",
+                            "sb_prob", "exp_wins", "wins_p10", "wins_p90")
+            },
+        }
+
+    @app.get("/api/playoffs")
+    def playoffs(season: int | None = None) -> dict:
+        """The playoff picture: both conferences seeded, and the bracket.
+
+        Seeded from results rather than from the simulator, which answers a
+        different question -- twenty thousand hypothetical seasons is where
+        the odds come from, and a bracket has to be drawn from the one that
+        is actually happening.
+        """
+        from . import standings as standings_module
+
+        season = season or pipeline.season()
+        reg = db.query(
+            "SELECT game_id, week, home, away, home_score, away_score, status "
+            "FROM games WHERE season = ? AND season_type = 'REG'", (season,))
+        post = db.query(
+            "SELECT game_id, week, home, away, home_score, away_score, status,"
+            " kickoff FROM games WHERE season = ? AND season_type = 'POST' "
+            "ORDER BY week, kickoff", (season,))
+
+        picture = standings_module.picture(reg)
+        # Playoff odds come from the simulation, and belong beside a seeding
+        # taken from results: one says where a team is, the other how likely
+        # it is to stay there.
+        projections = latest_team_rows(season, "season_projections")
+        for rows in picture["conferences"].values():
+            for row in rows:
+                proj = projections.get(row["team"]) or {}
+                row["playoff_prob"] = proj.get("playoff_prob")
+                row["name"] = (TEAMS[row["team"]].name
+                               if row["team"] in TEAMS else row["team"])
+        return {
+            "season": season,
+            "week": pipeline.current_week(season),
+            "conferences": picture["conferences"],
+            "legend": picture["legend"],
+            "bracket": standings_module.bracket(post, picture["conferences"]),
+            "has_postseason": bool(post),
+        }
+
     @app.get("/api/power/history")
     def power_history(season: int | None = None, week: int | None = None) -> dict:
         """The power ranking as it stood in a given week, and how it moved.
@@ -624,7 +738,11 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         by_week[str(season)] = season_picks
         db.set_meta(SURVIVOR_PICKS_KEY, by_week)
         _sync_legacy_survivor_keys(season)
-        pipeline.recompute(force=True)
+        # Only the plan, not the world. This used to force a full recompute --
+        # Elo over every game ever, the model over the whole history, twenty
+        # thousand season simulations -- none of which depends on which team
+        # you spent. See Pipeline.replan_survivor.
+        pipeline.replan_survivor(season)
         return {"ok": True, "season": season, "week": week, "team": team,
                 "picks": season_picks}
 
@@ -1314,6 +1432,72 @@ def records_before(season: int, week: int) -> dict[str, str]:
     return out
 
 
+def week_options(season: int) -> list[dict]:
+    """Every week you can choose, regular season then postseason rounds.
+
+    One value per week, and it is the week: the postseason is stored numbered
+    on from the regular season (see espn.REGULAR_SEASON_WEEKS), so nothing has
+    to be translated. Only the label changes -- nobody calls the divisional
+    round week twenty.
+    """
+    from . import standings as standings_module
+
+    out = [
+        {"value": r["week"], "label": f"Week {r['week']}", "type": "REG",
+         "week": r["week"]}
+        for r in db.query(
+            "SELECT DISTINCT week FROM games WHERE season = ? "
+            "AND season_type = 'REG' ORDER BY week", (season,))
+    ]
+    post = db.query(
+        "SELECT week, COUNT(*) AS n FROM games WHERE season = ? "
+        "AND season_type = 'POST' GROUP BY week ORDER BY week", (season,))
+    if not post:
+        return out
+    rounds = standings_module.label_rounds(
+        [{"week": r["week"]} for r in post for _ in range(r["n"])])
+    for row in sorted(post, key=lambda r: r["week"]):
+        name = rounds.get(row["week"])
+        if name:
+            out.append({"value": row["week"], "label": name, "type": "POST",
+                        "week": row["week"]})
+    return out
+
+
+def week_kind(season: int, week: int | None) -> str:
+    """Whether a week is a regular-season week or a postseason round.
+
+    The week number is the same either way -- the postseason is stored
+    numbered on from the regular season -- so this only answers which part of
+    the season it belongs to, for the handful of things that differ: there are
+    no byes in January, and no survivor pool.
+    """
+    if week is None:
+        return "REG"
+    row = db.query_one(
+        "SELECT season_type FROM games WHERE season = ? AND week = ? LIMIT 1",
+        (season, int(week)),
+    )
+    return (row or {}).get("season_type") or "REG"
+
+
+def _game_line(game: dict, team: str) -> dict:
+    """One team's view of one game: who, where, and how it went if it has."""
+    home = game["home"] == team
+    return {
+        "game_id": game["game_id"],
+        "week": game["week"],
+        "opponent": game["away"] if home else game["home"],
+        "home": home,
+        "kickoff": game["kickoff"],
+        "status": game["status"],
+        "score": (None if game.get("home_score") is None
+                  else f"{int(game['home_score'])}-{int(game['away_score'])}"
+                  if home else
+                  f"{int(game['away_score'])}-{int(game['home_score'])}"),
+    }
+
+
 def _next_opponents(season: int, week: int,
                     teams: list[str]) -> dict[str, dict]:
     """Each team's next scheduled game after `week`.
@@ -1363,11 +1547,17 @@ def teams_on_bye(season: int, week: int) -> list[str]:
     return sorted(t for t in TEAMS if t not in playing)
 
 
-def game_cards(season: int, week: int) -> list[dict]:
-    """Everything the UI needs to render one week's games."""
+def game_cards(season: int, week: int, season_type: str = "REG") -> list[dict]:
+    """Everything the UI needs to render one week's games.
+
+    Scoped to a season type as well as a week, because the postseason starts
+    its own numbering again at one: without it, asking for week 1 in January
+    returned the opening Sunday of September alongside the wild-card round.
+    """
     games = db.query(
-        "SELECT * FROM games WHERE season = ? AND week = ? ORDER BY kickoff, game_id",
-        (season, week),
+        "SELECT * FROM games WHERE season = ? AND week = ? AND season_type = ? "
+        "ORDER BY kickoff, game_id",
+        (season, week, season_type),
     )
     if not games:
         return []

@@ -168,6 +168,16 @@
       <div class="hero-right">
         <select id="season" aria-label="Season"></select>
         <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
+        <!-- The bracket, beside the week it is the end of. Its own control
+             rather than a tab, because it is one picture you go and look at
+             rather than a page you work on. -->
+        <button class="btn bracket-btn" id="bracket"
+          title="The playoff picture: both conferences seeded, and the bracket as it fills in">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 5h5v2H3zM3 11h5v2H3zM3 17h5v2H3zM10 6h2v6h-2zM10 12h2v6h-2zM12 11h4v2h-4zM18 5h3v2h-3zM18 17h3v2h-3z"/>
+          </svg>
+          <span>Bracket</span>
+        </button>
         <div class="hero-buttons">
           <button class="icon-btn" id="fullscreen" title="Full screen (F11)" aria-label="Toggle full screen">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg>

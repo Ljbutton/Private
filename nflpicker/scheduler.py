@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
@@ -81,19 +82,69 @@ class Scheduler:
     # and the button covers the case where you want today's line right now.
     ODDS_INTERVAL_SECONDS = 24 * 3600.0
 
+    # Catching an opening number, without the open-ended bill.
+    #
+    # An opening line exists once. Miss it and closing-line value has nothing
+    # to measure against for that game -- it compares what you took against
+    # where the market ended up, and a number first seen on Saturday is not
+    # where the market started. So when a game inside the horizon has no price
+    # at all, the gap shrinks to this.
+    #
+    # It is capped rather than open-ended, which is what made this unaffordable
+    # before: at a five-minute floor with no ceiling, a game the odds feed
+    # simply never prices leaves the exception switched on for ever, and the
+    # app spends the month in a week. A day's worth of these is enough to catch
+    # an open that appears at any hour; past that the daily cadence resumes and
+    # the open will be picked up on the next ordinary poll.
+    OPENING_LINE_INTERVAL_SECONDS = 20 * 60.0
+    OPENING_LINE_POLLS_PER_DAY = 8
+    # Books post lines about a week out. Beyond that a game having no price is
+    # the normal state of the world, not a market we are waiting on -- asking
+    # about the whole season made this true from September to December.
+    OPENING_LINE_HORIZON_DAYS = 8
+
     def odds_interval(self) -> float:
-        """A day, unless the settings ask for something slower.
+        """A day, unless an opening line is there to be caught.
 
-        The budget-stretched interval this replaced only ever made the gap
-        *longer* than the configured one, and a day is already longer than the
-        stretch would produce at any sane allowance -- so nothing is lost by
-        taking the larger of the two and a monthly cap is still respected.
-
-        The opening-line exception went with it: it polled at a five-minute
-        floor whenever a game inside eight days had no price yet, which is most
-        of a Tuesday, and it was the single biggest spender in the app.
+        The budget-stretched interval both of these replaced only ever made the
+        gap *longer* than the configured one, and a day is already longer than
+        the stretch would produce at any sane allowance -- so nothing is lost
+        by taking the larger of the two and a monthly cap is still respected.
         """
-        return max(get_config().refresh_odds, self.ODDS_INTERVAL_SECONDS)
+        slow = max(get_config().refresh_odds, self.ODDS_INTERVAL_SECONDS)
+        if not self._awaiting_opening_lines():
+            return slow
+        if self._odds_polls_today() >= self.OPENING_LINE_POLLS_PER_DAY:
+            return slow
+        return min(slow, self.OPENING_LINE_INTERVAL_SECONDS)
+
+    @classmethod
+    def _awaiting_opening_lines(cls) -> bool:
+        """Are there *imminent* games the market has not priced for us yet?"""
+        horizon = (now() + dt.timedelta(days=cls.OPENING_LINE_HORIZON_DAYS)).isoformat()
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM games g WHERE g.status = 'scheduled' "
+            "AND g.kickoff IS NOT NULL AND g.kickoff > ? AND g.kickoff <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM consensus c WHERE c.game_id = g.game_id)",
+            (now_iso(), horizon),
+        )
+        return bool(row and row["n"])
+
+    @staticmethod
+    def _odds_polls_today() -> int:
+        """How many times the lines have been fetched since midnight UTC.
+
+        Read from the fetch log rather than held in memory, so closing the app
+        and reopening it does not hand the exception a fresh allowance -- which
+        is the same hole that had launching the app spend a credit every time.
+        """
+        midnight = now().replace(hour=0, minute=0, second=0,
+                                 microsecond=0).isoformat()
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM fetch_log "
+            "WHERE source = 'odds' AND ok = 1 AND ts >= ?", (midnight,),
+        )
+        return int(row["n"]) if row else 0
 
     def scores_interval(self) -> float:
         """Poll scores hard while games are live, gently otherwise."""

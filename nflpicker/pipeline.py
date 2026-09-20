@@ -1178,6 +1178,13 @@ class Pipeline:
     def quarterback_registry(self, season: int) -> tuple[dict[str, float], dict[str, list[str]]]:
         """Rolling value per quarterback, and each team's passers, by name key.
 
+        Memoised for the length of one recompute. Three different callers ask
+        for it -- the power rating, the starter check and the feature builder
+        -- and it walks two seasons of play-by-play payloads to answer, so it
+        was being rebuilt five times a pass from rows that cannot change while
+        the pass is running. The cache is cleared at the top of `recompute`,
+        which is the only thing that writes the rows underneath it.
+
         Keyed by the normalised name rather than a player id because the injury
         feed and the play-by-play share no identifier.
 
@@ -1191,6 +1198,10 @@ class Pipeline:
         Sunday and lands on a systematically different number, so the points
         the rating charged per unit were not the points that were measured.
         """
+        cached = getattr(self, "_qb_registry_cache", None)
+        if cached and cached[0] == season:
+            return cached[1]
+
         from .availability import normalize_name
         from .ml.features import FORM_ALPHA, QB_PRIOR_DROPBACKS, SEASON_REGRESSION
 
@@ -1238,6 +1249,7 @@ class Pipeline:
             seen_dropbacks = volume.get(key, 0.0)
             weight = seen_dropbacks / (seen_dropbacks + QB_PRIOR_DROPBACKS)
             values[key] = value * weight
+        self._qb_registry_cache = (season, (values, depth))
         return values, depth
 
     def qb_ids_by_name(self, season: int) -> dict[str, str]:
@@ -1344,6 +1356,8 @@ class Pipeline:
                   force: bool = False) -> dict:
         """Ratings → predictions → simulation → picks. The analytical core."""
         start = time.monotonic()
+        # Anything memoised for the length of a pass starts empty.
+        self._qb_registry_cache = None
         season = self.season()
         week = self.current_week(season)
         games = self.load_games(season)
@@ -1707,6 +1721,68 @@ class Pipeline:
                 "VALUES(?,?,?,?,?)",
                 (contest, season, week, stamp, json.dumps(payload)),
             )
+
+    def replan_survivor(self, season: int | None = None) -> dict:
+        """Redo the survivor plan alone, from predictions already stored.
+
+        Recording a survivor pick used to call `recompute(force=True)`, which
+        is Elo over every game ever played, the model over the whole history,
+        twenty thousand season simulations and a grading pass -- for a change
+        that touches exactly one of those things. None of it depends on which
+        team you spent: the only consumer of that list is the optimiser, which
+        must not offer a team back once it has gone. Pressing S cost the best
+        part of a second on a laptop with synthetic data, and rather more on a
+        real season.
+
+        So this reads the predictions the last recompute wrote instead of
+        producing new ones, re-runs the optimiser with the current used list,
+        and rewrites the one row of pick_history that could have changed. The
+        numbers are identical -- same predictions, same planner -- and the work
+        is a query and a solve rather than the analytical core.
+        """
+        season = season or self.season()
+        week = self.current_week(season)
+        upcoming = db.query(
+            "SELECT game_id, week, home, away, kickoff FROM games "
+            "WHERE season = ? AND week >= ? AND season_type = 'REG' "
+            "AND status != 'final' ORDER BY week, kickoff",
+            (season, week),
+        )
+        if not upcoming:
+            return {}
+        ids = [g["game_id"] for g in upcoming]
+        placeholders = ",".join("?" for _ in ids)
+        predictions = {
+            r["game_id"]: r["home_win_prob"]
+            for r in db.query(
+                f"SELECT p.game_id, p.home_win_prob FROM predictions p "  # noqa: S608
+                f"JOIN (SELECT game_id, MAX(captured_at) m FROM predictions "
+                f"WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
+                "ON x.game_id = p.game_id AND x.m = p.captured_at",
+                ids,
+            )
+        }
+        by_week: dict[int, list[dict]] = {}
+        for g in upcoming:
+            prob = predictions.get(g["game_id"])
+            if prob is None:
+                continue
+            by_week.setdefault(int(g["week"]), []).append({
+                "game_id": g["game_id"], "home": g["home"], "away": g["away"],
+                "home_win_prob": prob, "kickoff": g["kickoff"],
+            })
+        if not by_week:
+            return {}
+        used = db.get_meta("survivor_used_teams", []) or []
+        survivor = plan_survivor(
+            season, week, by_week, used_teams=used,
+            through_week=self.config.survivor_last_week).to_dict()
+        db.execute(
+            "INSERT OR REPLACE INTO pick_history"
+            "(contest, season, week, captured_at, payload) VALUES(?,?,?,?,?)",
+            ("survivor", season, week, now_iso(), json.dumps(survivor)),
+        )
+        return survivor
 
     # ------------------------------------------------- weekly power history
     def _records_through(self, completed: list[dict], season: int) -> dict[str, list[float]]:

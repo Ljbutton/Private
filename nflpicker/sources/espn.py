@@ -7,6 +7,7 @@ missing field must degrade one game rather than kill a refresh.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from ..teams import try_resolve
@@ -18,6 +19,9 @@ SITE_V2 = "https://site.api.espn.com/apis/v2/sports/football/nfl"
 WEB = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl"
 
 SEASON_TYPES = {1: "PRE", 2: "REG", 3: "POST"}
+# What the postseason is numbered on from. Seventeen games in
+# eighteen weeks, so week 18 is the last of the regular season.
+REGULAR_SEASON_WEEKS = 18
 
 
 def _dig(obj: Any, *path, default=None):
@@ -78,7 +82,21 @@ def parse_scoreboard(payload: dict) -> list[dict]:
         season_type = SEASON_TYPES.get(
             _dig(event, "season", "type") or _dig(payload, "season", "type"), "REG"
         )
-        week = _dig(event, "week", "number") or _dig(payload, "week", "number") or 0
+        week = int(_dig(event, "week", "number")
+                   or _dig(payload, "week", "number") or 0)
+        # The postseason is numbered on from the regular season, not started
+        # again at one.
+        #
+        # The feed restarts its count in January, so a wild-card game arrives
+        # as "week 1". Stored that way it sorts alongside the opening Sunday
+        # of September in everything that orders a season by week -- which is
+        # the rolling-form window in the feature builder, the power history,
+        # and every query that asks for a week by number. Offsetting here, at
+        # the one point the feed is read, means nothing downstream has to know
+        # that January counts differently. `season_type` still says which is
+        # which for anything that cares.
+        if season_type == "POST" and week:
+            week += REGULAR_SEASON_WEEKS
         roof = _dig(comp, "venue", "indoor")
 
         game = {
@@ -198,14 +216,26 @@ class EspnSource:
         )
         return parse_scoreboard(payload)
 
+    # The postseason, in the feed's own numbering. Week 4 is the Pro Bowl,
+    # which is not a game anything here has an opinion about and whose two
+    # "teams" do not resolve to franchises anyway; the final is week 5.
+    POSTSEASON_WEEKS = (1, 2, 3, 5)
+
     def season_schedule(self, season: int, weeks: int = 18) -> list[dict]:
-        """Full regular season.
+        """The regular season, then the postseason.
 
         Weeks are fetched independently so one bad response costs a single week
         rather than the whole schedule.  But if the first few all fail the
         problem is the connection, not the weeks — retrying the remaining
         fifteen with backoff would burn well over a minute to learn the same
         thing, so give up early and let the caller report it.
+
+        The postseason was simply never asked for, so January did not exist as
+        far as this app was concerned: no bracket to draw, and a week selector
+        that stopped at eighteen. Its rounds are requested after the regular
+        season and a failure among them is not fatal -- for most of the year
+        they are empty by definition, and an empty round is the normal answer
+        rather than a fault.
         """
         games: list[dict] = []
         consecutive_failures = 0
@@ -221,6 +251,9 @@ class EspnSource:
                         "skipping the rest of the season fetch"
                     ) from None
                 continue
+        for week in self.POSTSEASON_WEEKS:
+            with contextlib.suppress(SourceError):
+                games.extend(self.scoreboard(season, week, season_type=3))
         return games
 
     def standings(self, season: int) -> list[dict]:

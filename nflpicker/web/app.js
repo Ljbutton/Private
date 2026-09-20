@@ -380,7 +380,10 @@ function renderHero(meta) {
   const week = state.week || meta.week;
   const live = season === meta.season && week === meta.week;
   const line = $("#whenline");
-  line.textContent = `Week ${week} · ${season} season`;
+  // The selector's own label, so a postseason round is named rather than
+  // numbered: "Divisional · 2026 season", not "Week 20".
+  const named = (state.weekOptions || []).find((o) => Number(o.value) === Number(week));
+  line.textContent = `${named ? named.label : `Week ${week}`} · ${season} season`;
   line.classList.toggle("past", !live);
   // No colour on the current week, and none on the date.
   //
@@ -496,22 +499,31 @@ function clvBlock(clv) {
       model's side on every game it had a view on, so there is nothing yet to
       separate your judgement from its own. The comparison starts saying
       something the first time you disagree with it.</p>` : ""}
-    <div class="table-scroll"><table class="slate">
-      <thead><tr><th>Wk</th><th>Pick</th><th>Game</th>
-        <th class="num">You got</th><th class="num">Closed</th>
-        <th class="num">Value</th></tr></thead>
-      <tbody>${clv.picks.map((p) => `<tr>
-        <td class="num muted">${p.week}</td>
-        <td class="who">${esc(p.selection)}</td>
-        <td class="muted">${esc(p.matchup)}</td>
-        <td class="num">${signed(p.line_at_pick, 1)}</td>
-        <td class="num muted">${signed(p.line_at_close, 1)}</td>
-        <td class="num ${p.clv > 0 ? "hit" : (p.clv < 0 ? "miss" : "")}">${signed(p.clv, 1)}</td>
-      </tr>`).join("")}</tbody></table></div>
-    <div class="grid-2 clv-cuts">
-      ${cut(clv.by_week, "week", "By week")}
-      ${cut(clv.by_team, "selection", "By team · worst first")}
-    </div>
+
+    <!-- Four numbers answer the question. Every pick behind them, and the
+         same number cut by week and by team, are what you read once the
+         answer has made you want to know where it came from. -->
+    <details class="more">
+      <summary><span class="chev"></span>Every pick<span class="hint">
+        ${clv.n} · and the same number by week and by team</span></summary>
+      <div class="table-scroll"><table class="slate">
+        <thead><tr><th>Wk</th><th>Pick</th><th>Game</th>
+          <th class="num">You got</th><th class="num">Closed</th>
+          <th class="num">Value</th></tr></thead>
+        <tbody>${clv.picks.map((pk) => `<tr>
+          <td class="num muted">${pk.week}</td>
+          <td class="who">${esc(pk.selection)}</td>
+          <td class="muted">${esc(pk.matchup)}</td>
+          <td class="num">${signed(pk.line_at_pick, 1)}</td>
+          <td class="num muted">${signed(pk.line_at_close, 1)}</td>
+          <td class="num ${pk.clv > 0 ? "hit" : (pk.clv < 0 ? "miss" : "")}">${
+            signed(pk.clv, 1)}</td>
+        </tr>`).join("")}</tbody></table></div>
+      <div class="grid-2 clv-cuts">
+        ${cut(clv.by_week, "week", "By week")}
+        ${cut(clv.by_team, "selection", "By team · worst first")}
+      </div>
+    </details>
     </div>
   </div>`;
 }
@@ -567,12 +579,11 @@ async function renderPerformance(ticket) {
     const borrowed = (d.totals.inherited || {})[key] || 0;
     const note = (cover[key] || {}).note;
     return `<tr class="${lead ? "lead" : ""}">
-      <td class="who">${esc(label)}${borrowed
+      <td class="who" title="${esc((d.descriptions || {})[key] || "")}">${esc(label)}${borrowed
         ? `<span class="rec" title="games from before the model existed, shown with the sportsbook's pick">${borrowed} inherited</span>`
         : ""}
         ${note ? `<button class="why" type="button" title="${esc(note)}"
-          aria-label="${esc(note)}">?</button>` : ""}
-        <div class="who-sub">${esc((d.descriptions || {})[key] || "")}</div></td>
+          aria-label="${esc(note)}">?</button>` : ""}</td>
       ${cell(all)}${cell(common)}
     </tr>`;
   };
@@ -632,11 +643,18 @@ async function renderPerformance(ticket) {
   };
 
   root.classList.add("fit-screen");
+  /* Three answers down the left, the league down the right.
+
+     Two by two gave the by-team table a quarter of the page for thirty-two
+     rows, so twenty-five of them sat behind a scroll -- on the one panel
+     whose whole point is comparing teams with each other, which you cannot do
+     through a seven-row window. It gets a full-height column of its own; the
+     three panels that are four rows, four tiles and a run share the other. */
   if (!paint(root, `<div class="perf-grid">
+  <div class="perf-stack">
   <div class="panel">
     <header><h2>Season ${d.season}</h2>
-      <span class="hint">Straight-up winners · "same games" scores only games every
-        picker had a view on</span></header>
+      <span class="hint" title="Straight-up winners only, because every source here names a favourite and it is the one question all of them can be asked. &quot;Same games&quot; scores only the games every picker had a view on.">straight-up winners</span></header>
     <div class="panel-body">
     <div class="table-scroll"><table class="slate totals">
       <thead><tr><th>Picker</th><th class="num">All their picks</th>
@@ -644,27 +662,44 @@ async function renderPerformance(ticket) {
       <tbody>${pickers.map((p) => totalRow(p, d.labels[p])).join("")}</tbody>
     </table></div>
 
-    <h3 class="sub-head">Week by week<span class="hint"> · correct out of picked</span></h3>
-    <div class="table-scroll"><table class="slate">
-      <thead><tr><th>Week</th>${pickers.map((p) =>
-        `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
-      <tbody>${d.weeks.map((w) => `<tr>
-        <td class="who">Week ${w.week}</td>
-        ${pickers.map((p) => {
-          const t = w.tallies[p];
-          return t.n
-            ? `<td class="num">${t.correct}<span class="rec">/${t.n}</span></td>`
-            : '<td class="num muted">–</td>';
-        }).join("")}
-      </tr>`).join("")}</tbody>
-    </table></div>
+    <!-- The season is the answer; the eighteen weeks behind it are the
+         working. Four rows and a scrollbar was the whole panel spent on
+         showing that there was more, rather than on the more. -->
+    <details class="more">
+      <summary><span class="chev"></span>Week by week<span class="hint">
+        ${d.weeks.length} week${d.weeks.length === 1 ? "" : "s"} · correct out of picked
+      </span></summary>
+      <div class="table-scroll"><table class="slate">
+        <thead><tr><th>Week</th>${pickers.map((p) =>
+          `<th class="num">${esc(d.labels[p])}</th>`).join("")}</tr></thead>
+        <tbody>${d.weeks.map((w) => `<tr>
+          <td class="who">Week ${w.week}</td>
+          ${pickers.map((p) => {
+            const t = w.tallies[p];
+            return t.n
+              ? `<td class="num">${t.correct}<span class="rec">/${t.n}</span></td>`
+              : '<td class="num muted">–</td>';
+          }).join("")}
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </details>
     </div>
   </div>
 
-  <div class="panel">
+  ${clvBlock(d.clv)}
+
+  <div class="panel" id="survivor-track">
+    <header><h2>Survivor: the original run</h2>
+      <span class="hint">the plan as first made, against the teams you
+        actually spent</span></header>
+    <div class="panel-body"><div class="empty">Loading…</div></div>
+  </div>
+  </div>
+
+  <div class="panel perf-league">
     <header><h2>By team</h2>
       <span class="hint">how often each picker called that team's games right ·
-        click a column to sort by it</span></header>
+        click a column to sort by it, or a row for that team</span></header>
     <div class="panel-body">
     <div class="table-scroll"><table class="slate sortable">
       <thead><tr>
@@ -672,8 +707,10 @@ async function renderPerformance(ticket) {
         ${sortHead("games", "Games", "num")}
         ${pickers.map((p) => sortHead(p, d.labels[p], "num")).join("")}
       </tr></thead>
-      <tbody>${sortedTeams.map((t) => `<tr>
-        <td class="who">${esc(t.team)}</td>
+      <tbody>${sortedTeams.map((t) => `<tr data-team-card="${esc(t.team)}"
+        tabindex="0" title="${esc((state.meta?.teams || {})[t.team]?.full_name
+          || t.team)} — open their season">
+        <td class="who perf-team">${teamMark(t.team)}<span>${esc(t.team)}</span></td>
         <td class="num muted">${t.games}</td>
         ${pickers.map((p) => {
           const v = t.tallies[p];
@@ -687,15 +724,6 @@ async function renderPerformance(ticket) {
       </tr>`).join("")}</tbody>
     </table></div>
     </div>
-  </div>
-
-  ${clvBlock(d.clv)}
-
-  <div class="panel" id="survivor-track">
-    <header><h2>Survivor: the original run</h2>
-      <span class="hint">the plan as first made, against the teams you
-        actually spent</span></header>
-    <div class="panel-body"><div class="empty">Loading…</div></div>
   </div>
   </div>`)) return;
 
@@ -760,6 +788,16 @@ async function renderPerformance(ticket) {
     })
     .catch(() => {});
 
+
+  wireLogos(root);
+  // The same card the board opens, from the row that names the team.
+  $$("[data-team-card]", root).forEach((node) => {
+    const open = (ev) => { ev.stopPropagation(); openTeam(node.dataset.teamCard); };
+    node.addEventListener("click", open);
+    node.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(ev); }
+    });
+  });
 
   /* Re-sorting is a re-render of this view, not a reload: the payload is
      already here and the server has no opinion about column order. */
@@ -909,7 +947,8 @@ async function renderHome(ticket) {
   const byeBox = (conf, rows) => rows.length ? `<article class="gcard byecard">
     <div class="byehead">${esc(conf)} on bye</div>
     <div class="byelist">${rows.map((b) => `<button type="button" class="byerow"
-      data-bye="${esc(b.team)}" title="${esc(b.full_name || b.team)} — where their season stands">
+      data-team-card="${esc(b.team)}"
+      title="${esc(b.full_name || b.team)} — where their season stands">
       ${teamMark(b.team)}
       <span class="tname"><span class="nick">${esc(b.name || b.team)}</span>
         <span class="abbr">${esc(b.team)}</span></span>
@@ -1018,10 +1057,13 @@ async function renderHome(ticket) {
           data-team="${esc(abbr)}" title="${mineHere ? "Your pick — click to clear" : `Pick ${esc(abbr)}`}"
           aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
             mineHere ? (yourVerdict === " miss" ? "✕" : "✓") : ""}</button>
-        ${teamMark(abbr)}
-        <span class="tname" title="${esc(t.full_name || abbr)}${
-          side === "home" ? " (home)" : " (away)"}"><span class="nick">${
+        <span class="tlabel" data-team-card="${esc(abbr)}" role="button"
+          tabindex="0" title="${esc(t.full_name || abbr)}${
+            side === "home" ? " (home)" : " (away)"} — open their season">
+          ${teamMark(abbr)}
+          <span class="tname"><span class="nick">${
             esc(t.name || abbr)}</span><span class="abbr">${esc(abbr)}</span></span>
+        </span>
         <span class="trec" title="Record going into this week">${
           esc(g[`${side}_record`] || "")}</span>
         <button class="sdot${survivorHere ? " on" : ""}${survivorVerdict}"
@@ -1116,11 +1158,20 @@ async function renderHome(ticket) {
     node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
   });
 
-  // A team on bye has no game this week, so the card is about its season.
-  $$("[data-bye]", root).forEach((node) => {
+  /* A team's own card, from anywhere its name is written: the bye rows, and
+     the two names on every game card. The game card still opens the game --
+     that is what the rest of the card is for -- so these stop the click
+     before it gets there. */
+  $$("[data-team-card]", root).forEach((node) => {
     node.addEventListener("click", (event) => {
       event.stopPropagation();
-      openBye(byes.find((b) => b.team === node.dataset.bye));
+      openTeam(node.dataset.teamCard);
+    });
+    node.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      openTeam(node.dataset.teamCard);
     });
   });
 
@@ -1161,58 +1212,213 @@ async function renderHome(ticket) {
   });
 }
 
-// -------------------------------------------- a team on bye, in detail
-/* The card for a team with no game this week.
+// ------------------------------------------------------- the postseason
+/* Where the season is heading, and where it ended up.
 
-   Every other card on the board opens the game behind it. A bye row had no
-   game to open and went through the same handler anyway, which asked the
-   server for a game with no id and put the resulting error on screen -- so
-   the one card on the board that most invites a click was the one that could
-   not survive one.
+   Two things in one card, because they are two halves of one question. The
+   seeding is what is true now -- fourteen places, taken in order, with the
+   league's own letters for what each team has settled -- and the bracket is
+   what has happened to it once January starts. Before the postseason exists
+   the bracket half is the seeding read as matchups, which is the version
+   worth looking at in November.
 
-   What a bye team has instead of a game is a season, and that is what the
-   card answers: where the year is projected to end, how likely each thing
-   worth wanting still is, and who they play when they come back. No fetch:
-   the board already carries all of it. */
-function openBye(bye) {
-  if (!bye) return;
+   Seeded from results rather than from the simulator. The playoff odds beside
+   each team come from twenty thousand simulated seasons and answer "how
+   likely is this to hold"; the seed itself has to be the one that is actually
+   happening. */
+async function openBracket() {
   const dlg = $("#detail");
   const body = $(".dialog-body", dlg);
-  $(".dialog-title", dlg).textContent = `${bye.full_name || bye.team} — on bye`;
+  $(".dialog-title", dlg).textContent = `${state.season} playoff picture`;
+  body.innerHTML = '<div class="empty">Loading…</div>';
+  dlg.showModal();
+
+  let d;
+  try {
+    d = await api(`/api/playoffs?season=${state.season}`);
+  } catch (err) {
+    body.innerHTML = `<div class="empty">Could not load the bracket — ${
+      esc(err.message)}</div>`;
+    return;
+  }
+
+  const mark = (row) => row.clinch
+    ? `<span class="clinch c-${esc(row.clinch)}" title="${
+        esc(d.legend[row.clinch] || "")}">${esc(row.clinch)}</span>`
+    : '<span class="clinch"></span>';
+
+  /* Seven in, the rest out, and a line between them that is the whole point
+     of a standings table in December. */
+  const seedRows = (rows) => rows.map((row) => `<tr class="${
+    row.seed === 7 ? "cutline " : ""}${row.seed <= 7 ? "in" : "out"}"
+    data-team-card="${esc(row.team)}" tabindex="0"
+    title="${esc(row.name || row.team)} — open their season">
+    <td class="num seedno">${row.seed}</td>
+    <td class="who perf-team">${teamMark(row.team)}<span>${esc(row.team)}</span>${mark(row)}</td>
+    <td class="num">${esc(row.record)}</td>
+    <td class="muted small">${esc(row.division_winner ? row.division.split(" ")[1] : "wild card")}</td>
+    <td class="num ${row.playoff_prob >= 0.5 ? "hit" : ""}">${
+      row.playoff_prob === null || row.playoff_prob === undefined
+        ? "–" : pct(row.playoff_prob, 0)}</td>
+  </tr>`).join("");
+
+  const conference = (conf) => `<div class="conf-table">
+    <h3 class="sub-head">${esc(conf)}</h3>
+    <div class="table-scroll"><table class="slate seedtable">
+      <thead><tr><th class="num">#</th><th>Team</th><th class="num">Rec</th>
+        <th>How</th><th class="num" title="Chance of reaching the playoffs, from 20,000 simulated seasons">Odds</th></tr></thead>
+      <tbody>${seedRows(d.conferences[conf] || [])}</tbody>
+    </table></div>
+  </div>`;
+
+  /* A matchup, once it exists. Before a round is scheduled the bracket is
+     drawn from the seeds instead, because "who would play whom if the season
+     ended today" is the question a bracket answers in November. */
+  const tie = (g) => {
+    const side = (team, seed, score, won) => `<div class="br-side${
+      won ? " won" : ""}${g.winner && !won ? " lost" : ""}"${
+      team ? ` data-team-card="${esc(team)}" tabindex="0"` : ""}>
+      <span class="br-seed">${seed || ""}</span>
+      ${team ? teamMark(team) : '<span class="tbadge ghost"></span>'}
+      <span class="br-name">${esc(team || "—")}</span>
+      <span class="br-score">${score === null || score === undefined ? "" : score}</span>
+    </div>`;
+    return `<div class="br-game${g.status === "final" ? " done" : ""}">
+      ${side(g.away, g.away_seed, g.away_score, g.winner && g.winner === g.away)}
+      ${side(g.home, g.home_seed, g.home_score, g.winner && g.winner === g.home)}
+    </div>`;
+  };
+
+  const projected = () => {
+    /* 2v7, 3v6, 4v5 in each conference, with the top seed waiting. The real
+       bracket replaces this the moment the round is on the schedule. */
+    const rows = [];
+    for (const conf of ["AFC", "NFC"]) {
+      const seeds = (d.conferences[conf] || []).filter((r) => r.seed <= 7);
+      if (seeds.length < 7) continue;
+      for (const [a, b] of [[1, 6], [2, 5], [3, 4]]) {
+        rows.push(tie({
+          home: seeds[a].team, away: seeds[b].team,
+          home_seed: seeds[a].seed, away_seed: seeds[b].seed,
+          home_score: null, away_score: null, status: "scheduled", winner: null,
+        }));
+      }
+    }
+    return `<div class="br-round">
+      <h3 class="sub-head">If the season ended today<span class="hint">
+        wild-card round · the top seed in each conference sits it out</span></h3>
+      <div class="br-games">${rows.join("")}</div>
+    </div>`;
+  };
+
+  const rounds = (d.bracket || []).map((r) => `<div class="br-round">
+    <h3 class="sub-head">${esc(r.round)}</h3>
+    <div class="br-games">${r.games.map(tie).join("")}</div>
+  </div>`).join("");
+
+  body.innerHTML = `<div class="panel bracket-card">
+    <div class="grid-2 conf-split">${conference("AFC")}${conference("NFC")}</div>
+    <p class="note legend">${Object.entries(d.legend).map(([k, v]) =>
+      `<span class="clinch c-${esc(k)}">${esc(k)}</span> ${esc(v)}`).join(" · ")}</p>
+    ${d.has_postseason ? rounds : projected()}
+  </div>`;
+  wireLogos(body);
+  $$("[data-team-card]", body).forEach((node) => {
+    node.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openTeam(node.dataset.teamCard);
+    });
+  });
+}
+
+// --------------------------------------------------- a team, in detail
+/* The card behind a team's name, anywhere its name appears.
+
+   This started as the bye card, because a team with no game this week has
+   nothing else to show. It turned out to be the better answer for every
+   other team as well: the game card says what happens on Sunday, and the
+   question a crest actually invites is "are they any good, and where does
+   this season end up". So the same card opens for anyone.
+
+   One fetch, one renderer. The bye rows used to carry their own copy of
+   these numbers in the board's payload; both now read the endpoint, which is
+   local and costs a few milliseconds, and there is one place where the card
+   can be wrong. */
+async function openTeam(abbr) {
+  if (!abbr) return;
+  const dlg = $("#detail");
+  const body = $(".dialog-body", dlg);
+  const meta = (state.meta?.teams || {})[abbr] || {};
+  $(".dialog-title", dlg).textContent = meta.full_name || abbr;
+  body.innerHTML = '<div class="empty">Loading…</div>';
+  dlg.showModal();
+
+  let t;
+  try {
+    t = await api(`/api/team/${encodeURIComponent(abbr)}?season=${
+      state.season}&week=${state.week}`);
+  } catch (err) {
+    // An open dialog reading "Loading…" for ever is the worst of the two
+    // failures: the error at least says which team and what went wrong.
+    body.innerHTML = `<div class="empty">Could not load ${esc(abbr)} — ${
+      esc(err.message)}</div>`;
+    return;
+  }
 
   const odds = [
-    ["Make the playoffs", bye.playoff_prob],
-    ["Win the division", bye.division_prob],
-    ["First-round bye", bye.bye_prob],
-    ["Win the Super Bowl", bye.sb_prob],
+    ["Make the playoffs", t.playoff_prob],
+    ["Win the division", t.division_prob],
+    ["First-round bye", t.bye_prob],
+    ["Win the Super Bowl", t.sb_prob],
   ].filter(([, v]) => v !== null && v !== undefined);
 
-  const next = bye.next;
-  const range = bye.wins_p10 === null || bye.wins_p10 === undefined
-    ? "" : `${num(bye.wins_p10, 0)}–${num(bye.wins_p90, 0)} in most seasons`;
+  const range = t.wins_p10 === null || t.wins_p10 === undefined
+    ? "" : `${num(t.wins_p10, 0)}–${num(t.wins_p90, 0)} in most seasons`;
+
+  /* What is on, and what is next. A team can have either, both or neither:
+     on a bye there is no game this week but there is one coming, and in the
+     last week of the season it is the other way round. */
+  const fixture = (g, label) => g ? `
+    <h3 class="sub-head">${esc(label)}</h3>
+    <div class="byenext">
+      ${teamMark(g.opponent)}
+      <span><b>${g.home ? "vs" : "at"} ${esc(g.opponent)}</b>
+        <span class="muted">${g.score
+          ? `${esc(g.score)} ${g.status === "final" ? "final" : ""}`
+          : (g.kickoff ? esc(when(g.kickoff)) : "")}</span></span>
+    </div>` : "";
 
   body.innerHTML = `
     <div class="panel bye-detail">
       <div class="byetop">
-        ${teamMark(bye.team)}
+        ${teamMark(t.team)}
         <div>
-          <div class="byename">${esc(bye.full_name || bye.team)}</div>
-          <div class="muted">${esc(bye.division || bye.conference || "")}${
-            bye.record ? ` · ${esc(bye.record)}` : ""}</div>
+          <div class="byename">${esc(t.full_name || t.team)}</div>
+          <div class="muted">${esc(t.division || t.conference || "")}${
+            t.record ? ` · ${esc(t.record)}` : ""}${
+            t.on_bye ? ' · <span class="byeflag">on bye</span>' : ""}</div>
         </div>
-        <div class="byerankbig">${bye.rank ? `#${bye.rank}` : "–"}
+        <div class="byerankbig">${t.rank ? `#${t.rank}` : "–"}
           <span class="sub">power rank</span></div>
       </div>
 
       <div class="tiles">
         <div class="tile"><div class="label">Projected wins</div>
-          <div class="value">${bye.exp_wins === null || bye.exp_wins === undefined
-            ? "–" : num(bye.exp_wins, 1)}</div>
+          <div class="value">${t.exp_wins === null || t.exp_wins === undefined
+            ? "–" : num(t.exp_wins, 1)}</div>
           <div class="sub">${esc(range)}</div></div>
         <div class="tile"><div class="label">Power rating</div>
-          <div class="value">${bye.power === null || bye.power === undefined
-            ? "–" : signed(bye.power, 1)}</div>
+          <div class="value">${t.power === null || t.power === undefined
+            ? "–" : signed(t.power, 1)}</div>
           <div class="sub">points better than an average team</div></div>
+        <div class="tile" title="Win expectation implied by points scored and allowed. A team well above its record has been unlucky.">
+          <div class="label">Pythagorean</div>
+          <div class="value">${t.pythagorean === null || t.pythagorean === undefined
+            ? "–" : pct(t.pythagorean)}</div>
+          <div class="sub">by points, not results</div></div>
+        <div class="tile"><div class="label">Conference</div>
+          <div class="value">${esc(t.conference || "–")}</div>
+          <div class="sub">${esc(t.division || "")}</div></div>
       </div>
 
       ${odds.length ? `<h3 class="sub-head">How the season ends</h3>
@@ -1223,19 +1429,18 @@ function openBye(bye) {
         <td class="num">${pct(v, 1)}</td>
       </tr>`).join("")}</tbody></table>` : ""}
 
-      <h3 class="sub-head">Back in week ${next ? next.week : "?"}</h3>
-      ${next ? `<div class="byenext">
-        ${teamMark(next.opponent)}
-        <span><b>${next.home ? "vs" : "at"} ${esc(next.opponent)}</b>
-          <span class="muted">${next.kickoff ? esc(when(next.kickoff)) : ""}</span></span>
-      </div>` : `<div class="empty">The schedule does not reach their next game yet.</div>`}
+      ${fixture(t.this_week, `This week${t.this_week && t.this_week.status === "final"
+        ? "" : ""}`)}
+      ${fixture(t.next, t.on_bye ? `Back in week ${t.next ? t.next.week : "?"}`
+        : `Next: week ${t.next ? t.next.week : "?"}`)}
+      ${!t.this_week && !t.next ? '<div class="empty">No more games scheduled.</div>' : ""}
 
-      <p class="note">A bye is the one week a team's ranking moves without them
-        playing: everyone else's results shift the table underneath them. They
-        also cannot be used as a survivor pick this week.</p>
+      ${t.on_bye ? `<p class="note">A bye is the one week a team's ranking
+        moves without them playing: everyone else's results shift the table
+        underneath them. They also cannot be used as a survivor pick this
+        week.</p>` : ""}
     </div>`;
   wireLogos(body);
-  dlg.showModal();
 }
 
 // ------------------------------------------------- one game, in detail
@@ -1623,6 +1828,20 @@ async function renderTeams(ticket) {
 // ------------------------------------------------------------------- picks
 async function renderPicks(ticket) {
   const root = $("#view");
+  /* Neither contest on this page runs in January. A survivor pool is decided
+     by the end of the regular season and a pick'em board is the week's
+     sixteen games, not a four-game round -- so a playoff week here is a
+     question with no answer rather than an empty board. */
+  if (state.postWeeks?.has(Number(state.week))) {
+    root.classList.remove("fit-screen");
+    paint(root, `<div class="panel"><div class="empty">
+      Picks and survivor are a regular-season contest — a pool is settled by
+      week 18 and a pick'em board is a full slate, not a four-game round.
+      Choose a week from the regular season, or open the bracket for the
+      postseason.
+    </div></div>`);
+    return;
+  }
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
   if (stale(ticket)) return;
   const pickem = data.pickem || {};
@@ -2914,11 +3133,28 @@ async function loadState() {
   if (state.week === null) state.week = meta.week;
   state.weeks = meta.weeks && meta.weeks.length ? meta.weeks
     : Array.from({ length: 18 }, (_, i) => i + 1);
+  // Which selector values are a playoff round, for the pages that have
+  // nothing to say about one.
+  state.postWeeks = new Set((meta.week_options || [])
+    .filter((o) => o.type === "POST").map((o) => Number(o.value)));
   renderStatus(meta);
 
+  /* Named weeks, so January reads as January.
+
+     The selector used to build "Week ${n}" from a list of numbers, which is
+     right for eighteen weeks and wrong for the four after them: nobody calls
+     the divisional round week twenty. The server sends the options with their
+     labels, and the postseason is numbered on from the regular season so one
+     value still names one week everywhere it is read. */
+  state.weekOptions = (meta.week_options && meta.week_options.length)
+    ? meta.week_options
+    : state.weeks.map((w) => ({ value: w, label: `Week ${w}`, type: "REG" }));
   const sel = $("#week");
-  if (sel.options.length !== state.weeks.length) {
-    sel.innerHTML = state.weeks.map((w) => `<option value="${w}">Week ${w}</option>`).join("");
+  const wanted = state.weekOptions
+    .map((o) => `<option value="${o.value}">${esc(o.label)}</option>`).join("");
+  if (sel.dataset.built !== wanted) {
+    sel.innerHTML = wanted;
+    sel.dataset.built = wanted;
   }
   sel.value = String(state.week);
 
@@ -3062,6 +3298,29 @@ async function main() {
     await render();
   });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
+  $("#bracket")?.addEventListener("click", () => openBracket());
+
+  /* Clicking away closes it.
+
+     A modal <dialog> already closes on Escape, and the X was the only other
+     way out -- which is not where anyone's hand is. Clicking off the thing
+     you opened is how every other overlay on a computer behaves, and going
+     looking for a close button to dismiss a card you opened by accident is a
+     small irritation that happens every single time.
+
+     The backdrop is not an element, so there is nothing to put a listener on:
+     a click on it is reported against the dialog itself. Comparing the
+     pointer to the dialog's own box is what separates the two. Measured
+     rather than compared by target, because the dialog's padding belongs to
+     the dialog and a click there is inside it. */
+  $("#detail").addEventListener("mousedown", (ev) => {
+    const dlg = ev.currentTarget;
+    if (ev.target !== dlg) return;          // landed on the content
+    const box = dlg.getBoundingClientRect();
+    const outside = ev.clientX < box.left || ev.clientX > box.right
+      || ev.clientY < box.top || ev.clientY > box.bottom;
+    if (outside) dlg.close();
+  });
 
   /* The general refresh, on two buttons that mean the same thing: the one in
      the sidebar, always there, and the one on the Settings page beside the
