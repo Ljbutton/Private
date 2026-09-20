@@ -354,8 +354,11 @@ def track(original: list[dict], used_weeks: dict, games: list[dict]) -> dict:
     elif not mine_entries:
         verdict = "Nothing picked yet. Mark a team used on Picks and it starts here."
     elif plan["alive"] and mine["alive"]:
-        verdict = (f"Both still alive after {max(plan['weeks_survived'], mine['weeks_survived'])} "
-                   f"week{'s' if max(plan['weeks_survived'], mine['weeks_survived']) != 1 else ''}.")
+        # Nothing to say. Both columns are headed "alive · N survived" and
+        # every row underneath is a tick, so a line announcing that neither
+        # has gone out yet is the panel repeating its own table back at the
+        # reader -- and in a panel this size it costs a row of the run.
+        verdict = ""
     elif plan["alive"]:
         verdict = f"You went out in week {mine['out_week']}. The original run is still alive."
     elif mine["alive"]:

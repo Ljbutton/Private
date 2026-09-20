@@ -123,6 +123,12 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             # is served to the page and goes nowhere else.
             "user": identity.greeting_name(),
             "has_odds_key": cfg.has_odds_key,
+            # The handful of settings the page's chrome reads, rather than the
+            # whole of Settings: this is fetched every minute and most of what
+            # is in there is a secret or a cadence the browser has no use for.
+            "settings": {
+                "assistant_button": _setting_is_on("NFLPICKER_ASSISTANT_BUTTON"),
+            },
             "odds_usage": odds_usage,
             "model": {
                 "version": pipeline.predictor.version,
@@ -1430,6 +1436,16 @@ def records_before(season: int, week: int) -> dict[str, str]:
         wins, losses, ties = tally.get(team, [0, 0, 0])
         out[team] = f"{wins}-{losses}" + (f"-{ties}" if ties else "")
     return out
+
+
+def _setting_is_on(key: str, default: bool = True) -> bool:
+    """A boolean setting, read the way the rest of the app writes them."""
+    import os
+
+    raw = (os.environ.get(key) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
 
 
 def week_options(season: int) -> list[dict]:

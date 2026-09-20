@@ -300,12 +300,15 @@ class EspnSource:
             return []
         rows: list[dict] = []
         for group in payload.get("injuries") or []:
-            team = try_resolve(group.get("displayName") or group.get("abbreviation"))
+            team = _resolve_team(group)
             if team:
                 self.covered_teams.add(team)
             for item in group.get("injuries") or []:
                 athlete = item.get("athlete") or {}
-                name = athlete.get("displayName") or item.get("displayName")
+                name = _first_text(athlete.get("displayName"),
+                                   athlete.get("fullName"),
+                                   athlete.get("shortName"),
+                                   item.get("displayName"))
                 if not (team and name):
                     continue
                 rows.append(
@@ -313,7 +316,7 @@ class EspnSource:
                         "team": team,
                         "player": name,
                         "position": _dig(athlete, "position", "abbreviation"),
-                        "status": item.get("status") or _dig(item, "type", "description"),
+                        "status": _injury_status(item),
                         "detail": (item.get("longComment") or item.get("shortComment") or "")[:400],
                         "injury": _injury_label(item),
                         "return_date": iso(_dig(item, "details", "returnDate")) or None,
@@ -352,6 +355,60 @@ class EspnSource:
                 }
             )
         return items
+
+
+def _first_text(*values) -> str | None:
+    """The first of these that is actually a non-empty string."""
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _resolve_team(group: dict) -> str | None:
+    """A team from whichever of the group's names this app recognises.
+
+    Written as `try_resolve(displayName or abbreviation)`, which is not the
+    same thing: a display name that is present but unrecognised short-circuits
+    the `or` and the abbreviation is never tried, so the whole group -- every
+    injured player on that team -- was dropped without a word. A team whose
+    name upstream changes, or arrives in a form the alias table does not hold,
+    is exactly the case a fallback exists for.
+    """
+    for key in ("abbreviation", "displayName", "shortDisplayName", "name",
+                "location", "nickname"):
+        resolved = try_resolve(_first_text(group.get(key)))
+        if resolved:
+            return resolved
+    return try_resolve(_first_text(_dig(group, "team", "abbreviation"),
+                                   _dig(group, "team", "displayName")))
+
+
+# Being on the injury report is itself the information.
+#
+# The status used to be read from two fields and the player dropped when
+# neither produced one -- so anybody whose label arrived in a shape this did
+# not know about vanished from the report entirely, which is the opposite of
+# what their presence in an injury feed means. More fields are tried, the
+# nested object shape is handled, and a player whose status still cannot be
+# read is listed as such rather than deleted: the feed put them on the report,
+# and that is worth more than the label.
+INJURY_STATUS_UNKNOWN = "Listed"
+
+
+def _injury_status(item: dict) -> str:
+    status = item.get("status")
+    if isinstance(status, dict):
+        status = _first_text(status.get("name"), status.get("description"),
+                             status.get("abbreviation"))
+    return _first_text(
+        status,
+        _dig(item, "type", "description"),
+        _dig(item, "type", "name"),
+        _dig(item, "type", "abbreviation"),
+        item.get("injuryStatus"),
+        _dig(item, "details", "type"),
+    ) or INJURY_STATUS_UNKNOWN
 
 
 def _injury_label(item: dict) -> str | None:

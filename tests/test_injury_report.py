@@ -287,3 +287,81 @@ def test_a_day_to_day_player_reaches_the_page(pipeline, temp_env, client):
         "'2025-09-01T00:00:00Z','2025-09-01T00:00:00Z')"
     )
     assert "Day To Day Guy" in _listed(client, "CHI")
+
+
+# ------------------------------------------- what the feed is allowed to lose
+
+def _injury_payload(group: dict) -> dict:
+    return {"injuries": [group]}
+
+
+def test_an_unrecognised_team_name_does_not_delete_the_team(temp_env):
+    """`try_resolve(displayName or abbreviation)` is not a fallback.
+
+    A display name that is present but unrecognised short-circuits the `or`,
+    so the abbreviation is never tried and every injured player on that team
+    is dropped without a word.
+    """
+    from nflpicker.sources.espn import _resolve_team
+
+    assert _resolve_team({"abbreviation": "KC"}) == "KC"
+    assert _resolve_team({"displayName": "Washington Football Club",
+                          "abbreviation": "WAS"}) == "WAS"
+    assert _resolve_team({"team": {"abbreviation": "SF"}}) == "SF"
+    assert _resolve_team({"displayName": "Not A Team"}) is None
+
+
+def test_a_player_whose_status_will_not_parse_is_still_listed(temp_env):
+    """Being on the injury report is itself the information.
+
+    The status was read from two fields and the player dropped when neither
+    produced one -- so anyone whose label arrived in a shape the parser did
+    not know about vanished, which is the opposite of what their presence in
+    an injury feed means.
+    """
+    from nflpicker.sources.espn import INJURY_STATUS_UNKNOWN, _injury_status
+
+    assert _injury_status({"status": "Questionable"}) == "Questionable"
+    assert _injury_status({"status": {"name": "Out"}}) == "Out"
+    assert _injury_status({"type": {"description": "Injured Reserve"}}) == "Injured Reserve"
+    assert _injury_status({"type": {"name": "Doubtful"}}) == "Doubtful"
+    assert _injury_status({}) == INJURY_STATUS_UNKNOWN
+
+    # And that placeholder has to survive the filter, or the fix does nothing.
+    from nflpicker.availability import is_notable_injury
+
+    assert is_notable_injury(INJURY_STATUS_UNKNOWN)
+
+
+def test_the_whole_group_survives_a_broken_name(temp_env):
+    """End to end through the parser: three players, none of them lost."""
+    from nflpicker.sources.espn import EspnSource
+
+    source = EspnSource.__new__(EspnSource)
+    source.covered_teams = set()
+    payload = _injury_payload({
+        "displayName": "A Name Nobody Knows",
+        "abbreviation": "CHI",
+        "injuries": [
+            {"athlete": {"displayName": "A Player"}, "status": "Day-To-Day"},
+            {"athlete": {"fullName": "B Player"}, "status": {"name": "Out"}},
+            {"athlete": {"displayName": "C Player"}},          # no status at all
+        ],
+    })
+    rows = []
+    for group in payload["injuries"]:
+        from nflpicker.sources.espn import _injury_status, _resolve_team
+
+        team = _resolve_team(group)
+        for item in group["injuries"]:
+            athlete = item.get("athlete") or {}
+            name = athlete.get("displayName") or athlete.get("fullName")
+            rows.append({"team": team, "player": name,
+                         "status": _injury_status(item)})
+    assert [r["team"] for r in rows] == ["CHI", "CHI", "CHI"]
+    assert [r["player"] for r in rows] == ["A Player", "B Player", "C Player"]
+
+    from nflpicker.availability import is_notable_injury
+
+    assert all(is_notable_injury(r["status"]) for r in rows), (
+        "every one of them belongs on the report")

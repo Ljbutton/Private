@@ -132,14 +132,26 @@ SETTINGS: tuple[Setting, ...] = (
         default="50",
     ),
     Setting(
+        key="NFLPICKER_ASSISTANT_BUTTON",
+        label="Show the Assistant button",
+        kind="bool",
+        group="Assistant",
+        help="The Assistant opens as a window over whichever page you are on, "
+             "from a button in the top bar. Turn this off and the button is "
+             "not there at all -- not greyed out, not offering to set itself "
+             "up. Nothing else in the app changes.",
+        needed_for="Nothing. This is only whether the button is offered.",
+        default="true",
+    ),
+    Setting(
         key="NFLPICKER_LLM_URL",
         label="Local model endpoint",
         group="Assistant",
-        placeholder="set for you by the Assistant tab",
-        help="Any server that speaks the OpenAI chat API. The Assistant tab "
+        placeholder="set for you by the Assistant window",
+        help="Any server that speaks the OpenAI chat API. The Assistant window "
              "can install and run one for you and fill this in; these two "
              "boxes are for pointing at a server you already run instead.",
-        needed_for="The Assistant tab. Nothing leaves your machine — the app "
+        needed_for="The Assistant window. Nothing leaves your machine — the app "
                    "talks to this address and no other, and refuses any "
                    "address that is not on this computer.",
     ),
@@ -150,7 +162,7 @@ SETTINGS: tuple[Setting, ...] = (
         placeholder="qwen3.5:4b",
         help="Whichever model that server has. A 4B model is enough for "
              "questions about this data and runs on a laptop.",
-        needed_for="The Assistant tab.",
+        needed_for="The Assistant window.",
     ),
     Setting(
         key="NFLPICKER_SURVIVOR_LAST_WEEK",

@@ -5,6 +5,24 @@ import {
   signed, statusClass, when,
 } from "./format.js";
 
+/* The last few things the page has thrown, for a bug report to carry.
+
+   An error that only ever reached a console nobody has open is an error that
+   never gets reported with anything useful attached. Bounded, because a page
+   that throws in a loop must not also fill memory with the evidence. */
+const pageErrors = [];
+const PAGE_ERROR_LIMIT = 20;
+addEventListener("error", (ev) => {
+  const where = ev.filename ? ` (${String(ev.filename).split("/").pop()}:${ev.lineno})` : "";
+  pageErrors.push(`${new Date().toISOString().slice(11, 19)} ${ev.message}${where}`);
+  if (pageErrors.length > PAGE_ERROR_LIMIT) pageErrors.shift();
+});
+addEventListener("unhandledrejection", (ev) => {
+  pageErrors.push(`${new Date().toISOString().slice(11, 19)} unhandled: ${
+    ev.reason && ev.reason.message ? ev.reason.message : String(ev.reason)}`);
+  if (pageErrors.length > PAGE_ERROR_LIMIT) pageErrors.shift();
+});
+
 const state = { season: null, week: null, weeks: [], tab: "home", meta: null,
   busy: false, trackTeam: null };
 
@@ -594,10 +612,12 @@ async function renderPerformance(ticket) {
   const sort = state.sbSort && (state.sbSort.key === "team" || state.sbSort.key === "games"
     || pickers.includes(state.sbSort.key))
     ? state.sbSort
-    // Opens on the blend -- what the app actually claims -- rather than on the
-    // first column, which is "you" and is empty until picks have been graded.
-    : { key: ["model", "blind", "book"].find((k) => pickers.includes(k))
-             || pickers[0] || "team", dir: "desc" };
+    /* Opens alphabetically. A table of thirty-two teams is one you come to
+       with a team in mind, and finding it by name is the common errand;
+       ranking them by a rate is the question you ask second, which is what
+       the column headers are for. It used to open on the blend, which is a
+       useful order and a poor index. */
+    : { key: "team", dir: "asc" };
 
   const sortValue = (t, key) => {
     if (key === "team") return t.team;
@@ -686,8 +706,6 @@ async function renderPerformance(ticket) {
     </div>
   </div>
 
-  ${clvBlock(d.clv)}
-
   <div class="panel" id="survivor-track">
     <header><h2>Survivor: the original run</h2>
       <span class="hint">the plan as first made, against the teams you
@@ -773,7 +791,7 @@ async function renderPerformance(ticket) {
       panel.querySelector(".track-split")?.remove();
       panel.querySelector(".verdict")?.remove();
       panel.insertAdjacentHTML("beforeend", `
-        <p class="verdict">${esc(t.verdict || "")}</p>
+        ${t.verdict ? `<p class="verdict">${esc(t.verdict)}</p>` : ""}
         <div class="table-scroll"><table class="slate run-track track-split">
           <thead><tr><th>Wk</th>
             <th>The plan<span class="hint">${esc(ran(t.original || {}))}</span></th>
@@ -1010,13 +1028,56 @@ async function renderHome(ticket) {
       return Math.abs(v) < 0.05 ? "PK" : signed(v);
     };
 
+    /* How a finished game grades every number on the card.
+
+       The margin from the home side, and the points actually scored. Both are
+       null until the game is final, which is what every grader below checks
+       first -- an unplayed game has no verdict, not a neutral one. */
+    const finalMargin = g.status === "final" && g.home_score !== null
+      && g.away_score !== null ? Number(g.home_score) - Number(g.away_score) : null;
+    const finalTotal = g.status === "final" && g.home_score !== null
+      && g.away_score !== null ? Number(g.home_score) + Number(g.away_score) : null;
+
+    /* A pushed bet is not a wrong one.
+
+       Nothing here used to be able to say "neither": a spread landing exactly
+       on the number, a total landing exactly on the line, and a source with
+       no opinion at all were all resolved into a green or a red by whichever
+       way a floating-point comparison happened to fall. A push is its own
+       answer and gets its own colour -- grey, which is the honest one. */
+    const PUSH = " push";
+    const grade = (right) => right === null ? PUSH : (right ? " hit" : " miss");
+
+    /* Did this side cover its own spread?
+
+       `homeLine` is the home team's number, so the away side's is its
+       negative; a side covers when the final margin beats the number it was
+       laying. Within a tenth of a point of the line is a push. */
+    const coverVerdict = (homeLine, side) => {
+      if (finalMargin === null || homeLine === null || homeLine === undefined) return "";
+      const margin = side === "home" ? finalMargin : -finalMargin;
+      const line = side === "home" ? Number(homeLine) : -Number(homeLine);
+      const edge = margin + line;
+      return Math.abs(edge) < 0.05 ? PUSH : grade(edge > 0);
+    };
+
     // One source's opinion about one team: its line for that side, its
     // probability for that side, and whether that is the side it picked.
     const cell = (kind, homeProb, homeLine, side) => {
       const picked = homeProb !== null && Math.abs(Number(homeProb) - 0.5) > 1e-9
         && ((Number(homeProb) > 0.5) === (side === "home"));
-      const verdict = picked && actualWinner
-        ? (g[side] === actualWinner ? " hit" : " miss") : "";
+      /* Graded by who won, not by who this source picked.
+
+         The verdict used to be set only on the side a source had picked, so
+         exactly one of the two rows on a card was ever coloured -- the other
+         stayed neutral whatever had happened to it. Both rows carry it now:
+         the winner's numbers go green and the loser's red, on every column,
+         and the tick still says which side each source was on. A game the
+         source called a dead heat is greyed rather than assigned. */
+      const verdict = actualWinner === null ? ""
+        : (homeProb !== null && Math.abs(Number(homeProb) - 0.5) < 1e-9 ? PUSH
+          : grade(g[side] === actualWinner));
+      const lineVerdict = coverVerdict(homeLine, side);
       const prob = homeProb === null ? null
         : (side === "home" ? Number(homeProb) : 1 - Number(homeProb));
       const borrowed = kind === "ours" && inherited;
@@ -1024,7 +1085,10 @@ async function renderHome(ticket) {
         borrowed ? " borrowed" : ""}"${borrowed
         ? ' title="This game finished before the app was running, so the model has no number of its own. Its pick is the sportsbook\'s; the spread and total are left blank rather than copied, which would read as the model agreeing on them."'
         : ""}>
-        <span class="gline">${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
+        <span class="gline${lineVerdict}"${lineVerdict && !borrowed
+          ? ` title="${lineVerdict === PUSH ? "Pushed — the game landed on the number"
+            : (lineVerdict === " hit" ? "Covered" : "Did not cover")}"` : ""
+          }>${homeLine === undefined ? "" : esc(lineText(homeLine, side))}</span>
         <span class="gprob">${prob === null ? "–" : pct(prob)}${
           borrowed ? '<i class="est">*</i>' : ""}${picked ? `
           <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>` : ""}</span>
@@ -1092,6 +1156,30 @@ async function renderHome(ticket) {
     const blindTotal = p && p.total_points ? num(p.total_points, 1) : null;
     const bookTotal = g.market?.total_points;
 
+    /* A projected total is graded against the book's line, not against the
+       score. "45.2 when the game went 44" is not a miss by a point and a bit
+       -- there is no prize for being close to a total. What it is is a lean:
+       over the book's number or under it, and the game settles which was
+       right. Without a line to lean against there is nothing to grade, and a
+       game landing exactly on it is a push. */
+    const totalVerdict = (value) => {
+      if (value === null || finalTotal === null) return "";
+      if (bookTotal === null || bookTotal === undefined) return "";
+      const lean = Number(value) - Number(bookTotal);
+      const result = finalTotal - Number(bookTotal);
+      if (Math.abs(result) < 0.05) return PUSH;   // landed on the number
+      if (Math.abs(lean) < 0.05) return PUSH;     // no lean to be right about
+      return grade((lean > 0) === (result > 0));
+    };
+    const totalCell = (value, label) => {
+      const verdict = totalVerdict(value);
+      const said = verdict === PUSH ? "Pushed — the game landed on the line"
+        : verdict === " hit" ? "Called the right side of the total"
+        : verdict === " miss" ? "Called the wrong side of the total" : label;
+      return `<div class="gtot${verdict}" title="${esc(said)}">${
+        value === null ? "–" : value}</div>`;
+    };
+
     /* Did the favourite win. Judged against the book rather than against our
        own number, because "upset" is a claim about what the world expected --
        and the book is the closest thing to a public answer. A game the market
@@ -1126,15 +1214,22 @@ async function renderHome(ticket) {
              "which of these three is the book's" is answered by position
              instead of by remembering the order in a tooltip. -->
         <div class="gtot-label" title="Projected total points for the game">Total</div>
-        <div class="gtot" title="Blind model's projected total">${
-          blindTotal === null ? "–" : blindTotal}</div>
-        <div class="gtot" title="Our blend's projected total">${
-          ourTotal === null ? "–" : ourTotal}</div>
-        <div class="gtot" title="Sportsbook total">${num(bookTotal, 1)}</div>
+        ${totalCell(blindTotal, "Blind model's projected total")}
+        ${totalCell(ourTotal, "Our blend's projected total")}
+        ${totalCell(bookTotal === null || bookTotal === undefined
+          ? null : num(bookTotal, 1), "Sportsbook total")}
       </div>
     </article>`;
   };
 
+  /* The board fits the window, and scrolls inside itself when it cannot.
+
+     The page used to scroll, which on a sixteen-game week meant the header,
+     the clock and the week you are looking at slid away as you read down the
+     slate -- and the one thing you go back up for is the week. The panel
+     takes the height it is given and the grid of cards scrolls within it, the
+     same contract Picks and Performance are already on. */
+  root.classList.add("fit-screen");
   if (!paint(root, `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
       <span class="hint">Home team listed second · Blind = before the line ·
@@ -1212,6 +1307,45 @@ async function renderHome(ticket) {
   });
 }
 
+// ----------------------------------------------- the assistant, as a window
+/* Open over whatever page you are on, and keep it there.
+
+   The conversation is held in `chat`, which outlives the dialog, so closing
+   the window and reopening it lands you back where you were rather than on a
+   new chat. The dialog is its own element for the same reason: a game card
+   opening and closing over the board must not take a conversation with it. */
+let assistantTicket = 0;
+
+async function openAssistant() {
+  const dlg = $("#assistant-dlg");
+  if (!dlg) return;
+  const body = $(".dialog-body", dlg);
+  if (!dlg.open) {
+    body.innerHTML = '<div class="empty">Loading…</div>';
+    dlg.showModal();
+  }
+  // Its own ticket: the page behind it renders on its own schedule and the
+  // two must not cancel each other.
+  const ticket = ++assistantTicket;
+  try {
+    await renderAssistant(ticket, body);
+  } catch (err) {
+    body.innerHTML = `<div class="empty">The assistant could not start — ${
+      esc(err.message)}</div>`;
+  }
+}
+
+/* Whether the button is offered at all. Someone who does not want a language
+   model in their football app can turn it off, and then it is not there --
+   not greyed out, not asking to be set up. */
+function paintAssistantButton() {
+  const btn = $("#assistant-open");
+  if (!btn) return;
+  const on = state.meta?.settings?.assistant_button !== false;
+  btn.hidden = !on;
+  if (!on && $("#assistant-dlg")?.open) $("#assistant-dlg").close();
+}
+
 // ------------------------------------------------------- the postseason
 /* Where the season is heading, and where it ended up.
 
@@ -1229,7 +1363,8 @@ async function renderHome(ticket) {
 async function openBracket() {
   const dlg = $("#detail");
   const body = $(".dialog-body", dlg);
-  $(".dialog-title", dlg).textContent = `${state.season} playoff picture`;
+  dlg.classList.add("wide");
+  $(".dialog-title", dlg).textContent = `${state.season} playoffs`;
   body.innerHTML = '<div class="empty">Loading…</div>';
   dlg.showModal();
 
@@ -1247,16 +1382,29 @@ async function openBracket() {
         esc(d.legend[row.clinch] || "")}">${esc(row.clinch)}</span>`
     : '<span class="clinch"></span>';
 
+  /* How a team is in, or that it is not.
+
+     Every row outside the seven used to read "wild card", which is a place in
+     the field and not something a team in eleventh has. What it has is a
+     chase, so that is what it says; and a team that is mathematically out has
+     neither, so it says so and turns red. */
+  const howIn = (row) => {
+    if (row.clinch === "e") return '<span class="out-flag">Eliminated</span>';
+    if (row.seed > 7) return "in the hunt";
+    return esc(row.division_winner ? row.division.split(" ")[1] : "wild card");
+  };
+
   /* Seven in, the rest out, and a line between them that is the whole point
      of a standings table in December. */
   const seedRows = (rows) => rows.map((row) => `<tr class="${
-    row.seed === 7 ? "cutline " : ""}${row.seed <= 7 ? "in" : "out"}"
+    row.seed === 7 ? "cutline " : ""}${row.seed <= 7 ? "in" : "out"}${
+    row.clinch === "e" ? " dead" : ""}"
     data-team-card="${esc(row.team)}" tabindex="0"
     title="${esc(row.name || row.team)} — open their season">
     <td class="num seedno">${row.seed}</td>
     <td class="who perf-team">${teamMark(row.team)}<span>${esc(row.team)}</span>${mark(row)}</td>
     <td class="num">${esc(row.record)}</td>
-    <td class="muted small">${esc(row.division_winner ? row.division.split(" ")[1] : "wild card")}</td>
+    <td class="muted small">${howIn(row)}</td>
     <td class="num ${row.playoff_prob >= 0.5 ? "hit" : ""}">${
       row.playoff_prob === null || row.playoff_prob === undefined
         ? "–" : pct(row.playoff_prob, 0)}</td>
@@ -1271,56 +1419,125 @@ async function openBracket() {
     </table></div>
   </div>`;
 
-  /* A matchup, once it exists. Before a round is scheduled the bracket is
-     drawn from the seeds instead, because "who would play whom if the season
-     ended today" is the question a bracket answers in November. */
-  const tie = (g) => {
-    const side = (team, seed, score, won) => `<div class="br-side${
-      won ? " won" : ""}${g.winner && !won ? " lost" : ""}"${
-      team ? ` data-team-card="${esc(team)}" tabindex="0"` : ""}>
+  /* ---------------------------------------------------------- the bracket
+
+     A real one: four rounds left to right, the AFC above and the NFC below,
+     meeting at the Super Bowl. It is drawn whether or not January has
+     happened -- from the seeding before, from the games once they exist --
+     because the shape is the same either way, and a bracket that only appears
+     in January is a bracket you cannot use to think about December. A slot
+     with no game in it yet shows who the current seeding puts there.
+
+     This replaces a flat list of rounds and a separate "if the season ended
+     today" block: the same information drawn twice, in two shapes, neither of
+     them a bracket. */
+  const played = {};
+  for (const round of d.bracket || []) played[round.round] = round.games;
+
+  const findGame = (round, one, two) => (played[round] || []).find(
+    (g) => (g.home === one && g.away === two) || (g.home === two && g.away === one));
+
+  const slot = (game, home, away, homeSeed, awaySeed) => {
+    const g = game || { home, away, home_seed: homeSeed, away_seed: awaySeed,
+                        home_score: null, away_score: null, winner: null };
+    const decided = !!g.winner;
+    const side = (team, seed, score, won, lost) => `<div class="br-side${
+      won ? " won" : ""}${lost ? " lost" : ""}"${team
+      ? ` data-team-card="${esc(team)}" tabindex="0" title="${esc(team)}"` : ""}>
       <span class="br-seed">${seed || ""}</span>
       ${team ? teamMark(team) : '<span class="tbadge ghost"></span>'}
       <span class="br-name">${esc(team || "—")}</span>
       <span class="br-score">${score === null || score === undefined ? "" : score}</span>
     </div>`;
-    return `<div class="br-game${g.status === "final" ? " done" : ""}">
-      ${side(g.away, g.away_seed, g.away_score, g.winner && g.winner === g.away)}
-      ${side(g.home, g.home_seed, g.home_score, g.winner && g.winner === g.home)}
+    return `<div class="br-game${game ? "" : " projected"}${decided ? " done" : ""}"${
+      game ? "" : ' title="Not played yet — this is the pairing the current seeding produces"'}>
+      ${side(g.away, g.away_seed, g.away_score, decided && g.winner === g.away,
+             decided && g.winner !== g.away)}
+      ${side(g.home, g.home_seed, g.home_score, decided && g.winner === g.home,
+             decided && g.winner !== g.home)}
     </div>`;
   };
 
-  const projected = () => {
-    /* 2v7, 3v6, 4v5 in each conference, with the top seed waiting. The real
-       bracket replaces this the moment the round is on the schedule. */
-    const rows = [];
-    for (const conf of ["AFC", "NFC"]) {
-      const seeds = (d.conferences[conf] || []).filter((r) => r.seed <= 7);
-      if (seeds.length < 7) continue;
-      for (const [a, b] of [[1, 6], [2, 5], [3, 4]]) {
-        rows.push(tie({
-          home: seeds[a].team, away: seeds[b].team,
-          home_seed: seeds[a].seed, away_seed: seeds[b].seed,
-          home_score: null, away_score: null, status: "scheduled", winner: null,
-        }));
-      }
-    }
-    return `<div class="br-round">
-      <h3 class="sub-head">If the season ended today<span class="hint">
-        wild-card round · the top seed in each conference sits it out</span></h3>
-      <div class="br-games">${rows.join("")}</div>
-    </div>`;
+  /* One conference's half of the tree. The higher seed hosts every round, and
+     the top seed plays whoever is left of the lowest -- which is the rule that
+     makes a bracket a bracket rather than a ladder. */
+  const half = (conf) => {
+    const seeds = (d.conferences[conf] || []).filter((r) => r.seed <= 7);
+    if (seeds.length < 7) return {};
+    const at = (n) => seeds[n - 1];
+    const pairs = [[2, 7], [3, 6], [4, 5]];
+    const wcGames = pairs.map(([hi, lo]) =>
+      findGame("Wild Card", at(hi).team, at(lo).team));
+    const wc = pairs.map(([hi, lo], i) =>
+      slot(wcGames[i], at(hi).team, at(lo).team, hi, lo)).join("");
+
+    // Who came through, or who is projected to: the higher seed until a
+    // result says otherwise.
+    const through = pairs.map(([hi], i) => {
+      const g = wcGames[i];
+      const team = g && g.winner ? g.winner : at(hi).team;
+      return seeds.find((r) => r.team === team) || at(hi);
+    }).sort((x, y) => x.seed - y.seed);
+
+    const divPairs = [[at(1), through[through.length - 1]], [through[0], through[1]]];
+    const divGames = divPairs.map(([x, y]) => findGame("Divisional", x.team, y.team));
+    const div = divPairs.map(([x, y], i) =>
+      slot(divGames[i], x.team, y.team, x.seed, y.seed)).join("");
+
+    const divThrough = divPairs.map(([x], i) => {
+      const g = divGames[i];
+      const team = g && g.winner ? g.winner : x.team;
+      return seeds.find((r) => r.team === team) || x;
+    }).sort((x, y) => x.seed - y.seed);
+
+    const champGame = findGame("Conference", divThrough[0].team, divThrough[1].team);
+    const champ = slot(champGame, divThrough[0].team, divThrough[1].team,
+                       divThrough[0].seed, divThrough[1].seed);
+    const winner = champGame && champGame.winner ? champGame.winner : divThrough[0].team;
+    return { wc, div, champ, winner,
+             seed: (seeds.find((r) => r.team === winner) || {}).seed };
   };
 
-  const rounds = (d.bracket || []).map((r) => `<div class="br-round">
-    <h3 class="sub-head">${esc(r.round)}</h3>
-    <div class="br-games">${r.games.map(tie).join("")}</div>
-  </div>`).join("");
+  const afc = half("AFC");
+  const nfc = half("NFC");
+  const sbGame = afc.winner && nfc.winner
+    ? findGame("Super Bowl", afc.winner, nfc.winner) : null;
+
+  const tree = afc.wc && nfc.wc ? `<div class="bracket-tree">
+    <div class="br-col-heads">
+      <span>Wild Card</span><span>Divisional</span><span>Conference</span><span>Super Bowl</span>
+    </div>
+    <div class="br-body">
+      <div class="br-conf">
+        <span class="br-conf-tag">AFC</span>
+        <div class="br-col wc">${afc.wc}</div>
+        <div class="br-col">${afc.div}</div>
+        <div class="br-col">${afc.champ}</div>
+      </div>
+      <div class="br-final">${slot(sbGame, afc.winner, nfc.winner, afc.seed, nfc.seed)}</div>
+      <div class="br-conf">
+        <span class="br-conf-tag">NFC</span>
+        <div class="br-col wc">${nfc.wc}</div>
+        <div class="br-col">${nfc.div}</div>
+        <div class="br-col">${nfc.champ}</div>
+      </div>
+    </div>
+    ${d.has_postseason ? "" : `<p class="note">Nothing has been played yet, so
+      every pairing here is the one the current seeding produces. It fills in
+      with real results as January goes on.</p>`}
+  </div>` : `<div class="empty">Not enough of the season has been played to
+    seed a bracket yet.</div>`;
 
   body.innerHTML = `<div class="panel bracket-card">
-    <div class="grid-2 conf-split">${conference("AFC")}${conference("NFC")}</div>
-    <p class="note legend">${Object.entries(d.legend).map(([k, v]) =>
-      `<span class="clinch c-${esc(k)}">${esc(k)}</span> ${esc(v)}`).join(" · ")}</p>
-    ${d.has_postseason ? rounds : projected()}
+    <div class="bracket-split">
+      ${tree}
+      <div class="bracket-picture">
+        ${conference("AFC")}
+        ${conference("NFC")}
+        <p class="note legend">${Object.entries(d.legend).map(([k, v]) =>
+          `<span class="clinch c-${esc(k)}">${esc(k)}</span> ${esc(v)}`).join(" · ")}</p>
+      </div>
+    </div>
   </div>`;
   wireLogos(body);
   $$("[data-team-card]", body).forEach((node) => {
@@ -1329,6 +1546,48 @@ async function openBracket() {
       openTeam(node.dataset.teamCard);
     });
   });
+}
+
+// ------------------------------------------------ moving between cards
+/* Where you have been, inside the dialog.
+
+   One card leads to another -- a game opens a team, a team opens the game it
+   is playing, the bracket opens either -- and each of those used to be a dead
+   end: the only way out was to close the dialog and find your way back in
+   from the board. The trail is a stack, so the arrow behaves the way an arrow
+   should, and it is cleared whenever the dialog is opened afresh rather than
+   navigated within.
+
+   Entries are `{kind, id}` and are replayed by `showCard`, which is the only
+   thing that opens a card; every caller goes through it. */
+const cardTrail = [];
+
+function showCard(kind, id, { push = true } = {}) {
+  if (push) {
+    const top = cardTrail[cardTrail.length - 1];
+    if (!top || top.kind !== kind || top.id !== id) cardTrail.push({ kind, id });
+  }
+  paintDialogNav();
+  return kind === "team" ? openTeam(id, { nav: false }) : openGame(id, { nav: false });
+}
+
+function goBackCard() {
+  cardTrail.pop();                       // the one being looked at
+  const previous = cardTrail[cardTrail.length - 1];
+  if (!previous) { $("#detail").close(); return; }
+  showCard(previous.kind, previous.id, { push: false });
+}
+
+function paintDialogNav(switcher) {
+  const back = $("#dialog-back");
+  if (back) back.hidden = cardTrail.length < 2;
+  const box = $("#dialog-switch");
+  if (!box) return;
+  if (!switcher || !switcher.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.innerHTML = switcher.map((o) => `<button class="dlg-tab${
+    o.on ? " on" : ""}" data-go="${esc(o.kind)}:${esc(o.id)}"${
+    o.on ? " disabled" : ""}>${esc(o.label)}</button>`).join("");
 }
 
 // --------------------------------------------------- a team, in detail
@@ -1344,8 +1603,9 @@ async function openBracket() {
    these numbers in the board's payload; both now read the endpoint, which is
    local and costs a few milliseconds, and there is one place where the card
    can be wrong. */
-async function openTeam(abbr) {
+async function openTeam(abbr, { nav = true } = {}) {
   if (!abbr) return;
+  if (nav) { cardTrail.length = 0; return showCard("team", abbr); }
   const dlg = $("#detail");
   const body = $(".dialog-body", dlg);
   const meta = (state.meta?.teams || {})[abbr] || {};
@@ -1387,6 +1647,15 @@ async function openTeam(abbr) {
           ? `${esc(g.score)} ${g.status === "final" ? "final" : ""}`
           : (g.kickoff ? esc(when(g.kickoff)) : "")}</span></span>
     </div>` : "";
+
+  /* The switcher: this team, and the game they are in this week. Both cards
+     draw the same control, so moving between them is one click either way
+     rather than closing and starting again from the board. */
+  paintDialogNav(t.this_week && t.this_week.game_id ? [
+    { kind: "team", id: t.team, label: t.team, on: true },
+    { kind: "game", id: t.this_week.game_id,
+      label: `vs ${t.this_week.opponent}` },
+  ] : null);
 
   body.innerHTML = `
     <div class="panel bye-detail">
@@ -1449,7 +1718,8 @@ async function openTeam(abbr) {
    shows, but this is the only place a single game explains itself --
    line movement, every book's current number, and the alerts raised for
    it. */
-async function openGame(gameId) {
+async function openGame(gameId, { nav = true } = {}) {
+  if (nav) { cardTrail.length = 0; return showCard("game", gameId); }
   const dlg = $("#detail");
   const body = $(".dialog-body", dlg);
   $(".dialog-title", dlg).textContent = "Loading…";
@@ -1503,6 +1773,12 @@ async function fillGame(dlg, body, gameId) {
 
   const g = d.game;
   $(".dialog-title", dlg).textContent = `${g.away_name} at ${g.home_name}`;
+  // This game, and either team in it, one click apart.
+  paintDialogNav([
+    { kind: "game", id: gameId, label: "Game", on: true },
+    { kind: "team", id: g.away, label: g.away },
+    { kind: "team", id: g.home, label: g.home },
+  ]);
 
   const books = d.latest_books || [];
   const bookRows = books.map((b) => `<tr><td class="team">${esc(b.book)}</td>
@@ -2372,7 +2648,97 @@ async function renderSoon(ticket) {
       <header><h2>What changed</h2><span class="hint">newest first</span></header>
       ${changes}
     </div>
+  </div>
+
+  <!-- Reporting a bug.
+
+       Assembled here and copied to the clipboard rather than posted
+       anywhere. This app talks to a handful of sports feeds and to nothing
+       else; quietly opening a channel to a bug tracker would be a new kind
+       of thing for it to do, and the report carries the state of someone's
+       machine. So it is written, shown in full, and it goes when they send
+       it -- which is also the only version of this that works on a laptop
+       with no network. -->
+  <div class="panel" id="bug-panel">
+    <header><h2>Report a bug</h2>
+      <span class="hint">assembled here, copied by you — nothing is sent
+        automatically</span></header>
+    <label class="bug-label" for="bug-what">What happened, and what you
+      expected instead</label>
+    <textarea id="bug-what" class="bug-what" rows="4"
+      placeholder="Clicked a game on Home and the dialog stayed on Loading…"></textarea>
+    <div class="bug-actions">
+      <button class="btn primary" id="bug-copy">Copy report</button>
+      <button class="btn" id="bug-show">Show what will be copied</button>
+      <span id="bug-result" class="muted"></span>
+    </div>
+    <pre class="bug-preview" id="bug-preview" hidden></pre>
+    <p class="note">The report carries the build, this computer's platform,
+      which page you were on, when each feed last answered, and any errors the
+      page has thrown this session. It does not carry your API keys, your
+      picks, or anything you have not typed above.</p>
   </div>`)) return;
+
+  /* What a report says. Built fresh each time it is asked for, so it
+     describes the moment the button was pressed rather than the moment the
+     page was drawn. */
+  const bugReport = () => {
+    const meta = state.meta || {};
+    const said = ($("#bug-what")?.value || "").trim();
+    const feeds = (meta.sources || []).map(
+      (f) => `  ${f.source}: ${f.ok ? "ok" : "FAILED"} ${ago(f.ts)}${
+        f.detail && !f.ok ? ` — ${f.detail}` : ""}`).join("\n");
+    return [
+      "The Edge — bug report",
+      "",
+      said || "(no description given)",
+      "",
+      `Build:     ${meta.build_label || "unknown"}`,
+      `Model:     ${meta.model?.version || "?"} (${
+        meta.model?.trained ? "trained" : "not trained"})`,
+      `Season:    ${state.season} · week ${state.week}`,
+      // The page as it is named on screen. `state.tab` is the internal id --
+      // a report saying "soon" sends whoever reads it looking for a page that
+      // does not exist, when the person was standing on The Desk.
+      `Page:      ${$(`.tab[data-tab="${state.tab}"] span`)?.textContent
+                    || state.tab}`,
+      `Platform:  ${navigator.platform || "?"} · ${window.innerWidth}x${window.innerHeight}`,
+      `Demo data: ${meta.demo ? "yes" : "no"}`,
+      `Odds key:  ${meta.has_odds_key ? "set" : "not set"}`,
+      "",
+      "Feeds:",
+      feeds || "  (none recorded)",
+      "",
+      "Errors this session:",
+      pageErrors.length
+        ? pageErrors.map((e) => `  ${e}`).join("\n")
+        : "  (none)",
+    ].join("\n");
+  };
+
+  $("#bug-show", root)?.addEventListener("click", () => {
+    const pre = $("#bug-preview", root);
+    pre.textContent = bugReport();
+    pre.hidden = !pre.hidden;
+  });
+
+  $("#bug-copy", root)?.addEventListener("click", async () => {
+    const out = $("#bug-result", root);
+    const text = bugReport();
+    try {
+      await navigator.clipboard.writeText(text);
+      out.textContent = "Copied. Paste it wherever you are reporting this.";
+      out.className = "pos";
+    } catch {
+      // A clipboard write can be refused, and a report you cannot get at is
+      // not a report. Showing it is the fallback that always works.
+      const pre = $("#bug-preview", root);
+      pre.textContent = text;
+      pre.hidden = false;
+      out.textContent = "Could not reach the clipboard — select the text below.";
+      out.className = "neg";
+    }
+  });
 }
 
 // --------------------------------------------------------------- settings
@@ -2502,7 +2868,61 @@ async function renderSettings(ticket) {
       </div></header>
     <div class="tool-out"><span id="refresh-result" class="muted"></span></div>
   </div>
+  </div>
+
+  <!-- The lines, at the bottom and sized to what they cost.
+
+       This was a small button in the sidebar, which is the wrong weight for
+       the one control in the app that spends a metered allowance: three
+       requests a press, out of a monthly budget. On the page, at the end,
+       with the month's usage beside it, it is a decision you make rather
+       than a button you find. -->
+  <div class="panel odds-panel">
+    <header><h2>Betting lines</h2>
+      <span class="hint">the one feed with a bill attached · three requests
+        of the monthly allowance per press</span></header>
+    <div class="odds-row">
+      <button class="btn primary odds-big" id="refresh-odds"
+        title="Fetch the betting lines now.">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+        <span>Update odds</span>
+      </button>
+      <div class="odds-meta">
+        <span id="odds-when" class="muted"></span>
+        <span class="tiny muted">Fetched once a day on its own, and whenever
+          an imminent game has no price yet. This is for when you want today's
+          number now.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Closing-line value lives here rather than on Performance.
+
+       It is the sharpest read in the app and the one that needs the least
+       looking at: a season figure you check now and then, not something you
+       compare against this week's board. On Performance it took a quarter of
+       the page permanently and squeezed the run; here it has room for all of
+       it, and Performance gets the space back. -->
+  <div class="panel" id="clv-panel">
+    <header><h2>Your closing-line value</h2>
+      <span class="hint">did the line move toward your picks after you made
+        them</span></header>
+    <div class="panel-body"><div class="empty">Loading…</div></div>
   </div>`)) return;
+
+  // The odds line is written by paintOdds, which runs when state loads --
+  // long before this page exists. Called again now that its element does.
+  paintOdds();
+
+  /* Fetched after the page is drawn: it is the last thing on it, it is a
+     second request, and nothing above should wait on it. */
+  api(`/api/scoreboard?season=${state.season}`)
+    .then((sb) => {
+      const holder = $("#clv-panel", root);
+      if (!holder || stale(ticket)) return;
+      holder.outerHTML = clvBlock(sb.clv) || "";
+    })
+    .catch(() => { $("#clv-panel", root)?.remove(); });
 
   /* A refresh re-renders this whole page, which used to close every section
      the reader had opened -- including the one they were halfway through
@@ -2652,8 +3072,7 @@ function bytes(n) {
   return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`;
 }
 
-async function renderAssistantSetup(status) {
-  const root = $("#view");
+async function renderAssistantSetup(status, root = $("#view")) {
   const setup = await api("/api/assistant/setup").catch(() => null);
   const job = setup?.progress || {};
   const offered = status.setup_offered !== false && setup;
@@ -2709,7 +3128,7 @@ async function renderAssistantSetup(status) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: chosen }),
     }).catch(() => null);
-    await renderAssistantSetup(status);
+    await renderAssistantSetup(status, root);
   });
 
   // Poll while it runs. Cleared on the way out of the tab, because a timer
@@ -2726,13 +3145,20 @@ async function renderAssistantSetup(status) {
         await render();
         return;
       }
-      await renderAssistantSetup(status);
+      await renderAssistantSetup(status, root);
     }, 1200);
   }
 }
 
-async function renderAssistant(ticket) {
-  const root = $("#view");
+/* The assistant draws wherever it is told to.
+
+   It was a tab, and a question about this week's board is asked while you are
+   looking at the board -- leaving the page to ask it, and losing it to come
+   back, is the wrong shape for the one feature that is about the rest of the
+   app. It opens as a window over whatever you are on instead. The view
+   function is unchanged apart from taking its root as an argument, so the
+   window and the (still addressable) page are the same code. */
+async function renderAssistant(ticket, root = $("#view")) {
   // The status probe starts the managed server if it is not running, which can
   // take twenty seconds. That is the longest await on any tab, and it is why
   // this is the tab that used to land on top of whichever one you switched to.
@@ -2741,7 +3167,7 @@ async function renderAssistant(ticket) {
   if (stale(ticket)) return;
 
   if (!status.ready) {
-    await renderAssistantSetup(status);
+    await renderAssistantSetup(status, root);
     return;
   }
 
@@ -2876,10 +3302,13 @@ async function renderAssistant(ticket) {
 }
 
 // -------------------------------------------------------------------- shell
+/* Assistant is not in here any more: it is a window, not a page. The hash
+   still works -- #assistant opens the window over Home -- so a bookmark or a
+   reload of the old address lands somewhere sensible. */
 const VIEWS = { home: renderHome, teams: renderTeams,
   picks: renderPicks, news: renderNews,
   performance: renderPerformance,
-  assistant: renderAssistant, settings: renderSettings, soon: renderSoon };
+  settings: renderSettings, soon: renderSoon };
 
 /* Which render is allowed to write to the page.
 
@@ -3177,10 +3606,17 @@ async function loadState() {
       ? "The build you installed" : "Running from a source checkout";
   }
   paintOdds();
+  paintAssistantButton();
   renderHero(meta);
 }
 
 function setTab(tab, { fromHash = false } = {}) {
+  if (tab === "assistant") {
+    // The old address for what is now a window. Open it over Home rather than
+    // dropping someone who bookmarked it on a page that no longer exists.
+    openAssistant();
+    tab = state.tab && VIEWS[state.tab] ? state.tab : "home";
+  }
   if (!VIEWS[tab]) tab = "home";
   state.tab = tab;
   $$(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
@@ -3203,6 +3639,14 @@ function setTab(tab, { fromHash = false } = {}) {
   // time you were on it -- so without this the paint is skipped and "Loading…"
   // is the page. Every tab you revisited would have been a dead end.
   repaintNext(tab);
+  /* One movement instead of two hard cuts. The class is removed and re-added
+     so the animation restarts on every switch -- a CSS animation on an element
+     that already has the class does not replay, which is why switching between
+     two tabs quickly used to animate once and then stop. */
+  const view = $("#view");
+  view.classList.remove("swapping");
+  void view.offsetWidth;                      // force the restart
+  view.classList.add("swapping");
   render();
 }
 
@@ -3298,7 +3742,28 @@ async function main() {
     await render();
   });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
+  $("#dialog-back")?.addEventListener("click", () => goBackCard());
+  $("#dialog-switch")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-go]");
+    if (!btn) return;
+    const [kind, ...rest] = btn.dataset.go.split(":");
+    showCard(kind, rest.join(":"));
+  });
+  // A dialog that has been closed is not somewhere you can go back to.
+  $("#detail")?.addEventListener("close", () => {
+    cardTrail.length = 0;
+    paintDialogNav(null);
+  });
   $("#bracket")?.addEventListener("click", () => openBracket());
+  $("#assistant-open")?.addEventListener("click", () => openAssistant());
+  $("#close-assistant")?.addEventListener("click", () => $("#assistant-dlg").close());
+  $("#assistant-dlg")?.addEventListener("mousedown", (ev) => {
+    const dlg = ev.currentTarget;
+    if (ev.target !== dlg) return;
+    const box = dlg.getBoundingClientRect();
+    if (ev.clientX < box.left || ev.clientX > box.right
+        || ev.clientY < box.top || ev.clientY > box.bottom) dlg.close();
+  });
 
   /* Clicking away closes it.
 
@@ -3372,9 +3837,9 @@ async function main() {
   /* The lines, on their own button. Everything else in this app is free to
      fetch; this one spends three requests of a monthly allowance every time,
      so it is asked for rather than included. */
-  const oddsBtn = $("#refresh-odds");
-  oddsBtn?.addEventListener("click", async () => {
-    if (state.busy) return;
+  document.addEventListener("click", async (ev) => {
+    const oddsBtn = ev.target.closest("#refresh-odds");
+    if (!oddsBtn || state.busy) return;
     state.busy = true;
     oddsBtn.disabled = true;
     oddsBtn.classList.add("spinning");
@@ -3388,8 +3853,9 @@ async function main() {
       alert(`Could not update the odds: ${err.message}`);
     } finally {
       state.busy = false;
-      oddsBtn.disabled = false;
-      oddsBtn.classList.remove("spinning");
+      // render() has rebuilt Settings, so this is a different button by now.
+      const live = $("#refresh-odds");
+      if (live) { live.disabled = false; live.classList.remove("spinning"); }
       paintOdds();
     }
   });

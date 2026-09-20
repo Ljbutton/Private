@@ -44,15 +44,15 @@
       <button class="tab" role="tab" data-tab="performance" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h3v-7H4zm6.5 0h3V4h-3zM17 20h3v-11h-3z"/></svg>
         <span>Performance</span></button>
-      <button class="tab" role="tab" data-tab="assistant" aria-selected="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-9 9c0 1.7.5 3.3 1.3 4.7L3 21l4.4-1.2A9 9 0 1 0 12 3zm-3.5 8.5h7v1.5h-7zm0-3h7V10h-7z"/></svg>
-        <span>Assistant</span></button>
+      <!-- The assistant is not a page. It opens over whichever one you are
+           on, from the button in the top bar -- a question about the board is
+           asked while you are looking at the board. -->
       <button class="tab" role="tab" data-tab="soon" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 5v5.6l4 2.3-1 1.7-5-2.9V7z"/></svg>
         <span>The Desk</span></button>
-      <button class="tab" role="tab" data-tab="settings" aria-selected="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4z"/><path d="m19.4 13-.1-1 1.7-1.3-1.7-3-2 .7a7 7 0 0 0-1.7-1l-.3-2.1h-3.4l-.3 2.1a7 7 0 0 0-1.7 1l-2-.7-1.7 3L7.9 12l-.1 1-1.8 1.3 1.7 3 2-.7c.5.4 1.1.7 1.7 1l.3 2.1h3.4l.3-2.1c.6-.3 1.2-.6 1.7-1l2 .7 1.7-3z" opacity=".38"/></svg>
-        <span>Settings</span></button>
+      <!-- Settings is the cog at the foot of this column, not a row in it.
+           It is where you go to change how the app behaves, which is a
+           different kind of errand from the six pages above. -->
     </nav>
 
     <div class="side-foot">
@@ -61,17 +61,9 @@
            dots reporting that nothing had happened. What belongs in that space
            the rest of the time is the game. -->
       <div id="side-conns" hidden>
-        <!-- The odds, with the connections, because they are the same
-             subject: which feed last answered and what it cost. Three
-             requests of a monthly allowance go every time this is pressed,
-             so it sits on the page you open when you mean to spend them. -->
-        <div class="side-label">Betting lines</div>
-        <button class="btn odds-btn" id="refresh-odds"
-          title="Fetch the betting lines now. Three requests from the monthly Odds API allowance.">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
-          <span>Update odds</span>
-        </button>
-        <div class="odds-when-row"><span id="odds-when" class="tiny muted"></span></div>
+        <!-- Update odds moved to the Settings page itself, at the bottom and
+             sized to what it costs. A small button in a sidebar is the wrong
+             weight for the one control that spends a metered allowance. -->
         <div class="side-label">Connections</div>
         <div id="statusbar"></div>
       </div>
@@ -89,7 +81,13 @@
           <span>Refresh</span>
         </button>
       </div>
-      <div class="build-line" id="build-line" title="Which build this is"></div>
+      <div class="side-bottom">
+        <button class="cog-btn tab" role="tab" data-tab="settings"
+          aria-selected="false" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4z"/><path d="m19.4 13-.1-1 1.7-1.3-1.7-3-2 .7a7 7 0 0 0-1.7-1l-.3-2.1h-3.4l-.3 2.1a7 7 0 0 0-1.7 1l-2-.7-1.7 3L7.9 12l-.1 1-1.8 1.3 1.7 3 2-.7c.5.4 1.1.7 1.7 1l.3 2.1h3.4l.3-2.1c.6-.3 1.2-.6 1.7-1l2 .7 1.7-3z" opacity=".38"/></svg>
+        </button>
+        <div class="build-line" id="build-line" title="Which build this is"></div>
+      </div>
       <div class="license-line" id="license-line" hidden></div>
     </div>
   </aside>
@@ -165,32 +163,44 @@
         </div>
       </div>
 
+      <!-- One row: the things you press, then the two things you choose.
+           The buttons used to sit to the right of the selectors, which put
+           the controls furthest from the hand and stacked the bar two rows
+           deep on a narrow window. Grouping them ahead of the selectors keeps
+           the whole right-hand side on one line and gives the page back the
+           height. -->
       <div class="hero-right">
-        <select id="season" aria-label="Season"></select>
-        <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
+        <!-- The assistant, between the clock and the controls. It opens as a
+             window over the page rather than as a tab, because a question
+             about the board is asked while you are looking at the board. -->
+        <button class="btn hero-act" id="assistant-open"
+          title="Ask about this week — opens over the page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-9 9c0 1.7.5 3.3 1.3 4.7L3 21l4.4-1.2A9 9 0 1 0 12 3zm-3.5 8.5h7v1.5h-7zm0-3h7V10h-7z"/></svg>
+          <span>Assistant</span>
+        </button>
         <!-- The bracket, beside the week it is the end of. Its own control
              rather than a tab, because it is one picture you go and look at
              rather than a page you work on. -->
-        <button class="btn bracket-btn" id="bracket"
+        <button class="btn hero-act" id="bracket"
           title="The playoff picture: both conferences seeded, and the bracket as it fills in">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 5h5v2H3zM3 11h5v2H3zM3 17h5v2H3zM10 6h2v6h-2zM10 12h2v6h-2zM12 11h4v2h-4zM18 5h3v2h-3zM18 17h3v2h-3z"/>
           </svg>
           <span>Bracket</span>
         </button>
-        <div class="hero-buttons">
-          <button class="icon-btn" id="fullscreen" title="Full screen (F11)" aria-label="Toggle full screen">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg>
-          </button>
-          <!-- The mode you are in, not the one you would switch to: a moon
-               while it is dark, a sun while it is light. Both are drawn and
-               only one is shown; swapping an SVG's path on every toggle is how
-               an icon ends up half-redrawn. -->
-          <button class="icon-btn" id="theme" title="Toggle light and dark" aria-label="Toggle theme">
-            <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.7 14.2A8.5 8.5 0 0 1 9.8 3.3a8.5 8.5 0 1 0 10.9 10.9z"/></svg>
-            <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 1.8v3M12 19.2v3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M1.8 12h3M19.2 12h3M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/></svg>
-          </button>
-        </div>
+        <button class="icon-btn" id="fullscreen" title="Full screen (F11)" aria-label="Toggle full screen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg>
+        </button>
+        <!-- The mode you are in, not the one you would switch to: a moon
+             while it is dark, a sun while it is light. Both are drawn and
+             only one is shown; swapping an SVG's path on every toggle is how
+             an icon ends up half-redrawn. -->
+        <button class="icon-btn" id="theme" title="Toggle light and dark" aria-label="Toggle theme">
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.7 14.2A8.5 8.5 0 0 1 9.8 3.3a8.5 8.5 0 1 0 10.9 10.9z"/></svg>
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 1.8v3M12 19.2v3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M1.8 12h3M19.2 12h3M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/></svg>
+        </button>
+        <select id="season" aria-label="Season"></select>
+        <span id="week-wrap"><select id="week" aria-label="Week"></select></span>
       </div>
     </header>
 
@@ -227,9 +237,30 @@
   </form>
 </div>
 
+<!-- The assistant's window. Its own dialog rather than the detail one,
+     because the two are opened for different reasons and closing a game card
+     should not throw away a conversation. -->
+<dialog class="detail wide" id="assistant-dlg">
+  <div class="dialog-head">
+    <h2 class="dialog-title" style="font-size:15px">Assistant</h2>
+    <button class="btn" id="close-assistant" style="margin-left:auto">Close</button>
+  </div>
+  <div class="dialog-body"></div>
+</dialog>
+
 <dialog class="detail" id="detail">
   <div class="dialog-head">
+    <!-- One card leads to another: a game opens a team, a team opens the
+         game it is playing, the bracket opens either. Without a way back,
+         each of those is a dead end you have to close and re-find your way
+         into. The arrow is hidden until there is somewhere to go back to. -->
+    <button class="icon-btn dlg-back" id="dialog-back" hidden
+      title="Back" aria-label="Back">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12z"/></svg>
+    </button>
     <h2 class="dialog-title" style="font-size:15px">Game</h2>
+    <!-- Switch between the game and the two teams in it without leaving. -->
+    <div class="dlg-switch" id="dialog-switch" hidden></div>
     <button class="btn" id="close-detail" style="margin-left:auto">Close</button>
   </div>
   <div class="dialog-body"></div>

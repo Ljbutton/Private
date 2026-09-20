@@ -20,6 +20,7 @@
      third slot was green in one and purple in the other. Same roles, same
      order, darkened for a light ground so the contrast holds. */
   --series-1: #0e9c68;   /* our model      */
+  --series-blend: #1d6fd0;  /* the blend, at rest -- see .gcell.ours */
   --series-2: #d2561f;   /* market         */
   --series-3: #6d4ec9;   /* third series   */
 
@@ -77,6 +78,7 @@
     --border:         rgba(255, 255, 255, 0.07);
     --border-strong:  rgba(255, 255, 255, 0.14);
     --series-1: #2ee6a0; --series-2: #f0883e; --series-3: #a78bfa;
+    --series-blend: #5aa9ff;
     --seq-100: #0b3b2c; --seq-250: #12664a; --seq-400: #1c9c73;
     --seq-550: #2ee6a0; --seq-700: #9df5d4;
     --div-pos: #2ee6a0; --div-neg: #ff6b6b; --div-mid: #26292d;
@@ -103,6 +105,7 @@
     --border:         rgba(255, 255, 255, 0.07);
     --border-strong:  rgba(255, 255, 255, 0.14);
     --series-1: #2ee6a0; --series-2: #f0883e; --series-3: #a78bfa;
+    --series-blend: #5aa9ff;
     --seq-100: #0b3b2c; --seq-250: #12664a; --seq-400: #1c9c73;
     --seq-550: #2ee6a0; --seq-700: #9df5d4;
     --div-pos: #2ee6a0; --div-neg: #ff6b6b; --div-mid: #26292d;
@@ -299,7 +302,10 @@ a { color: var(--series-1); }
 .hero {
   background: var(--surface-sunken);
   border-bottom: 1px solid var(--border);
-  margin: 0 -30px 18px; padding: 26px 30px 16px;
+  /* Tighter top and bottom. Every pixel here is a pixel the pages below do
+     not have, and this bar holds three short lines -- it was padded like a
+     masthead. */
+  margin: 0 -30px 12px; padding: 12px 30px 10px;
 }
 
 /* ------------------------------------------------------------------ hero */
@@ -332,8 +338,8 @@ a { color: var(--series-1); }
    two inches to the right. */
 /* Smaller than it was. At 38px the week was the loudest thing on the screen,
    which is a strange claim for a line that says what you already clicked. */
-.hero h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.03em;
-  margin-top: 2px; line-height: 1.15; }
+.hero h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.03em;
+  margin-top: 1px; line-height: 1.1; }
 .when-row { display: flex; align-items: center; gap: 10px; }
 .hero h1.past { color: var(--text-secondary); }
 /* In the live green, with the pulse on the left edge of the bar. It is the
@@ -353,26 +359,35 @@ a { color: var(--series-1); }
    title's line now. They used to hang under the clock, which pushed every
    page down by the height of a control for no reason -- the clock is not
    what they belong to. */
-/* Year, then week, then the two toggles under them: three rows hard against
-   the right edge rather than a row of four controls competing with the title
-   for the middle of the bar. */
+/* One row: what you press, then what you choose.
+
+   These were three stacked rows -- year, week, and the toggles beneath them
+   -- which made the header as tall as three controls for a bar that holds
+   one line of text. On one row it is the height of a single control, and the
+   twenty-odd pixels that buys are twenty-odd pixels of board. The buttons go
+   first because that is the side the hand comes from, and it puts the two
+   selectors together where they belong. */
 .hero-right {
-  justify-self: end; display: grid; gap: 5px; justify-items: stretch;
-  width: max-content;
+  justify-self: end; display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; justify-content: flex-end;
 }
-.hero-right select { width: 100%; }
-.hero-buttons { display: flex; gap: 5px; }
-.hero-buttons .icon-btn { flex: 1; }
+.hero-right select { min-width: 104px; }
+.hero-act {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 11px; padding: 5px 10px;
+  text-transform: none; letter-spacing: 0; font-weight: 600;
+}
+.hero-act svg { width: 13px; height: 13px; fill: currentColor; flex: none; }
 /* Beside the time rather than beside the season, and sized to it: at 34px it
    was a detail on the left of a heading, at 42 it reads as the face of the
    clock whose hands it is showing. */
-.dialmark { width: 50px; height: 50px; flex: none; overflow: visible; }
+.dialmark { width: 40px; height: 40px; flex: none; overflow: visible; }
 .hero-time { display: flex; align-items: center; gap: 11px;
   justify-content: center; }
 .dialmark path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .clock {
-  font-size: 30px; font-weight: 600; letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums; line-height: 1.1;
+  font-size: 25px; font-weight: 600; letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums; line-height: 1.08;
 }
 .clock-date {
   font-size: 10.5px; font-weight: 600; text-transform: uppercase;
@@ -906,8 +921,18 @@ td.team { font-weight: 600; }
   display: grid; place-items: center; background: var(--team);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
+/* The abbreviation inside a crest, and the whole of the NFL mark.
+
+   `line-height: 1` is not a detail here. The picker's buttons set
+   `line-height: 0` so a crest sits flush in them, and a grid item inherits
+   it -- so this text was laid out with no height at all. For a team it never
+   showed because the logo covers it; for the league mark, which has no image
+   to cover it, "NFL" was drawn eighteen pixels wide and zero high, which is
+   to say not drawn. It is also the fallback every crest falls back to when
+   the logo CDN is unreachable, so on a machine with no network the whole
+   board was blank circles. */
 .tbadge .mono { font-size: 9px; font-weight: 800; letter-spacing: -0.03em; color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
+  line-height: 1; text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
 .tbadge img { position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; opacity: 0; }
 .tbadge.hasimg { background: transparent; box-shadow: none; }
@@ -929,7 +954,15 @@ td.team { font-weight: 600; }
 .gprob { display: inline-flex; align-items: center; gap: 2px;
   font-size: 12px; line-height: 1.45; font-weight: 600;
   font-variant-numeric: tabular-nums; }
-.gcell.ours .gprob { color: var(--series-1); }
+/* The blend is blue at rest, not green.
+
+   Green is what this app says about a result -- right, won, covered -- and
+   the blend's own column colour was the same green, so the one moment the
+   number turns green to mean "this one was correct" looked identical to
+   every other week. Blue is its colour now; green means what it means
+   everywhere else. */
+.gcell.ours .gprob { color: var(--series-blend); }
+.ghead.ours { color: var(--series-blend); }
 .gcell.book .gprob { color: var(--text-secondary); }
 .gcell.pmkt .gprob { color: var(--text-muted); }
 .gcell.picked .gprob { font-weight: 750; }
@@ -950,8 +983,22 @@ td.team { font-weight: 600; }
 .gprob > .est { font-size: 8px; font-style: normal; align-self: flex-start;
   margin-left: -1px; }
 .gcell.borrowed .gprob { font-style: italic; font-weight: 550; }
+/* A finished game colours both sides, on every column: the winner's numbers
+   green and the loser's red. The verdict used to be set only on the side a
+   source had picked, so one row of a card was graded and the other stayed
+   neutral whatever had happened to it. */
 .gcell.hit  .gprob { color: var(--good); }
 .gcell.miss .gprob { color: var(--critical); }
+/* Neither. A source that called it a dead heat, a spread that landed on the
+   number, a total that landed on the line -- all of them used to resolve to a
+   green or a red by whichever way a float comparison fell. */
+.gcell.push .gprob, .gline.push, .gtot.push { color: var(--text-muted); }
+/* The spread and the total grade themselves, against the number each was
+   leaning away from. */
+.gline.hit  { color: var(--good); font-weight: 650; }
+.gline.miss { color: var(--critical); font-weight: 650; }
+.gtot.hit   { color: var(--good); font-weight: 700; }
+.gtot.miss  { color: var(--critical); font-weight: 700; }
 
 /* A narrow window gets one card per line and tighter columns rather than
    fewer of them: dropping a source is dropping the comparison the board is
@@ -1053,7 +1100,20 @@ td.team { font-weight: 600; }
 }
 #view.fit-screen > .grid-2,
 #view.fit-screen > .pick-board,
+#view.fit-screen > .panel.board,
 #view.fit-screen > .perf-grid { flex: 1; min-height: 0; margin-bottom: 0; }
+/* The board's own scroll: the header and the disclaimer stay put, the cards
+   move. `min-height: 0` on both is what lets a grid child shrink below its
+   content instead of pushing the page down. */
+#view.fit-screen > .panel.board {
+  display: flex; flex-direction: column; min-height: 0;
+}
+#view.fit-screen > .panel.board > header { flex: none; }
+#view.fit-screen > .panel.board > .gboard {
+  flex: 1; min-height: 0; overflow-y: auto; align-content: start;
+  padding-right: 4px;
+}
+#view.fit-screen > .panel.board > .note { flex: none; margin-bottom: 0; }
 /* Three columns: the picks, survivor's choice, and the run that choice
    commits you to.
 
@@ -1190,8 +1250,15 @@ td.team { font-weight: 600; }
   background: var(--surface-sunken); border: 1px solid var(--border);
   --team: var(--text-secondary);
 }
-.tbadge.league .mono { font-size: 8px; letter-spacing: .02em; opacity: 1; }
-.team-pick.league { margin-right: 5px; }
+.tbadge.league .mono {
+  font-size: 7.5px; letter-spacing: .02em; opacity: 1; line-height: 1;
+  color: var(--text-secondary); text-shadow: none;
+}
+/* No margin. It took five pixels out of the league button's grid cell, so
+   that button sat narrower than the thirty-two beside it -- a gap that was
+   invisible at rest and, once the button was selected and drew a background,
+   read as a hole punched in the row where the counts used to be. The grid's
+   own gap already separates them. */
 .team-pick.league.on .tbadge.league { border-color: var(--series-1); }
 /* Which filter is in force, said once on each panel that obeys it. */
 .filter-who {
@@ -1482,8 +1549,9 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   transition: background var(--fast) var(--ease);
 }
 .tlabel:hover { background: color-mix(in srgb, var(--text-primary) 8%, transparent); }
-.tlabel:hover .nick, .tlabel:hover .abbr { text-decoration: underline;
-  text-underline-offset: 2px; text-decoration-thickness: 1px; }
+/* No underline. The row lifts on hover, which is enough to say it is a
+   target; underlining the name as well turned every card into a page of
+   links. */
 .tlabel:focus-visible { outline: none; box-shadow: var(--ring); }
 /* The odds read as four numbers in a column; the bar is what makes "0.2%" and
    "56%" different sizes rather than different strings. */
@@ -1538,6 +1606,9 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    were the ones cut in half. The cap stops either of them running away if a
    season ever puts more in them. */
 .perf-stack > .panel { flex: 0 0 auto; min-height: 92px; max-height: 38%; }
+/* Two panels now, not three: closing-line value moved to Settings, where it
+   has room for all of it and is not competing with a run for a quarter of a
+   screen. The run takes what it left. */
 /* The run takes what is left, and never less than a few rows of it: at 42%
    each the two above it left the run 141px, which is its heading and its
    verdict and no run. */
@@ -2139,18 +2210,19 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    same question: which feed last answered and what it cost. It used to sit
    beside LIVE in the header on every page -- a control that spends three
    credits a press, under the cursor while you read the week. */
-.odds-btn {
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-  width: 100%; font-size: 11px; padding: 5px 9px; margin-bottom: 4px;
-  text-transform: none; letter-spacing: 0; font-weight: 600;
+/* On the Settings page, at the bottom, sized to what it costs. */
+.odds-panel { margin-bottom: 0; }
+.odds-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.odds-big {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 14px; font-weight: 700; padding: 11px 22px; flex: none;
+  text-transform: none; letter-spacing: 0;
 }
-.odds-btn svg { width: 12px; height: 12px; fill: currentColor; flex: none; }
-.odds-btn.spinning svg { animation: spin 1s linear infinite; }
-.odds-when-row { margin: 0 0 14px; }
-#odds-when {
-  font-size: 10px; text-transform: none; letter-spacing: .01em;
-  font-weight: 500;
-}
+.odds-big svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
+.odds-big.spinning svg { animation: spin 1s linear infinite; }
+.odds-meta { display: grid; gap: 3px; min-width: 0; }
+#odds-when { font-size: 12px; font-weight: 600; }
+.odds-meta .tiny { font-size: 11px; line-height: 1.45; max-width: 46ch; }
 
 /* The free refresh, in the corner under everything else.
 
@@ -2319,15 +2391,6 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 }
 
 /* ------------------------------------------------------- the postseason */
-/* The bracket sits beside the week it is the end of, as a control rather
-   than a tab: it is one picture you go and look at, not a page you work on. */
-.bracket-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 11px; padding: 4px 10px; flex: none;
-  text-transform: none; letter-spacing: 0; font-weight: 600;
-}
-.bracket-btn svg { width: 13px; height: 13px; fill: currentColor; flex: none; }
-
 .bracket-card { margin-bottom: 0; }
 .conf-split { gap: 20px; }
 .conf-table .sub-head { margin-bottom: 4px; }
@@ -2357,18 +2420,65 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .legend { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 4px 14px;
   align-items: center; }
 
-/* Rounds run down the card, games within a round across it. A bracket drawn
-   as connected lines needs a fixed field of fourteen to be worth the width,
-   and this has to read the same in November -- when it is a projection with
-   nothing decided -- as in February. */
-.br-round { margin-top: 16px; }
-.br-games { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px; margin-top: 6px; }
+/* A real bracket: four rounds left to right, the AFC above and the NFC
+   below, meeting at the Super Bowl in the middle of the right-hand edge.
+
+   Drawn whether or not January has happened. The shape is the same either
+   way -- before the postseason exists every slot holds the pairing the
+   current seeding produces -- and a bracket that only appears once it is
+   being played is a bracket you cannot use to think about December. */
+.bracket-split {
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 22px; align-items: start;
+}
+.bracket-tree { min-width: 0; }
+.br-col-heads {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .1em; color: var(--text-muted); margin-bottom: 6px;
+}
+.br-col-heads span { text-align: center; }
+.br-body { display: grid; gap: 14px; }
+/* Three rounds across, and the final sitting between the two conferences
+   where the two halves meet. */
+/* Four columns, the same four the headings are in, with the last one left
+   empty: the final belongs to both conferences and is drawn between them.
+   A three-column row under a four-column heading is how the conference
+   games ended up sitting under "Super Bowl". */
+.br-conf {
+  position: relative;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  align-items: center;
+}
+.br-conf-tag {
+  position: absolute; top: -10px; left: 2px; font-size: 9px; font-weight: 800;
+  letter-spacing: .12em; color: var(--text-muted);
+  background: var(--surface); padding: 0 3px;
+}
+.br-col { display: grid; gap: 8px; align-content: center; }
+/* The top seed sits out the wild-card round, so that column holds three games
+   where the next holds two -- which is the shape of the thing. */
+.br-final {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  padding: 2px 0;
+}
+.br-final .br-game {
+  grid-column: 4;
+  border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 8%, var(--surface-sunken));
+}
+.bracket-picture { min-width: 0; display: grid; gap: 12px; align-content: start; }
 .br-game {
   background: var(--surface-sunken); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 6px 8px; display: grid; gap: 3px;
 }
 .br-game.done { border-color: var(--border-strong); }
+/* A pairing that has not been played is the seeding's guess at it, and says
+   so by being quieter than a result. */
+.br-game.projected { border-style: dashed; opacity: .82; }
+/* A team that is mathematically out. */
+.seedtable tr.dead .who span { color: var(--critical); }
+.out-flag { color: var(--critical); font-weight: 700; }
 .br-side {
   display: flex; align-items: center; gap: 7px; font-size: 12.5px;
   font-weight: 620; border-radius: 5px; padding: 2px 3px; cursor: pointer;
@@ -2386,3 +2496,94 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 /* The winner is named in gold, the same as on the board. */
 .br-side.won .br-name, .br-side.won .br-score { color: var(--gold); }
 .br-side.lost { opacity: .55; }
+
+/* ------------------------------------------- settings as a cog, not a tab */
+/* Six pages in the column, and the cog at its foot. Changing how the app
+   behaves is a different errand from reading a page of it, and a seventh row
+   in the nav made it look like a seventh page. */
+.side-bottom { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.cog-btn {
+  appearance: none; cursor: pointer; flex: none; padding: 0;
+  width: 30px; height: 30px; display: grid; place-items: center;
+  border-radius: var(--radius-sm); border: 1px solid transparent;
+  background: transparent; color: var(--text-muted);
+  transition: color var(--fast) var(--ease), background var(--fast) var(--ease),
+              transform var(--slow) var(--ease);
+}
+.cog-btn svg { width: 19px; height: 19px; fill: currentColor; }
+.cog-btn:hover { color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  transform: rotate(35deg); }
+.cog-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.cog-btn[aria-selected="true"] {
+  color: var(--series-1);
+  background: color-mix(in srgb, var(--series-1) 14%, transparent);
+}
+.side-bottom .build-line { margin: 0; }
+
+/* The assistant's window is wider than a game card: it holds a conversation
+   and a list of them side by side. */
+dialog.detail.wide { width: min(1120px, 96vw); max-height: 90vh; }
+dialog.detail.wide .dialog-body { padding: 0; }
+dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
+
+/* ------------------------------------------------------ changing the page */
+/* A tab swap used to be instantaneous in the worst sense: the old page was
+   replaced mid-blink with "Loading…" and then again with the new one, two
+   hard cuts for one action. A short fade on the incoming page turns that into
+   one movement. It is deliberately brief -- a transition you notice is a
+   transition that is costing you time. */
+@media (prefers-reduced-motion: no-preference) {
+  #view.swapping { animation: view-in 160ms var(--ease); }
+}
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ----------------------------------------- moving between cards in a dialog */
+/* One card leads to another, and each used to be a dead end: the only way out
+   was to close the dialog and find your way back in from the board. */
+.dlg-back { width: 26px; height: 26px; flex: none; color: var(--text-muted); }
+.dlg-back svg { width: 17px; height: 17px; fill: currentColor; }
+.dlg-back:hover { color: var(--text-primary); }
+.dlg-switch { display: flex; gap: 3px; margin-left: 10px; flex: none; }
+.dlg-tab {
+  appearance: none; cursor: pointer; font: inherit; font-size: 11px;
+  font-weight: 650; padding: 3px 9px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border); background: transparent;
+  color: var(--text-secondary);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.dlg-tab:hover:not(:disabled) { color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent); }
+.dlg-tab.on {
+  background: color-mix(in srgb, var(--series-1) 16%, transparent);
+  border-color: var(--series-1); color: var(--series-1); cursor: default;
+}
+.dlg-tab:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* --------------------------------------------------------- bug reporting */
+/* Assembled on the page and copied by the person reporting it. This app
+   talks to a handful of sports feeds and to nothing else; opening a channel
+   to a bug tracker would be a new kind of thing for it to do, and the report
+   carries the state of someone's machine. */
+#bug-panel { margin-top: 18px; }
+.bug-label { display: block; font-size: 12px; font-weight: 650;
+  color: var(--text-secondary); margin-bottom: 6px; }
+.bug-what {
+  width: 100%; font: inherit; font-size: 13px; padding: 9px 11px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--surface-sunken); color: var(--text-primary);
+  resize: vertical; min-height: 74px;
+}
+.bug-what:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--series-1); }
+.bug-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px;
+  flex-wrap: wrap; }
+.bug-preview {
+  margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; max-height: 320px; overflow: auto;
+  color: var(--text-secondary);
+}
