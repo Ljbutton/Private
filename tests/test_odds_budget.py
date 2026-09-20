@@ -5,12 +5,10 @@ credits early -- and neither was visible from inside the app, because the only
 number it showed was its own undercount.
 """
 
-import datetime as dt
-
 import pytest
 
-from nflpicker import db
-from nflpicker.scheduler import Scheduler
+from nflpicker.config import get_config
+from nflpicker.scheduler import Job, Scheduler
 from nflpicker.sources.odds_api import OddsApiSource
 
 
@@ -96,26 +94,72 @@ def test_the_three_windows_count_independently(temp_env):
     assert (u["day_budget"], u["week_budget"], u["budget"]) == (50, 120, 480)
 
 
-def test_a_distant_unpriced_game_is_not_an_opening_line(temp_env, monkeypatch):
-    """The opening-line exception bypasses the budget-aware interval.
+def test_odds_poll_at_most_once_a_day(temp_env):
+    """The one feed with a bill attached is asked once a day and no more.
 
-    Asked about the whole season it is true from week 1 until December, because
-    books do not price week 15 in September -- so the exception was permanent
-    and odds polled at the floor for months.
+    The interval used to be worked out from what was left of the monthly
+    allowance, which on the first of the month answers "every few minutes",
+    and an opening-line exception bypassed even that whenever a game inside
+    eight days had no price yet -- which is most of any Tuesday. A line moves
+    on a scale of days; the button covers wanting today's number right now.
     """
-    now = dt.datetime.now(dt.timezone.utc)
-    db.execute(
-        "INSERT INTO games(game_id, season, week, kickoff, home, away, status, updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        ("far-off", 2026, 15, (now + dt.timedelta(days=90)).isoformat(),
-         "KC", "BUF", "scheduled", now.isoformat()),
-    )
-    assert Scheduler._awaiting_opening_lines() is False
+    assert Scheduler.ODDS_INTERVAL_SECONDS == 24 * 3600
+    scheduler = Scheduler.__new__(Scheduler)
+    assert scheduler.odds_interval() == pytest.approx(24 * 3600)
 
-    db.execute(
-        "INSERT INTO games(game_id, season, week, kickoff, home, away, status, updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        ("this-week", 2026, 3, (now + dt.timedelta(days=3)).isoformat(),
-         "SF", "SEA", "scheduled", now.isoformat()),
-    )
-    assert Scheduler._awaiting_opening_lines() is True
+
+def test_a_slower_setting_still_wins(temp_env, monkeypatch):
+    """A day is a floor, not a cap: someone rationing a small allowance across
+    a season can still ask for less than that and be listened to."""
+    import dataclasses
+
+    import nflpicker.scheduler as scheduler_module
+
+    cfg = dataclasses.replace(get_config(), refresh_odds=72 * 3600.0)
+    monkeypatch.setattr(scheduler_module, "get_config", lambda: cfg)
+    scheduler = Scheduler.__new__(Scheduler)
+    assert scheduler.odds_interval() == pytest.approx(72 * 3600)
+
+
+def test_opening_the_app_does_not_spend_a_credit(temp_env, monkeypatch):
+    """Launching is not a request for the lines.
+
+    Every job fired the moment the scheduler started, so opening the app spent
+    three credits before the window had drawn -- and opening it four times in
+    an evening spent twelve on a line that had not moved.
+    """
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.jobs = {"odds": None, "scores": None}
+    job = Job(name="odds", stages=["odds"], interval=60.0)
+
+    class _Pipeline:
+        def __init__(self, since):
+            self.since = since
+
+        def last_success(self, stage):
+            assert stage == "odds"
+            return self.since
+
+    # Fetched an hour ago: the rest of the day is still to wait.
+    scheduler.pipeline = _Pipeline(3600.0)
+    assert scheduler.startup_wait(job) == pytest.approx(23 * 3600, abs=30)
+
+    # Fetched two days ago, or never: go and get it now.
+    scheduler.pipeline = _Pipeline(2 * 24 * 3600.0)
+    assert scheduler.startup_wait(job) < 60
+    scheduler.pipeline = _Pipeline(None)
+    assert scheduler.startup_wait(job) < 60
+
+
+def test_a_free_feed_still_starts_immediately(temp_env):
+    """Only the metered job waits. Scores must be on screen at launch."""
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.jobs = {"odds": None, "scores": None}
+
+    class _Never:
+        def last_success(self, stage):
+            return 0.0                      # fetched a moment ago
+
+    scheduler.pipeline = _Never()
+    assert scheduler.startup_wait(
+        Job(name="scores", stages=["scores"], interval=60.0)) < 60

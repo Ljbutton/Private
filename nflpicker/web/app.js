@@ -404,86 +404,6 @@ function renderHero(meta) {
 /* "Sun 1:00" — the board has sixteen rows and no width to spare for a date
    that is the same on most of them. */
 
-/* Fold the panels on a page into collapsible sections.
-   Home and the Scoreboard are boards: everything on them is meant to be read
-   at once. Every other page is reference material you consult one question at
-   a time, and four full tables stacked down a page turns finding the one you
-   came for into a scrolling exercise.
-
-   Done to the rendered DOM rather than in each template. The panels are built
-   inside nested template literals, and rewriting those to emit <details> meant
-   re-quoting markup that already contains its own backticks -- a transformation
-   with nothing to catch a mistake except the page going blank. Restructuring
-   afterwards touches one function and cannot corrupt a template it never
-   parses. <details> is used so keyboard support, find-in-page and open state
-   all come for free. */
-// Picks is no longer folded: both contests are meant to be answered in one
-// look, and a collapsed Survivor panel is the opposite of putting them on one
-// page.
-// Teams no longer folds at all: its two panels are the page. Performance still
-// does, but only the closing-line value at the bottom -- the season table and
-// the by-team table are marked data-nofold, because folding the thing a page
-// exists to show is how a page ends up looking empty.
-const FOLDING_TABS = new Set(["performance"]);
-
-function foldPanels(root) {
-  if (!FOLDING_TABS.has(state.tab)) return;
-  const panels = $$(":scope > .panel, :scope > .grid-2 > .panel", root);
-  panels.forEach((panel, index) => {
-    const header = $("header", panel);
-    if (!header || panel.closest("details")) return;
-    // Some panels are the point of their page rather than reference material
-    // behind it. Folding the ranking comparison hid the comparison.
-    if (panel.closest("[data-nofold]")) return;
-
-    const details = document.createElement("details");
-    details.className = panel.className + " fold";
-    // The <details> replaces the panel, so it has to *be* the panel as far as
-    // the rest of the page is concerned. Without this the id went in the bin
-    // and anything that later looked the panel up by it -- a second fetch
-    // filling in a section, say -- silently found nothing.
-    if (panel.id) details.id = panel.id;
-    const summary = document.createElement("summary");
-    // The first section on a page opens; the rest are a click away. Reopening
-    // everything on each refresh would undo the point, so a section the reader
-    // has opened is remembered for the session.
-    const key = `${state.tab}:${index}`;
-    // Open the first section on a page the reader has not touched yet. Keyed
-    // per tab: a set shared across tabs meant opening something on one page
-    // left every other page fully closed.
-    details.open = openFolds.has(key)
-      || (index === 0 && !touchedTabs.has(state.tab));
-    // Recorded from the click rather than the toggle event, because setting
-    // `open` above fires toggle too -- the page would mark itself as read by
-    // the reader before they had done anything.
-    summary.addEventListener("click", () => {
-      touchedTabs.add(state.tab);
-      setTimeout(() => {
-        if (details.open) openFolds.add(key); else openFolds.delete(key);
-      }, 0);
-    });
-
-    summary.innerHTML =
-      '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<path d="M9 6l6 6-6 6"/></svg>';
-    while (header.firstChild) summary.appendChild(header.firstChild);
-    header.remove();
-
-    const body = document.createElement("div");
-    body.className = "fold-body";
-    while (panel.firstChild) body.appendChild(panel.firstChild);
-
-    details.append(summary, body);
-    panel.replaceWith(details);
-  });
-}
-
-/* Which sections the reader has opened, kept for the session so a refresh does
-   not fold the thing they are reading, and which tabs they have touched at all
-   -- an untouched page still opens its first section. */
-const openFolds = new Set();
-const touchedTabs = new Set();
-
 /* Settings opens with every section shut -- four headings you can read at a
    glance beat two panels of fields you have to scroll past -- and remembers
    what you opened, so a refresh mid-edit does not fold the box you are in. */
@@ -520,7 +440,8 @@ function clvBlock(clv) {
   if (!clv.n) {
     return `<div class="panel">
       <header><h2>Your closing-line value</h2></header>
-      <div class="empty">${esc(clv.note || "Nothing to measure yet.")}</div>
+      <div class="panel-body"><div class="empty">${
+        esc(clv.note || "Nothing to measure yet.")}</div></div>
     </div>`;
   }
   const good = clv.average > 0;
@@ -543,9 +464,18 @@ function clvBlock(clv) {
         </tr>`).join("")}</tbody></table></div>
     </div>`;
 
+  const WHAT_IT_MEANS = "Positive means you took a better number than the one "
+    + "that closed \u2014 you backed a team at \u22123 and it closed \u22125, so you "
+    + "have two points of value whether or not they covered. It needs a fraction of "
+    + "the sample a win rate does, because it measures the market coming round to "
+    + "your number rather than the game going your way.";
+
   return `<div class="panel">
     <header><h2>Your closing-line value</h2>
+      <button class="why" type="button" title="${esc(WHAT_IT_MEANS)}"
+        aria-label="${esc(WHAT_IT_MEANS)}">?</button>
       <span class="hint">${clv.n} pick${clv.n === 1 ? "" : "s"} the line moved after</span></header>
+    <div class="panel-body">
     <div class="tiles">
       <div class="tile"><div class="label">Points vs the close</div>
         <div class="value ${good ? "pos" : "neg"}">${signed(clv.average, 2)}</div>
@@ -582,11 +512,7 @@ function clvBlock(clv) {
       ${cut(clv.by_week, "week", "By week")}
       ${cut(clv.by_team, "selection", "By team · worst first")}
     </div>
-    <p class="note">Positive means you took a better number than the one that closed —
-      you backed a team at &minus;3 and it closed &minus;5, so you have two points of value
-      whether or not they covered. This is the one honest early read on whether
-      <em>you</em> are any good: it needs a fraction of the sample a win rate does, because
-      it measures the market agreeing with you rather than the game going your way.</p>
+    </div>
   </div>`;
 }
 
@@ -707,10 +633,11 @@ async function renderPerformance(ticket) {
 
   root.classList.add("fit-screen");
   if (!paint(root, `<div class="perf-grid">
-  <div class="panel" data-nofold>
+  <div class="panel">
     <header><h2>Season ${d.season}</h2>
       <span class="hint">Straight-up winners · "same games" scores only games every
         picker had a view on</span></header>
+    <div class="panel-body">
     <div class="table-scroll"><table class="slate totals">
       <thead><tr><th>Picker</th><th class="num">All their picks</th>
         <th class="num">Same games</th></tr></thead>
@@ -731,12 +658,14 @@ async function renderPerformance(ticket) {
         }).join("")}
       </tr>`).join("")}</tbody>
     </table></div>
+    </div>
   </div>
 
-  <div class="panel" data-nofold>
+  <div class="panel">
     <header><h2>By team</h2>
       <span class="hint">how often each picker called that team's games right ·
         click a column to sort by it</span></header>
+    <div class="panel-body">
     <div class="table-scroll"><table class="slate sortable">
       <thead><tr>
         ${sortHead("team", "Team", "")}
@@ -757,6 +686,7 @@ async function renderPerformance(ticket) {
         }).join("")}
       </tr>`).join("")}</tbody>
     </table></div>
+    </div>
   </div>
 
   ${clvBlock(d.clv)}
@@ -765,7 +695,7 @@ async function renderPerformance(ticket) {
     <header><h2>Survivor: the original run</h2>
       <span class="hint">the plan as first made, against the teams you
         actually spent</span></header>
-    <div class="empty">Loading…</div>
+    <div class="panel-body"><div class="empty">Loading…</div></div>
   </div>
   </div>`)) return;
 
@@ -777,35 +707,55 @@ async function renderPerformance(ticket) {
     .then((t) => {
       const outer = $("#survivor-track", root);
       if (!outer || stale(ticket)) return;
-      // Folded by the time this arrives, in which case the content belongs
-      // inside the fold rather than after it.
-      const panel = $(".fold-body", outer) || outer;
-      const mark = { won: "✓", lost: "✕", tied: "=", pending: "·" };
-      const runRows = (run) => (run.weeks || []).map((w) => `<tr class="r-${
-        esc(w.result)}">
-        <td class="team">W${w.week}</td>
-        <td>${teamMark(w.team)}<b>${esc(w.team)}</b></td>
-        <td class="res">${mark[w.result] || "·"}</td>
-        <td class="muted">${w.score ? esc(w.score) : (w.opponent
-          ? `vs ${esc(w.opponent)}` : "")}</td>
-      </tr>`).join("");
-      const column = (title, run, note) => `<div>
-        <h3 class="sub-head">${esc(title)}<span class="hint">${esc(note)}</span></h3>
-        ${run.weeks && run.weeks.length
-          ? `<div class="table-scroll"><table class="slate run-track">
-              <tbody>${runRows(run)}</tbody></table></div>`
-          : '<div class="empty">Nothing here yet.</div>'}
-      </div>`;
+      const panel = $(".panel-body", outer) || outer;
+      const mark = { won: "\u2713", lost: "\u2715", tied: "=", pending: "\u00b7" };
+      /* One table, not two.
+
+         The plan and the picks were drawn as two lists side by side, which is
+         the same shape as the question -- did I follow it? -- and none of the
+         answer: the weeks only lined up while both runs covered the same ones,
+         and reading across meant counting rows in two columns at once. Sharing
+         the week column puts each pair on one row, where a week you deviated on
+         is a row with two different names in it. It also halves the width, and
+         the pair had been sharing a quarter of the page. */
+      const byWeek = new Map();
+      const side = (run, key) => (run.weeks || []).forEach((w) => {
+        if (!byWeek.has(w.week)) byWeek.set(w.week, { week: w.week });
+        byWeek.get(w.week)[key] = w;
+      });
+      side(t.original || {}, "plan");
+      side(t.mine || {}, "mine");
+      const weeks = [...byWeek.values()].sort((a2, b2) => a2.week - b2.week);
+
+      /* The score sits in the cell's title rather than its own column. It is
+         the widest thing in the run and the least often wanted: the tick has
+         already said how the week went. */
+      const runCell = (w) => {
+        if (!w) return '<td class="muted none">\u2014</td>';
+        const detail = w.score || (w.opponent ? `vs ${w.opponent}` : "");
+        return `<td class="r-${esc(w.result)}"${detail ? ` title="${esc(detail)}"` : ""}
+          ><span class="run-cell">${teamMark(w.team)}<b>${esc(w.team)}</b
+          ><span class="res">${mark[w.result] || "\u00b7"}</span></span></td>`;
+      };
       const ran = (run) => run.out_week
         ? `out in week ${run.out_week}`
-        : `alive · ${run.weeks_survived} survived`;
-      panel.querySelector(".empty, .grid-2")?.remove();
+        : `alive \u00b7 ${run.weeks_survived} survived`;
+
+      panel.querySelector(".empty")?.remove();
+      panel.querySelector(".track-split")?.remove();
+      panel.querySelector(".verdict")?.remove();
       panel.insertAdjacentHTML("beforeend", `
         <p class="verdict">${esc(t.verdict || "")}</p>
-        <div class="grid-2 track-split">
-          ${column("The original plan", t.original || {}, ran(t.original || {}))}
-          ${column("What you picked", t.mine || {}, ran(t.mine || {}))}
-        </div>`);
+        <div class="table-scroll"><table class="slate run-track track-split">
+          <thead><tr><th>Wk</th>
+            <th>The plan<span class="hint">${esc(ran(t.original || {}))}</span></th>
+            <th>You<span class="hint">${esc(ran(t.mine || {}))}</span></th>
+          </tr></thead>
+          <tbody>${weeks.map((r) => `<tr>
+            <td class="team">W${r.week}</td>
+            ${runCell(r.plan)}${runCell(r.mine)}
+          </tr>`).join("")}</tbody>
+        </table></div>`);
       wireLogos(panel);
     })
     .catch(() => {});
@@ -957,9 +907,9 @@ async function renderHome(ticket) {
      cannot use them. Split by conference because that is how anybody reading
      a bye week is already thinking about it. */
   const byeBox = (conf, rows) => rows.length ? `<article class="gcard byecard">
-    <div class="byehead">${esc(conf)} on bye<span class="hint">no game in week ${
-      state.week}</span></div>
-    <div class="byelist">${rows.map((b) => `<div class="byerow">
+    <div class="byehead">${esc(conf)} on bye</div>
+    <div class="byelist">${rows.map((b) => `<button type="button" class="byerow"
+      data-bye="${esc(b.team)}" title="${esc(b.full_name || b.team)} — where their season stands">
       ${teamMark(b.team)}
       <span class="tname"><span class="nick">${esc(b.name || b.team)}</span>
         <span class="abbr">${esc(b.team)}</span></span>
@@ -967,7 +917,7 @@ async function renderHome(ticket) {
       <span class="byerank">${b.rank ? `#${b.rank}` : "–"}</span>
       <span class="bypow muted">${b.power === null || b.power === undefined
         ? "" : signed(b.power, 1)}</span>
-    </div>`).join("")}</div></article>` : "";
+    </button>`).join("")}</div></article>` : "";
   const byes = data.byes || [];
   const byeCards = byeBox("AFC", byes.filter((b) => b.conference === "AFC"))
     + byeBox("NFC", byes.filter((b) => b.conference === "NFC"));
@@ -1156,10 +1106,22 @@ async function renderHome(ticket) {
 
   wireLogos(root);
 
-  $$(".gcard", root).forEach((node) => {
+  /* `.gcard` also matches the bye box, which is a card in the grid and not a
+     game -- it has no `data-game`, so every click on one asked the server for
+     the game called "undefined" and got an error dialog back. The bye rows
+     have their own handler below; the box itself opens nothing. */
+  $$(".gcard[data-game]", root).forEach((node) => {
     const open = () => openGame(node.dataset.game);
     node.addEventListener("click", open);
     node.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
+
+  // A team on bye has no game this week, so the card is about its season.
+  $$("[data-bye]", root).forEach((node) => {
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openBye(byes.find((b) => b.team === node.dataset.bye));
+    });
   });
 
   // The pick button sits inside a card that opens a dialog, so its click must
@@ -1197,6 +1159,83 @@ async function renderHome(ticket) {
       await render();
     });
   });
+}
+
+// -------------------------------------------- a team on bye, in detail
+/* The card for a team with no game this week.
+
+   Every other card on the board opens the game behind it. A bye row had no
+   game to open and went through the same handler anyway, which asked the
+   server for a game with no id and put the resulting error on screen -- so
+   the one card on the board that most invites a click was the one that could
+   not survive one.
+
+   What a bye team has instead of a game is a season, and that is what the
+   card answers: where the year is projected to end, how likely each thing
+   worth wanting still is, and who they play when they come back. No fetch:
+   the board already carries all of it. */
+function openBye(bye) {
+  if (!bye) return;
+  const dlg = $("#detail");
+  const body = $(".dialog-body", dlg);
+  $(".dialog-title", dlg).textContent = `${bye.full_name || bye.team} — on bye`;
+
+  const odds = [
+    ["Make the playoffs", bye.playoff_prob],
+    ["Win the division", bye.division_prob],
+    ["First-round bye", bye.bye_prob],
+    ["Win the Super Bowl", bye.sb_prob],
+  ].filter(([, v]) => v !== null && v !== undefined);
+
+  const next = bye.next;
+  const range = bye.wins_p10 === null || bye.wins_p10 === undefined
+    ? "" : `${num(bye.wins_p10, 0)}–${num(bye.wins_p90, 0)} in most seasons`;
+
+  body.innerHTML = `
+    <div class="panel bye-detail">
+      <div class="byetop">
+        ${teamMark(bye.team)}
+        <div>
+          <div class="byename">${esc(bye.full_name || bye.team)}</div>
+          <div class="muted">${esc(bye.division || bye.conference || "")}${
+            bye.record ? ` · ${esc(bye.record)}` : ""}</div>
+        </div>
+        <div class="byerankbig">${bye.rank ? `#${bye.rank}` : "–"}
+          <span class="sub">power rank</span></div>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><div class="label">Projected wins</div>
+          <div class="value">${bye.exp_wins === null || bye.exp_wins === undefined
+            ? "–" : num(bye.exp_wins, 1)}</div>
+          <div class="sub">${esc(range)}</div></div>
+        <div class="tile"><div class="label">Power rating</div>
+          <div class="value">${bye.power === null || bye.power === undefined
+            ? "–" : signed(bye.power, 1)}</div>
+          <div class="sub">points better than an average team</div></div>
+      </div>
+
+      ${odds.length ? `<h3 class="sub-head">How the season ends</h3>
+      <table class="slate"><tbody>${odds.map(([label, v]) => `<tr>
+        <td class="who">${esc(label)}</td>
+        <td class="num"><span class="oddsbar" style="--p:${
+          Math.max(0, Math.min(1, v)) * 100}%"></span></td>
+        <td class="num">${pct(v, 1)}</td>
+      </tr>`).join("")}</tbody></table>` : ""}
+
+      <h3 class="sub-head">Back in week ${next ? next.week : "?"}</h3>
+      ${next ? `<div class="byenext">
+        ${teamMark(next.opponent)}
+        <span><b>${next.home ? "vs" : "at"} ${esc(next.opponent)}</b>
+          <span class="muted">${next.kickoff ? esc(when(next.kickoff)) : ""}</span></span>
+      </div>` : `<div class="empty">The schedule does not reach their next game yet.</div>`}
+
+      <p class="note">A bye is the one week a team's ranking moves without them
+        playing: everyone else's results shift the table underneath them. They
+        also cannot be used as a survivor pick this week.</p>
+    </div>`;
+  wireLogos(body);
+  dlg.showModal();
 }
 
 // ------------------------------------------------- one game, in detail
@@ -1428,7 +1467,7 @@ async function renderTeams(ticket) {
        the current week's movement no matter which week was on screen -- two
        halves of one row disagreeing about what they were describing. */
     api(`/api/power/history?season=${state.season}&week=${state.week}`)
-      .catch(() => ({ teams: [], compared_to: null })),
+      .catch(() => ({ teams: [], compared_to: null, note: "" })),
   ]);
   if (stale(ticket)) return;
 
@@ -1449,6 +1488,10 @@ async function renderTeams(ticket) {
       if (row.move !== null && row.move !== undefined) moved[row.team] = row.move;
     }
   }
+  /* When the week on screen has no cut of its own, the table above is the
+     live ranking rather than a frozen one -- so say which it is instead of
+     letting a future week borrow today's order and today's arrows. */
+  const rankNote = history.note || "";
   const moveCell = (abbr) => {
     const m = moved[abbr];
     if (m === undefined) return '<td class="move"></td>';
@@ -1484,7 +1527,7 @@ async function renderTeams(ticket) {
     <tbody>${teams.map(row).join("")}</tbody></table>`;
 
   if (!paint(root, `
-  <div class="panel" data-nofold>
+  <div class="panel">
     <header><h2>Power rankings</h2>
       <span class="hint">by projected finish, the Pythagorean, the rating and
         title odds — not by record · click a team for the rest</span></header>
@@ -1492,11 +1535,14 @@ async function renderTeams(ticket) {
       <div class="table-scroll">${table(data.teams.slice(0, half))}</div>
       <div class="table-scroll">${table(data.teams.slice(half))}</div>
     </div>
+    ${rankNote ? `<p class="note">${esc(rankNote)} Until then this is the
+      ranking as it stands today, with no movement against a week that has not
+      been ranked.</p>` : ""}
     ${hasWinTotals ? "" : `<p class="note">No season win-total lines are
       available from the odds feed right now, so the market columns in each
       card are blank. Nothing else is affected.</p>`}
   </div>
-  <div class="panel" id="team-detail-panel" data-nofold>
+  <div class="panel" id="team-detail-panel">
     <header><h2>Simulated win distribution</h2>
       <span class="hint" id="dist-who"></span></header>
     <div class="team-card" id="team-card"></div>
@@ -1635,9 +1681,13 @@ async function renderPicks(ticket) {
   const runRow = (s) => `<tr>
     <td class="team">Week ${s.week}</td><td>${esc(s.team)}</td>
     <td class="muted">vs ${esc(s.opponent)}</td><td>${pct(s.win_prob, 1)}</td></tr>`;
+  /* Short column heads. "Opponent" and "Win prob" were each wider than every
+     value beneath them, and with two of these tables side by side in half a
+     panel the width they took came off the end of the row -- so the labels
+     themselves were what got clipped. */
   const runTable = (rows) => rows.length ? `<table class="slate">
-      <thead><tr><th>Week</th><th>Team</th><th>Opponent</th>
-        <th class="num">Win prob</th></tr></thead>
+      <thead><tr><th>Week</th><th>Team</th><th title="Who they play">Opp</th>
+        <th class="num" title="Chance that team wins that week">Win</th></tr></thead>
       <tbody>${rows.map(runRow).join("")}</tbody></table>` : "";
   const runAll = survivor.path || [];
   const runHalf = Math.ceil(runAll.length / 2);
@@ -1700,8 +1750,9 @@ async function renderPicks(ticket) {
             || ((survivor.week || 0) + (survivor.horizon || 1) - 1)}</div></div>
       </div>
       <div class="alt-block">
-        <h3>This week's options<span class="hint">win chance, then what taking
-          that team instead costs across the whole remaining path</span></h3>
+        <h3>This week's options<span class="hint"
+          title="Win chance this week, then what taking that team instead would cost across the whole remaining path."
+          >win chance, then the cost of switching</span></h3>
         <div class="alt-list">${altRows
           || '<div class="empty">No alternatives.</div>'}</div>
       </div>
@@ -1823,22 +1874,47 @@ async function renderNews(ticket) {
     for (const t of item.teams || []) newsCounts[t] = (newsCounts[t] || 0) + 1;
   }
   const ALL = "__all__";
-  const known = state.meta?.teams ? Object.keys(state.meta.teams).sort()
-    : (data.injury_teams || []);
+  const meta = state.meta?.teams || {};
+  /* Alphabetical by the name on the shirt, not by the abbreviation.
+
+     Sorting the keys put Las Vegas between Kansas City and Los Angeles --
+     correct for "LV", and wrong for every reader, who is looking for the
+     Raiders and finds them three crests after the Chargers. The same goes for
+     the 49ers, who sit under S and were landing after Seattle. Nobody scans a
+     row of crests by abbreviation; they scan it by team.
+
+     The fallback also sorts now. It was the list of teams with someone
+     injured, in whatever order the payload happened to carry, so the moment
+     the metadata had not arrived the row silently lost its order entirely --
+     which is the version of this a cold start shows. */
+  const teamName = (t) => meta[t]?.full_name || meta[t]?.location || t;
+  const known = (Object.keys(meta).length ? Object.keys(meta)
+    : [...(data.injury_teams || [])])
+    .sort((a, b) => teamName(a).localeCompare(teamName(b)));
   if (state.newsTeam === undefined) state.newsTeam = ALL;
   if (state.newsTeam !== ALL && !known.includes(state.newsTeam)) state.newsTeam = ALL;
   const team = state.newsTeam;
 
+  /* No count on the crest.
+
+     It read as an unread badge -- a queue to be cleared -- for a number that
+     was the sum of two different things, injuries and stories, neither of
+     which it named. A crest showing 5 could be five injuries, five stories, or
+     any mix, so clicking it to see the injury table and finding two rows
+     looked like rows had gone missing. The count each list actually has is on
+     that list, one click away, and it is right there rather than added to
+     something else. The tooltip still breaks it down for anyone who wants it
+     without clicking. */
   const picker = `<button class="team-pick league${team === ALL ? " on" : ""}"
       data-team="${ALL}" title="Every team — all injuries and all news">
-      <span class="tbadge league"><span class="mono">NFL</span></span>
-      <span class="tp-count"></span></button>`
+      <span class="tbadge league"><span class="mono">NFL</span></span></button>`
     + known.map((t) => {
       const n = (counts[t] || 0) + (newsCounts[t] || 0);
       return `<button class="team-pick${t === team ? " on" : ""}${
         n ? "" : " empty"}" data-team="${esc(t)}"
-        title="${esc(t)} — ${counts[t] || 0} injured, ${newsCounts[t] || 0} stories">
-        ${teamMark(t)}<span class="tp-count">${n || ""}</span></button>`;
+        title="${esc(teamName(t))} — ${counts[t] || 0} injured, ${
+          newsCounts[t] || 0} ${newsCounts[t] === 1 ? "story" : "stories"}">
+        ${teamMark(t)}</button>`;
     }).join("");
 
   /* Four columns, because four things are being asked: who, what, how long,
@@ -1849,18 +1925,28 @@ async function renderNews(ticket) {
      not break the injury out into fields, not a column of its own. */
   const shown = (data.injuries || []).filter(
     (i) => team === ALL || i.team === team);
+  /* Whose player it is, but only when that is in question.
+
+     League-wide this table was thirty-odd names with nothing saying which
+     side any of them played for -- the rows were grouped by team and the
+     grouping was invisible, so the list read as one undifferentiated roster
+     and looked like it was showing the wrong players rather than all of
+     them. Filtered to one team the column would repeat that team thirty
+     times, so it appears only in the view that needs it. */
+  const byTeam = team === ALL;
   const injuries = shown.map((i) => `<tr${i.detail
       ? ` title="${esc(i.detail)}"` : ""}>
+    ${byTeam ? `<td class="inj-team">${teamMark(i.team)}</td>` : ""}
     <td class="team">${esc(i.player)}${i.position
       ? ` <span class="muted">${esc(i.position)}</span>` : ""}</td>
     <td>${esc(i.injury || "–")}</td>
     <td class="muted">${esc(i.how_long || "–")}</td>
-    <td><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
+    <td class="inj-status"><span class="inj ${esc(statusClass(i.status))}">${esc(i.status || "–")}</span></td>
     </tr>`).join("");
 
   const who = team === ALL ? "the league" : team;
   if (!paint(root, `
-    <div class="panel news-filter" data-nofold>
+    <div class="panel news-filter">
       <div class="team-picker wide">${picker}</div>
     </div>
     <div class="grid-2 news-split">
@@ -1868,10 +1954,10 @@ async function renderNews(ticket) {
       <header><h2>Injury report</h2>
         <span class="hint">questionable, doubtful, out, IR and PUP only —
           not the whole roster</span>
-        <span class="hint filter-who">${esc(who)}</span></header>
+        <span class="hint filter-who">${esc(who)} · ${shown.length} listed</span></header>
       ${injuries
         ? `<div class="table-scroll tall"><table class="slate roster">
-            <thead><tr><th>Player</th>
+            <thead><tr>${byTeam ? "<th>Team</th>" : ""}<th>Player</th>
               <th title="What is hurt, when the feed breaks it out. Hover a row for the full note.">Injury</th>
               <th title="How long they have been listed, and when they are expected back">How long</th>
               <th>Status</th></tr></thead>
@@ -1883,6 +1969,8 @@ async function renderNews(ticket) {
 
     <div class="panel">
       <header><h2>News &amp; changes</h2>
+        <span class="hint filter-who">${esc(who)} · ${sorted.length} ${
+          sorted.length === 1 ? "story" : "stories"}</span>
         <div class="controls news-sort">
           <label for="news-sort" class="hint">Sort by</label>
           <select id="news-sort">${Object.entries(NEWS_SORTS).map(([k, v]) =>
@@ -2053,15 +2141,15 @@ async function renderSoon(ticket) {
   </div>`).join("");
 
   if (!paint(root, `<div class="grid-3 desk">
-    <div class="panel" data-nofold>
+    <div class="panel">
       <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
       ${help}
     </div>
-    <div class="panel" data-nofold>
+    <div class="panel">
       <header><h2>Being built</h2><span class="hint">and honestly not finished</span></header>
       ${soon}
     </div>
-    <div class="panel" data-nofold>
+    <div class="panel">
       <header><h2>What changed</h2><span class="hint">newest first</span></header>
       ${changes}
     </div>
@@ -2645,7 +2733,6 @@ async function render({ keepPlace = false } = {}) {
   try {
     await view(renderTicket);
     if (ticket !== renderTicket) return;
-    foldPanels($("#view"));
     measureFit();
     markScrollFades($("#view"));
     restorePlace(place);
@@ -2976,18 +3063,25 @@ async function main() {
   });
   $("#close-detail").addEventListener("click", () => $("#detail").close());
 
-  /* The general refresh lives on the Settings page now, so it is wired up
-     there on each render of that page rather than once at start-up -- the
-     button does not exist until Settings is open. Delegated from the document
-     so there is nothing to re-bind and nothing to leak. */
+  /* The general refresh, on two buttons that mean the same thing: the one in
+     the sidebar, always there, and the one on the Settings page beside the
+     result line it writes to. Delegated from the document because the
+     Settings one is rebuilt on every render of that page -- there is nothing
+     to re-bind and nothing to leak.
+
+     "Everything except the odds" is not a special case here: `full=1` already
+     excludes the metered stages, so the free half of the app is exactly what
+     this fetches. The lines have their own button, one panel away. */
   document.addEventListener("click", async (ev) => {
-    const refreshBtn = ev.target.closest("#refresh");
+    const refreshBtn = ev.target.closest("#refresh, #side-refresh");
     if (!refreshBtn || state.busy) return;
     const out = $("#refresh-result");
     state.busy = true;
     refreshBtn.disabled = true;
-    const label = refreshBtn.textContent;
-    refreshBtn.textContent = "Refreshing…";
+    const label = $("span", refreshBtn) || refreshBtn;
+    const labelText = label.textContent;
+    label.textContent = "Refreshing…";
+    refreshBtn.classList.add("spinning");
     try {
       // full=1: the button means "do it now", not "do whatever is due". A
       // stage inside its own polling interval is exactly the stage a person
@@ -3004,9 +3098,15 @@ async function main() {
       if (out) { out.textContent = `Refresh failed: ${err.message}`; out.className = "neg"; }
     } finally {
       state.busy = false;
-      // render() has rebuilt the page, so this is a different button by now.
-      const live = $("#refresh");
-      if (live) { live.disabled = false; live.textContent = label; }
+      // render() has rebuilt the Settings page, so that one is a different
+      // button by now; the sidebar's is the same element throughout.
+      const live = $(refreshBtn.id === "refresh" ? "#refresh" : "#side-refresh");
+      if (live) {
+        live.disabled = false;
+        live.classList.remove("spinning");
+        const span = $("span", live) || live;
+        span.textContent = labelText;
+      }
     }
   });
 

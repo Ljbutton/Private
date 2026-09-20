@@ -182,16 +182,33 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "SELECT team, rank, power FROM power_snapshots "
             "WHERE season = ? AND week = ? AND source = 'live'", (season, week))}
         records = records_before(season, week)
+        on_bye = teams_on_bye(season, week)
+        # A bye team's week is its season: there is no game to open, so what
+        # the card has to answer is where the year is going. The projections
+        # are already loaded per team, and who they play next comes off the
+        # schedule the board is reading anyway -- fetching both here means a
+        # click on a bye opens something rather than a second round trip.
+        projections = (latest_team_rows(season, "season_projections")
+                       if on_bye else {})
+        next_games = _next_opponents(season, week, on_bye) if on_bye else {}
         byes = [
             {
                 "team": team,
                 "name": TEAMS[team].name if team in TEAMS else team,
+                "full_name": TEAMS[team].full_name if team in TEAMS else team,
                 "conference": TEAMS[team].conference if team in TEAMS else "",
+                "division": TEAMS[team].division if team in TEAMS else "",
                 "record": records.get(team, ""),
                 "rank": (ranks.get(team) or {}).get("rank"),
                 "power": (ranks.get(team) or {}).get("power"),
+                "next": next_games.get(team),
+                **{
+                    key: (projections.get(team) or {}).get(key)
+                    for key in ("playoff_prob", "division_prob", "bye_prob",
+                                "sb_prob", "exp_wins", "wins_p10", "wins_p90")
+                },
             }
-            for team in teams_on_bye(season, week)
+            for team in on_bye
         ]
         return {
             "season": season, "week": week,
@@ -475,9 +492,32 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         # Teams page shows the current week's cut, and this is what fills its
         # Move column -- so if this answered about a different week the arrows
         # would describe a table nobody was looking at.
-        if week not in weeks:
+        if week is None:
             current = pipeline.current_week(season)
             week = current if current in weeks else weeks[-1]
+        # A week that has not been cut has no movement, and saying so is the
+        # whole answer.
+        #
+        # This used to quietly substitute the newest week it did hold, which is
+        # how choosing week twelve in October produced a full set of arrows:
+        # they were week six's, under week twelve's heading, describing a
+        # fortnight of results that had not happened. A ranking is frozen at
+        # the moment the week before it finished -- so until that Monday night
+        # game goes final there is no cut for the week, nothing to compare, and
+        # nothing an arrow could honestly point at.
+        if week not in weeks:
+            return {
+                "season": season, "week": week, "weeks": weeks,
+                "compared_to": None, "teams": [], "sources": {},
+                "note": (
+                    "There is no week one ranking: nothing has been played "
+                    "yet, so there is nothing to rank on."
+                    if week is not None and week < 2 else
+                    f"No ranking has been taken for week {week} yet. A week's "
+                    "cut is frozen the moment the week before it finishes, so "
+                    f"this fills in once week {week - 1}'s last game is final."
+                ),
+            }
         # Which weeks were cut while the app was running for them.
         live_cuts = {
             r["week"]: True for r in db.query(
@@ -1271,6 +1311,40 @@ def records_before(season: int, week: int) -> dict[str, str]:
     for team in TEAMS:
         wins, losses, ties = tally.get(team, [0, 0, 0])
         out[team] = f"{wins}-{losses}" + (f"-{ties}" if ties else "")
+    return out
+
+
+def _next_opponents(season: int, week: int,
+                    teams: list[str]) -> dict[str, dict]:
+    """Each team's next scheduled game after `week`.
+
+    Not simply week + 1: a team can be on bye in the last week the schedule
+    reaches, and the back half of the season is loaded in chunks, so "the
+    following week" is sometimes a week with no rows in it at all. Searching
+    forward answers the question that was actually asked -- who is next --
+    and returns nothing rather than a wrong opponent when the schedule does
+    not go that far.
+    """
+    if not teams:
+        return {}
+    wanted = set(teams)
+    out: dict[str, dict] = {}
+    for row in db.query(
+        "SELECT week, home, away, kickoff FROM games "
+        "WHERE season = ? AND week > ? AND season_type = 'REG' "
+        "ORDER BY week, kickoff", (season, week),
+    ):
+        for side, other in (("home", "away"), ("away", "home")):
+            team = row[side]
+            if team in wanted and team not in out:
+                out[team] = {
+                    "week": row["week"],
+                    "opponent": row[other],
+                    "home": side == "home",
+                    "kickoff": row["kickoff"],
+                }
+        if len(out) == len(wanted):
+            break
     return out
 
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
@@ -67,53 +66,34 @@ class Scheduler:
         }
 
     # ------------------------------------------------------------- intervals
+    # Once a day, and otherwise only when asked for.
+    #
+    # Every other feed in this app is free to poll. The odds are a metered
+    # monthly allowance and each fetch spends three of it, so the schedule is
+    # the one decision that has a bill attached -- and it was being made by a
+    # budget calculation that quietly answered "as often as the allowance can
+    # stand", which on a fresh month is every few minutes. Worse, the job fires
+    # as soon as the scheduler starts: opening the app spent three requests
+    # before the window had finished drawing, whatever it had cost to open it
+    # ten minutes earlier.
+    #
+    # A day is the honest cadence for a number that moves on a scale of days,
+    # and the button covers the case where you want today's line right now.
+    ODDS_INTERVAL_SECONDS = 24 * 3600.0
+
     def odds_interval(self) -> float:
-        """Stretch odds polling to fit the remaining monthly request budget.
+        """A day, unless the settings ask for something slower.
 
-        With one exception: when games have appeared on the schedule but have no
-        line yet, poll at the floor. Opening numbers are the softest of the week
-        and they exist only once — a budget-stretched interval can miss the open
-        entirely, and the open is precisely what the movement test needs.
+        The budget-stretched interval this replaced only ever made the gap
+        *longer* than the configured one, and a day is already longer than the
+        stretch would produce at any sane allowance -- so nothing is lost by
+        taking the larger of the two and a monthly cap is still respected.
+
+        The opening-line exception went with it: it polled at a five-minute
+        floor whenever a game inside eight days had no price yet, which is most
+        of a Tuesday, and it was the single biggest spender in the app.
         """
-        cfg = get_config()
-        if self._awaiting_opening_lines():
-            return max(300.0, min(cfg.refresh_odds, 600.0))
-        if self.pipeline.demo or not cfg.has_odds_key:
-            return cfg.refresh_odds
-        try:
-            from .sources.odds_api import OddsApiSource, days_left_in_month, suggested_interval
-
-            usage = OddsApiSource().usage()
-            return max(
-                cfg.refresh_odds,
-                suggested_interval(usage["remaining_budget"], days_left_in_month()),
-            )
-        except Exception:  # noqa: BLE001
-            return cfg.refresh_odds
-
-    # Books post lines about a week out. Beyond that a game having no price is
-    # the normal state of the world, not a market we are waiting on.
-    OPENING_LINE_HORIZON_DAYS = 8
-
-    @classmethod
-    def _awaiting_opening_lines(cls) -> bool:
-        """Are there *imminent* games the market has not priced for us yet?
-
-        The horizon is the whole point. Without it this asked whether any game
-        in the rest of the season lacked a line, which in week 2 is most of the
-        season and stays true until December -- so the budget-aware interval
-        was bypassed essentially always and odds polled at the floor for
-        months. The exception exists to catch an opening number the week it
-        appears, and a game sixteen weeks out has no opening number to miss.
-        """
-        horizon = (now() + dt.timedelta(days=cls.OPENING_LINE_HORIZON_DAYS)).isoformat()
-        row = db.query_one(
-            "SELECT COUNT(*) AS n FROM games g WHERE g.status = 'scheduled' "
-            "AND g.kickoff IS NOT NULL AND g.kickoff > ? AND g.kickoff <= ? "
-            "AND NOT EXISTS (SELECT 1 FROM consensus c WHERE c.game_id = g.game_id)",
-            (now_iso(), horizon),
-        )
-        return bool(row and row["n"])
+        return max(get_config().refresh_odds, self.ODDS_INTERVAL_SECONDS)
 
     def scores_interval(self) -> float:
         """Poll scores hard while games are live, gently otherwise."""
@@ -141,10 +121,29 @@ class Scheduler:
         return job.interval
 
     # ----------------------------------------------------------------- loop
+    def startup_wait(self, job: Job) -> float:
+        """How long this job waits before its first run of the session.
+
+        Everything here fired the moment the scheduler started, which is right
+        for a feed that costs nothing and wrong for the one that does not:
+        opening the app spent three Odds API credits before the window had
+        finished drawing, and opening it four times in an evening spent twelve
+        on a line that had not moved. A metered job picks up where it left off
+        instead -- if it ran an hour ago it has twenty-three hours to wait,
+        whether or not the process it ran in is still alive.
+        """
+        # Stagger startup so several jobs do not all fire in the same second.
+        stagger = 2 + 3 * list(self.jobs).index(job.name)
+        if job.name not in self.METERED_STAGES:
+            return stagger
+        since = self.pipeline.last_success(job.name)
+        if since is None:                      # never fetched: go and get it
+            return stagger
+        return max(stagger, self.interval_for(job) - since)
+
     async def _run_job(self, job: Job) -> None:
         """Run one job forever, sleeping its (possibly dynamic) interval."""
-        # Stagger startup so four jobs do not all fire in the same second.
-        await asyncio.sleep(2 + 3 * list(self.jobs).index(job.name))
+        await asyncio.sleep(self.startup_wait(job))
         while self.running:
             try:
                 await self.run_once(job)

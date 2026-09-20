@@ -388,3 +388,54 @@ def test_asking_for_no_week_still_means_this_week(four_weeks, client):
     named = client.get("/api/teams?season=2025&week=2").json()
     bare = client.get("/api/teams").json()
     assert named["teams"] and bare["teams"]
+
+
+def _cut(season, week, rows):
+    for team, rank in rows:
+        db.execute(
+            "INSERT OR REPLACE INTO power_snapshots"
+            "(season, week, team, rank, power, elo, pythagorean,"
+            " wins, losses, ties, source, captured_at, projection) "
+            "VALUES(?, ?, ?, ?, 0, 1500, 0.5, ?, 0, 0, 'live', 'then',"
+            " '{\"exp_wins\": 11.0}')",
+            (season, week, team, rank, week - 1))
+
+
+def test_a_week_with_no_cut_reports_no_movement(four_weeks, client):
+    """A week that has not been ranked has no arrows, and says why.
+
+    The endpoint used to substitute the newest week it did hold whenever the
+    week asked for was missing -- so choosing week twelve in October returned
+    week six's table, week six's ranks and a full set of week six's arrows,
+    all under week twelve's heading. Those arrows described a fortnight of
+    results that had not been played. A ranking is frozen the moment the week
+    before it finishes, so until that Monday night game is final there is
+    nothing for an arrow to point at.
+    """
+    db.execute("DELETE FROM power_snapshots")
+    _cut(2025, 2, [("KC", 1), ("DEN", 2)])
+    _cut(2025, 3, [("DEN", 1), ("KC", 2)])
+
+    ahead = client.get("/api/power/history?season=2025&week=12").json()
+    assert ahead["week"] == 12, "it answers about the week it was asked about"
+    assert ahead["teams"] == []
+    assert ahead["compared_to"] is None
+    assert "week 11" in ahead["note"]
+
+    # And the week that *is* held still moves, or the fix has taken the
+    # feature out rather than bounded it.
+    held = client.get("/api/power/history?season=2025&week=3").json()
+    assert held["week"] == 3
+    assert held["compared_to"] == 2
+    assert {r["team"]: r["move"] for r in held["teams"]} == {"DEN": 1, "KC": -1}
+
+
+def test_week_one_is_told_it_has_no_ranking_rather_than_a_missing_one(
+        four_weeks, client):
+    """Week one never has a cut, and the reason is not "not taken yet"."""
+    db.execute("DELETE FROM power_snapshots")
+    _cut(2025, 2, [("KC", 1), ("DEN", 2)])
+    one = client.get("/api/power/history?season=2025&week=1").json()
+    assert one["teams"] == []
+    assert "no week one ranking" in one["note"].lower()
+    assert "week 0" not in one["note"]

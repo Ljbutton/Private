@@ -61,12 +61,33 @@
            dots reporting that nothing had happened. What belongs in that space
            the rest of the time is the game. -->
       <div id="side-conns" hidden>
+        <!-- The odds, with the connections, because they are the same
+             subject: which feed last answered and what it cost. Three
+             requests of a monthly allowance go every time this is pressed,
+             so it sits on the page you open when you mean to spend them. -->
+        <div class="side-label">Betting lines</div>
+        <button class="btn odds-btn" id="refresh-odds"
+          title="Fetch the betting lines now. Three requests from the monthly Odds API allowance.">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+          <span>Update odds</span>
+        </button>
+        <div class="odds-when-row"><span id="odds-when" class="tiny muted"></span></div>
         <div class="side-label">Connections</div>
         <div id="statusbar"></div>
       </div>
       <div id="side-now"></div>
       <div class="side-updated">
         <span id="refreshed"></span>
+        <!-- Everything except the lines, on the one button that costs
+             nothing. Scores, the schedule, injuries, news and the model all
+             come from feeds with no allowance attached, so this is free to
+             press and is the one to reach for when the board looks stale.
+             The odds are deliberately not in it. -->
+        <button class="btn tiny-btn" id="side-refresh"
+          title="Fetch everything except the betting lines — scores, schedule, injuries, news — and recompute.">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+          <span>Refresh</span>
+        </button>
       </div>
       <div class="build-line" id="build-line" title="Which build this is"></div>
       <div class="license-line" id="license-line" hidden></div>
@@ -79,21 +100,15 @@
            the time, and the controls. The time is in the middle because it is
            the one thing on this bar that is not about the app. -->
       <div class="hero-left">
-        <!-- The odds button sits here, where the general refresh used to.
-             Everything else in this app fetches itself on a minute and needs
-             no button at all; the betting lines are a metered allowance and
-             each press spends three of it, so the one control on this bar is
-             the one that costs something. The general refresh moved to
-             Settings, which is where you go when you want to make the app do
-             something rather than watch it. -->
-        <div class="eyebrow"><span class="pulse"></span><span id="cadence">Live</span>
-          <button class="btn odds-btn" id="refresh-odds"
-            title="Fetch the betting lines. Three requests from the monthly Odds API allowance.">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
-            <span>Update odds</span>
-          </button>
-        </div>
-        <div class="odds-when-row"><span id="odds-when" class="tiny muted"></span></div>
+        <!-- Nothing but what you are looking at.
+
+             The odds button lived here, and it is a control for a metered
+             allowance you spend deliberately -- not something to put under the
+             cursor on every page, beside the week you are reading. It has
+             moved to the sidebar on Settings, with the line that says when the
+             lines were last fetched and what is left of the month, which is
+             the same place you go to check any other feed. -->
+        <div class="eyebrow"><span class="pulse"></span><span id="cadence">Live</span></div>
         <div class="when-row">
           <h1 id="whenline">Week 1</h1>
         </div>

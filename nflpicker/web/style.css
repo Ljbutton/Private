@@ -43,6 +43,9 @@
   --gold:     #a06a06;
   --success-text: #0b7a52;
 
+  --scroll-thumb:       rgba(11, 11, 11, 0.22);
+  --scroll-thumb-hover: rgba(11, 11, 11, 0.38);
+
   --radius: 14px;
   --radius-sm: 9px;
   --radius-pill: 999px;
@@ -80,6 +83,8 @@
     --good: #2ee6a0; --warning: #fbbf24; --serious: #f0883e; --critical: #ff6b6b;
     --gold: #ffc94d;
     --success-text: #2ee6a0;
+    --scroll-thumb:       rgba(244, 245, 246, 0.20);
+    --scroll-thumb-hover: rgba(244, 245, 246, 0.36);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 3px rgba(0, 0, 0, .25);
     --shadow-md: 0 2px 4px rgba(0, 0, 0, .3), 0 8px 20px rgba(0, 0, 0, .35);
     --shadow-lg: 0 8px 16px rgba(0, 0, 0, .4), 0 24px 48px rgba(0, 0, 0, .5);
@@ -104,12 +109,46 @@
     --good: #2ee6a0; --warning: #fbbf24; --serious: #f0883e; --critical: #ff6b6b;
     --gold: #ffc94d;
     --success-text: #2ee6a0;
+    --scroll-thumb:       rgba(244, 245, 246, 0.20);
+    --scroll-thumb-hover: rgba(244, 245, 246, 0.36);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 3px rgba(0, 0, 0, .25);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, .3), 0 8px 20px rgba(0, 0, 0, .35);
   --shadow-lg: 0 8px 16px rgba(0, 0, 0, .4), 0 24px 48px rgba(0, 0, 0, .5);
 }
 
 * { box-sizing: border-box; }
+
+/* ------------------------------------------------------------- scrollbars */
+/* The platform's default bar is a grey trough with a chunky thumb, drawn to
+   the same width whether it is on a full page or on a panel three inches
+   wide. Next to everything else here it looks like a piece of another
+   program. These are the same bar, thinner, with no trough and a thumb that
+   takes its colour from the text rather than the system -- so it darkens with
+   the theme instead of staying light grey on a black panel.
+
+   `scrollbar-width`/`scrollbar-color` are the standard properties and are all
+   Firefox honours; the `::-webkit-` rules do the same job with more control
+   on the engine this app actually ships (the desktop build is a WebView), and
+   the two are kept in step. Deliberately not `scrollbar-width: none`: a bar
+   you cannot see is how a table of thirty-two teams reads as a table of
+   seven. */
+* { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: var(--radius-pill);
+  /* The border is transparent and clipped to the padding box, which insets
+     the thumb without shrinking the hit area -- a 4px-wide thumb is pretty
+     and impossible to grab. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); background-clip: padding-box; }
+/* Where both bars meet. Left unstyled it is a pale grey square in the corner
+   of every panel that scrolls in two directions. */
+::-webkit-scrollbar-corner { background: transparent; }
 body {
   margin: 0;
   font-family: var(--font);
@@ -565,31 +604,8 @@ td.team { font-weight: 600; }
   border-left: 2px solid var(--border-strong); padding-left: 8px; line-height: 1.45;
 }
 
-/* ----------------------------------------------------------- folding panels */
 #view { display: flex; flex-direction: column; gap: 14px; }
 
-.panel.fold { padding: 0; }
-.panel.fold > summary {
-  display: flex; align-items: center; gap: 10px;
-  padding: 15px 18px; cursor: pointer; list-style: none;
-  border-radius: var(--radius);
-  transition: background var(--fast) var(--ease);
-}
-.panel.fold > summary::-webkit-details-marker { display: none; }
-.panel.fold > summary:hover { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
-.panel.fold > summary h2 { font-size: 15px; }
-.panel.fold > summary .hint { margin-left: auto; text-align: right; }
-.panel.fold .chev {
-  width: 15px; height: 15px; flex: none; fill: none;
-  stroke: var(--text-muted); stroke-width: 2.2;
-  stroke-linecap: round; stroke-linejoin: round;
-  transition: transform var(--fast) var(--ease);
-}
-.panel.fold[open] > summary .chev { transform: rotate(90deg); }
-.panel.fold[open] > summary { border-bottom: 1px solid var(--grid); border-radius: var(--radius) var(--radius) 0 0; }
-.fold-body { padding: 15px 18px 17px; }
-.fold-body > .tiles:first-child,
-.fold-body > .grid-2:first-child { margin-top: 2px; }
 /* Spacing between stacked sections comes from the view's own gap, not from
    sibling margins. An adjacent-sibling margin also fires between the two
    panels of a side-by-side grid, which pushed the right-hand one 14px lower
@@ -705,11 +721,23 @@ td.team { font-weight: 600; }
 /* A roster listing is words, not figures; only the tables of numbers want
    their columns right-aligned. */
 .slate.roster td, .slate.roster th { text-align: left; }
-/* A detail line is a sentence, not a figure; clipping it mid-word to keep the
-   column narrow loses the only part that says what is actually wrong. */
-.slate.roster td:nth-child(4) { white-space: normal; line-height: 1.35;
+/* "Injured Reserve" is two words and gets two lines rather than one clipped
+   one. Addressed by name: it was the fourth column until the league-wide view
+   grew a team column in front of it, and a positional selector would have
+   quietly moved on to wrapping "How long" instead. */
+.slate.roster .inj-status { white-space: normal; line-height: 1.35;
   padding: 6px 9px; }
 .slate.roster .team { font-weight: 650; }
+/* Whose player this is, as a crest rather than three more letters in a row of
+   names -- the column is an index you skim, not something you read. */
+.slate.roster .inj-team { width: 1%; padding: 0 0 0 9px; line-height: 0; }
+.slate.roster .inj-team .tbadge { width: 19px; height: 19px; }
+/* The crest column costs width the table did not have spare, and the column
+   it took it from was Status -- the one thing on the row you cannot do
+   without. The two prose columns give it back by wrapping instead of running
+   on; both are short phrases, and a second line costs nothing in a table
+   whose rows are already 34px tall. */
+.slate.roster td:not(.inj-team) { white-space: normal; }
 
 /* -------------------------------------------------------- the card board */
 /* One card per game, and inside it each team gets its own line.
@@ -839,8 +867,15 @@ td.team { font-weight: 600; }
 /* One line, not two. The city under the nickname repeated what the mark and
    the nickname already say, and cost a line on every team -- thirty-two lines
    of board. The full name is on hover. */
+/* The name takes the slack, so everything after it is in a column.
+
+   Without the `flex: 1` the name sized to its own text and the record, the S
+   and the score each started wherever that text happened to end -- so
+   Commanders pushed them a centimetre further right than Jets, and on a card
+   with one long name and one short one the two rows did not line up with each
+   other, let alone with the card beside them. */
 .tname {
-  display: flex; align-items: baseline; gap: 5px; min-width: 0;
+  display: flex; align-items: baseline; gap: 5px; min-width: 0; flex: 1;
   font-size: 12.5px; font-weight: 660; letter-spacing: -0.01em;
 }
 /* The name reads as the team; the abbreviation is the fallback for a card too
@@ -855,7 +890,8 @@ td.team { font-weight: 600; }
   .tname > .abbr { display: inline; }
 }
 
-.tscore { margin-left: auto; font-size: 14px; font-weight: 700;
+/* Wide enough for two digits, so a 7 and a 10 sit in the same column. */
+.tscore { font-size: 14px; font-weight: 700; min-width: 19px; text-align: right;
   font-variant-numeric: tabular-nums; }
 
 /* The team's mark. The abbreviation in the team's own colour is drawn first
@@ -1401,21 +1437,66 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 }
 .byehead .hint { text-transform: none; letter-spacing: 0; }
 .byelist { display: grid; gap: 3px; }
+/* Each row is a button now: a team on bye is the one card on this board with
+   something to open that is not a game. */
 .byerow {
   display: grid; grid-template-columns: 20px minmax(0, 1fr) auto auto auto;
-  gap: 8px; align-items: center; padding: 3px 4px;
+  gap: 8px; align-items: center; padding: 3px 4px; width: 100%;
   border-radius: var(--radius-sm); background: var(--surface-sunken);
+  appearance: none; border: 1px solid transparent; font: inherit;
+  color: inherit; text-align: left; cursor: pointer;
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease);
 }
+.byerow:hover { border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--text-primary) 6%, var(--surface-sunken)); }
+.byerow:focus-visible { outline: none; box-shadow: var(--ring); }
 .byerow .tname { font-size: 12px; }
 .byerank { font-size: 12px; font-weight: 700; color: var(--text-primary);
   font-variant-numeric: tabular-nums; }
 .bypow { font-size: 11px; font-variant-numeric: tabular-nums; min-width: 34px;
   text-align: right; }
 
+/* ---- the bye team's season, in the game dialog's place ---- */
+.bye-detail { margin-bottom: 0; }
+.byetop { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.byetop .tbadge { width: 40px; height: 40px; }
+.byename { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+.byerankbig {
+  margin-left: auto; text-align: right; font-size: 24px; font-weight: 750;
+  line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--series-1);
+}
+.byerankbig .sub { display: block; font-size: 11px; font-weight: 500;
+  color: var(--text-muted); letter-spacing: 0; }
+/* The odds read as four numbers in a column; the bar is what makes "0.2%" and
+   "56%" different sizes rather than different strings. */
+.oddsbar {
+  display: block; width: 120px; height: 7px; border-radius: var(--radius-pill);
+  background: var(--surface-sunken); overflow: hidden; position: relative;
+}
+.oddsbar::after {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: var(--p);
+  background: var(--series-1); border-radius: inherit;
+}
+.byenext {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: var(--radius-sm); background: var(--surface-sunken);
+}
+.byenext .muted { margin-left: 8px; font-size: 12px; }
+
 /* Four panels, two by two, each scrolling inside itself rather than the page
    scrolling past all four. This page is a set of answers to "how is it
    going", and the answers are compared with each other -- which you cannot do
-   while three of them are below the fold. */
+   while three of them are below the fold.
+
+   Each panel scrolls in exactly one place: its body. The first version let
+   every table inside a panel flex against its siblings for the height left
+   over, which is how the season panel ended up showing three of its four
+   rows, cut through the middle of the fourth, above a "week by week" heading
+   with nothing under it at all. A quarter of the viewport cannot hold four
+   tables, and dividing it between them does not make it bigger -- it just
+   loses the boundary between "the rest is below" and "the rest is gone". One
+   scroller per panel puts every row back within reach, and a pinned head
+   keeps the column labels attached to the numbers while you reach it. */
 .perf-grid {
   flex: 1; min-height: 0;
   display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
@@ -1423,20 +1504,46 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 }
 .perf-grid > .panel {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
-  margin-bottom: 0;
+  margin-bottom: 0; padding-bottom: 6px;
 }
-.perf-grid .table-scroll { min-height: 0; overflow: auto; }
-/* The season panel holds two tables; the week-by-week one is the longer and
-   gives way, since the totals above it are three rows and always fit. */
-.perf-grid .table-scroll:last-of-type { flex: 1; }
-.perf-grid .clv-cut .table-scroll { max-height: none; }
-/* The survivor panel is filled after the page is painted -- the tracker is a
-   second request -- so whatever it drops in has to be allowed to scroll
-   inside the panel rather than push the page down. It was the one panel of
-   the four that overflowed, by exactly the height of the table it fetches. */
-.perf-grid > #survivor-track { overflow: hidden; }
-.perf-grid > #survivor-track > .grid-2,
-.perf-grid > #survivor-track > .empty { overflow: auto; min-height: 0; flex: 1; }
+.perf-grid > .panel > header { flex: none; }
+.perf-grid > .panel > .panel-body {
+  flex: 1; min-height: 0; min-width: 0; overflow-y: auto; padding-right: 4px;
+}
+/* Inside that one scroller nothing else takes the vertical axis; a table too
+   wide for the column still gets its own horizontal scroll. */
+.perf-grid .panel-body .table-scroll { overflow-x: auto; overflow-y: visible; }
+/* Four tiles in a half-width panel: `auto-fit` at 158px gets three across and
+   leaves the fourth alone on a row of its own, which reads as a fifth thing
+   that failed to load. Two by two, and they are four of a set again. */
+.perf-grid .panel-body .tiles {
+  margin-top: 2px; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.perf-grid .panel-body .tile { padding: 10px 12px; }
+.perf-grid .panel-body .tile .value { font-size: 22px; }
+/* The head travels with the body it labels. Without this, scrolling to a team
+   in the twenties leaves five columns of bare percentages. Only for a table
+   the body holds directly: a table nested further in sticks to its own
+   scroller instead, which is not the one being scrolled, and the head simply
+   leaves with the rows. */
+.perf-grid .panel-body > .table-scroll thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface);
+}
+/* The two cuts of the closing-line number stack rather than sitting side by
+   side. Half of half a page is 270px, and a four-column table does not fit
+   it -- the value column, the one both tables exist to show, ran under the
+   table beside it. */
+.perf-grid .clv-cuts { grid-template-columns: 1fr; gap: 0; }
+/* The tracker puts two runs side by side inside a half-width panel, which
+   leaves each of them a quarter of the page for four columns. At the shared
+   size the last of those -- the score, the one column that is not two
+   characters wide -- ran off the end and had to be scrolled to, per row.
+   Tightening the type and the cell padding buys back more width than the
+   column needs, so the whole run reads without moving anything. */
+.perf-grid .run-track { font-size: 12px; }
+.perf-grid .run-track td { padding: 3px 5px; }
+.perf-grid .run-track .team { font-size: 11px; }
 
 .muted { color: var(--text-muted); }
 .empty { color: var(--text-muted); padding: 34px 22px; text-align: center; font-size: 13px; }
@@ -1494,12 +1601,6 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    rather than a gap you cannot tell from a missing fetch. */
 .team-pick.empty { opacity: .3; }
 .team-pick.empty:hover { opacity: .6; }
-.tp-count {
-  position: absolute; top: 0; right: 0; min-width: 14px; height: 14px;
-  border-radius: var(--radius-pill); background: var(--serious); color: #fff;
-  font-size: 9px; font-weight: 750; line-height: 14px; text-align: center;
-  padding: 0 3px;
-}
 /* A used survivor team is spent, not hidden: you need to see that KC has gone. */
 .team-pick.used { opacity: .34; filter: grayscale(1); }
 .team-pick.used:hover { opacity: .6; filter: grayscale(.4); }
@@ -1862,20 +1963,29 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   font-size: 13.5px; font-weight: 600; margin: 2px 0 12px;
   color: var(--text-primary);
 }
-.track-split { align-items: start; }
 .run-track td { padding: 4px 8px; }
-.run-track .res { width: 20px; text-align: center; font-weight: 800; }
-.run-track tr.r-won .res { color: var(--series-1); }
-.run-track tr.r-lost .res { color: var(--critical); }
-.run-track tr.r-tied .res { color: var(--warning); }
-.run-track tr.r-pending { opacity: .55; }
+/* The result mark rides with the team name it belongs to, pushed to the end
+   of its own cell, so the two runs stay readable as two columns rather than
+   four. */
+.run-track .res { margin-left: auto; font-weight: 800; }
+.run-track td.r-won .res { color: var(--series-1); }
+.run-track td.r-lost .res { color: var(--critical); }
+.run-track td.r-tied .res { color: var(--warning); }
+.run-track td.r-pending { opacity: .55; }
+.run-track td.none { text-align: center; }
+/* Each side's standing sits under its own heading, so "out in week 2" is
+   attached to the run it describes instead of floating above both. */
+.run-track thead th { text-align: left; font-weight: 600; padding: 2px 8px 6px; }
+.run-track thead .hint { display: block; margin: 0; font-weight: 400; }
 /* The week it ended is the one row worth finding at a glance. */
-.run-track tr.r-lost td { background: color-mix(in srgb, var(--critical) 12%, transparent); }
+.run-track td.r-lost { background: color-mix(in srgb, var(--critical) 12%, transparent); }
 .run-track .team { color: var(--text-muted); font-variant-numeric: tabular-nums;
   width: 42px; }
-/* The crest and the abbreviation are one label, so they go on one line. */
-.run-track td:nth-child(2) { display: flex; align-items: center; gap: 7px; }
-.track-split .sub-head .hint { margin-left: 8px; }
+/* The crest, the abbreviation and the tick are one label, so they go on one
+   line -- on a span inside the cell, not on the cell. A `display: flex` <td>
+   stops being a table cell, and once both runs had one the table had no
+   columns left to line up and every row came apart into two. */
+.run-cell { display: flex; align-items: center; gap: 7px; }
 
 /* ------------------------------------------------------- a finished result */
 /* Gold, and only for a team that won. The card already dims the loser, which
@@ -1937,24 +2047,36 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .eyebrow { gap: 7px; }
 
 /* ------------------------------------------------------- the metered feed */
-/* Beside LIVE, because it is the only fetch on this bar that is a decision.
-   Sized to its label rather than to a column, which is what it was when it
-   lived in the sidebar. */
+/* In the sidebar on Settings, with the connections, because it belongs to the
+   same question: which feed last answered and what it cost. It used to sit
+   beside LIVE in the header on every page -- a control that spends three
+   credits a press, under the cursor while you read the week. */
 .odds-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 11px; padding: 3px 9px; margin-left: 4px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; font-size: 11px; padding: 5px 9px; margin-bottom: 4px;
   text-transform: none; letter-spacing: 0; font-weight: 600;
 }
 .odds-btn svg { width: 12px; height: 12px; fill: currentColor; flex: none; }
 .odds-btn.spinning svg { animation: spin 1s linear infinite; }
-/* Under the button rather than beside it: "lines 4h ago · 412 left this
-   month" is longer than everything else on this side of the bar put
-   together, and on one line it pushed the clock off centre. */
-.odds-when-row { margin: 3px 0 1px; }
+.odds-when-row { margin: 0 0 14px; }
 #odds-when {
   font-size: 10px; text-transform: none; letter-spacing: .01em;
   font-weight: 500;
 }
+
+/* The free refresh, in the corner under everything else.
+
+   Everything but the lines: scores, the schedule, injuries, news and the
+   model, none of which is metered. It is in the sidebar rather than only on
+   Settings because "this looks stale" is something you notice on the board,
+   and the fix should not be two clicks away on another page. */
+.tiny-btn {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
+  font-size: 10px; padding: 3px 8px; flex: none;
+  text-transform: none; letter-spacing: 0; font-weight: 600;
+}
+.tiny-btn svg { width: 11px; height: 11px; fill: currentColor; flex: none; }
+.tiny-btn.spinning svg { animation: spin 1s linear infinite; }
 
 /* The mode you are in: a moon in the dark, a sun in the light. */
 #theme .i-sun, #theme .i-moon { display: none; }
@@ -2049,7 +2171,7 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    where. By team is sorted worst first on purpose -- the leaks are the point,
    and a list sorted best first buries them. */
 .clv-cuts { align-items: start; margin-top: 4px; }
-.clv-cut .table-scroll { max-height: 260px; overflow-y: auto; }
+.clv-cut .table-scroll { overflow-x: auto; }
 .clv-cut table { font-size: 12.5px; }
 .clv-cut .sub-head { margin-top: 10px; }
 
