@@ -92,6 +92,11 @@
           <span>Refresh</span>
         </button>
       </div>
+      <!-- What the last press actually did. The only place a refresh could
+           report itself used to be the Settings page, so pressing this button
+           anywhere else gave a spinner and then nothing -- including when a
+           feed had failed, which is exactly the case worth hearing about. -->
+      <div class="side-note" id="side-refresh-note" hidden></div>
       <div class="side-bottom">
         <button class="cog-btn tab" role="tab" data-tab="settings"
           aria-selected="false" title="Settings" aria-label="Settings">

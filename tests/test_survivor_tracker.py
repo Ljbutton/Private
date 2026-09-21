@@ -153,3 +153,54 @@ def test_a_living_plan_needs_no_counterfactual(client):
     body = client.get("/api/survivor/tracker?season=2026").json()
     assert body["original"]["alive"] is True
     assert "continuation" not in body["original"]
+
+
+# ------------------------------------------- eliminated, and un-eliminated
+#
+# Elimination is never written down. It is a reading of the picks against the
+# results, taken fresh every time -- which is what makes correcting a pick a
+# correction rather than something to be undone.
+
+def test_a_losing_week_ends_the_run_and_says_which(client):
+    from nflpicker.picks.survivor import USED_WEEKS_KEY
+
+    _season()
+    # The home side wins every finished game, so the away side in week 2 loses.
+    db.set_meta(USED_WEEKS_KEY, {"KC": 1, "DEN": 2})
+
+    out = client.get("/api/picks?season=2026&week=3").json()["survivor_out"]
+    assert out["week"] == 2
+    assert out["team"] == "DEN"
+    assert out["result"] == "lost"
+    assert out["weeks_survived"] == 1, "week one still counts"
+
+
+def test_changing_the_losing_pick_brings_the_run_back(client):
+    """The point of deriving it.
+
+    Pressing the wrong team is the commonest way to end up looking at this,
+    and an elimination stored anywhere would have to be found and cleared by
+    hand. Here there is nothing to clear: the same walk over the same games
+    simply reaches a different answer.
+    """
+    from nflpicker.picks.survivor import USED_WEEKS_KEY
+
+    _season()
+    db.set_meta(USED_WEEKS_KEY, {"KC": 1, "DEN": 2})
+    assert client.get("/api/picks?season=2026&week=3").json()["survivor_out"]
+
+    # Week 2 to a team that won.
+    db.set_meta(USED_WEEKS_KEY, {"KC": 1, "BUF": 2})
+    assert client.get("/api/picks?season=2026&week=3").json()["survivor_out"] is None
+
+
+def test_an_unplayed_pick_is_not_an_elimination(client):
+    """A team picked for a week that has not kicked off yet has not lost.
+    Treating "no result" as a loss would end the run every time a pick was
+    made ahead of time."""
+    from nflpicker.picks.survivor import USED_WEEKS_KEY
+
+    _season(played_through=2)
+    db.set_meta(USED_WEEKS_KEY, {"KC": 1, "SEA": 5})
+
+    assert client.get("/api/picks?season=2026&week=3").json()["survivor_out"] is None

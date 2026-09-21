@@ -335,6 +335,27 @@ def _walk(entries: list[dict], games: list[dict]) -> dict:
     }
 
 
+def elimination(used_weeks: dict, games: list[dict]) -> dict | None:
+    """The week a run ended, or None while it is still going.
+
+    Worked out from the picks every time it is asked for, and never written
+    down. A pool entry is dead because of a result, and a result is a fact
+    about one game and the team that was on it -- so correcting the pick that
+    lost is not a special case to undo, it is a different question with a
+    different answer. An elimination stored anywhere would outlive the pick
+    that caused it and have to be cleared by hand.
+    """
+    entries = sorted(
+        ({"week": int(w), "team": t} for t, w in (used_weeks or {}).items()),
+        key=lambda e: e["week"])
+    run = _walk(entries, games)
+    if run["out_week"] is None:
+        return None
+    lost = next(r for r in run["weeks"]
+                if r["week"] == run["out_week"] and r["result"] == "lost")
+    return {**lost, "weeks_survived": run["weeks_survived"]}
+
+
 def track(original: list[dict], used_weeks: dict, games: list[dict]) -> dict:
     """The original run and the picked one, side by side.
 

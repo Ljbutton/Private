@@ -9,6 +9,7 @@ surfaced in the UI as a source-health row rather than thrown away.
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import json
 import logging
 import time
@@ -441,6 +442,63 @@ class Pipeline:
                 f"DELETE FROM live_state WHERE game_id IN ({placeholders})", finished
             )
         return len(rows)
+
+    # How often the scoreboard itself may be re-fetched. A score is the one
+    # thing on this page that is wrong the moment it changes, and one week of
+    # ESPN's scoreboard is a single free request -- so this is its own clock,
+    # far shorter than the schedule stage's, and nothing else rides on it.
+    LIVE_POLL_SECONDS = 15.0
+
+    def refresh_live(self, season: int | None = None,
+                     week: int | None = None) -> dict:
+        """Scores, status and the game clock. Nothing else.
+
+        The schedule stage fetches all eighteen weeks and then leads a
+        recompute; that is the right shape for "has anything changed today"
+        and entirely the wrong one for "what is the score". A game in progress
+        moves every few seconds, and waiting five minutes for the stage's own
+        interval -- and then paying Elo over every game ever played to see it
+        -- is why the board could sit on a stale score while the app looked
+        busy.
+
+        So this is one request for one week, an upsert, and the live win
+        probability, which reads the pregame projection rather than making a
+        new one. No model, no simulation, no grading. It is safe to call every
+        few seconds and it is rate-limited here rather than trusted to the
+        caller, because the caller is a browser tab and there can be several.
+        """
+        season = season or self.season()
+        week = week or self.current_week(season)
+        key = f"live_poll:{season}:{week}"
+        last = db.get_meta(key, None)
+        if last is not None:
+            with contextlib.suppress(Exception):
+                age = (dt.datetime.now(dt.UTC)
+                       - dt.datetime.fromisoformat(last)).total_seconds()
+                if 0 <= age < self.LIVE_POLL_SECONDS:
+                    return {"fetched": False, "age": round(age, 1)}
+
+        try:
+            if self.demo:
+                payload = _demo_season(season, max(0, week - 1))
+                games = _demo_live_games(payload["games"], week)
+                games = [g for g in games if int(g.get("week") or 0) == week]
+            else:
+                from .sources.espn import EspnSource
+
+                games = EspnSource().scoreboard(season, week)
+        except Exception as exc:  # noqa: BLE001 - a stale score beats a broken page
+            return {"fetched": False, "error": str(exc)}
+
+        count = self.upsert_games(games)
+        live = self.store_live_state(games)
+        if live:
+            self.refresh_live_probabilities()
+        db.set_meta(key, now_iso())
+        # Named `stored`, not `games`: the endpoint spreads this result over a
+        # payload whose `games` is the list the page draws from, and a count
+        # landing on top of that list is a board with no games on it.
+        return {"fetched": True, "stored": count, "live_count": live}
 
     def refresh_live_probabilities(self) -> int:
         """Recompute live win probability for every game in progress.
@@ -2299,7 +2357,8 @@ class Pipeline:
         return seconds_since(row["ts"])
 
     def refresh(self, stages: list[str] | None = None, *,
-                force_odds: bool = False) -> RefreshResult:
+                force_odds: bool = False,
+                force_recompute: bool | None = None) -> RefreshResult:
         """Run the requested stages in registry order.
 
         Stages are driven from :mod:`nflpicker.stages` rather than a list
@@ -2322,6 +2381,12 @@ class Pipeline:
 
         explicit = bool(stages)
         wanted = set(stages) if stages else set(stage_names(self.config))
+        # Naming the analytical pass forces it, which is what the CLI and the
+        # tests rely on. The refresh button cannot use that rule: it asks for
+        # every stage by name, so the pass would be "named" on every press.
+        # It passes force_recompute=False instead -- see Scheduler.refresh_now.
+        if force_recompute is None:
+            force_recompute = explicit and "recompute" in wanted
         result = RefreshResult()
 
         for stage in STAGES:
@@ -2352,13 +2417,26 @@ class Pipeline:
                 if stage.name == "odds":
                     method(result, force=force_odds)
                 elif stage.name == "recompute":
-                    # Same rule as everything else on this list: naming a stage
-                    # forces it. `always` means the recompute is never skipped
-                    # for being recent -- it is what turns newly fetched rows
-                    # into numbers, so it has to follow whatever just ran --
-                    # but "never skipped for being recent" is not the same as
+                    # `always` means the recompute is never skipped for being
+                    # recent -- it is what turns newly fetched rows into
+                    # numbers, so it has to follow whatever just ran -- but
+                    # "never skipped for being recent" is not the same as
                     # "re-run when nothing has arrived".
-                    method(result, force=explicit)
+                    #
+                    # It is forced only when somebody asked for this pass by
+                    # name. The refresh button does not: it means "go and
+                    # fetch everything now", and if every fetch came back with
+                    # the rows already in the database there is nothing to
+                    # re-derive. Forcing it there cost two seconds of Elo over
+                    # every game ever played, a full model pass and twenty
+                    # thousand simulated seasons -- to write numbers identical
+                    # to the ones already stored, and leave a page that looks
+                    # exactly as it did. That is most of what "the refresh
+                    # button is slow, or does nothing" was made of. The
+                    # fingerprint errs towards recomputing and the six-hour
+                    # ceiling catches a quiet week, so a refresh that does find
+                    # something still pays for the pass.
+                    method(result, force=force_recompute)
                 else:
                     method(result)
             except Exception as exc:  # noqa: BLE001 - one stage must not stop the rest

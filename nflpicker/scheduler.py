@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import functools
 import logging
 from dataclasses import dataclass, field
 
@@ -280,8 +281,18 @@ class Scheduler:
         lock = self._lock or asyncio.Lock()
         async with lock:
             result = await asyncio.to_thread(
-                self.pipeline.refresh, stages,
-                force_odds=bool(full or (stages and "odds" in stages)),
+                functools.partial(
+                    self.pipeline.refresh, stages,
+                    force_odds=bool(full or (stages and "odds" in stages)),
+                    # The fetches are forced; the pass that reads them is not.
+                    # `full` names every stage, so the pipeline's own "naming
+                    # it forces it" rule would fire on every press of the
+                    # button -- two seconds of Elo, model and simulation to
+                    # re-derive numbers from rows that never moved. The
+                    # fingerprint decides instead, and it errs towards
+                    # recomputing.
+                    force_recompute=False if full else None,
+                )
             )
         return result.to_dict()
 

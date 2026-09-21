@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from pathlib import Path
@@ -151,6 +152,53 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             # I on", and a seven-character hash has never answered that.
             "version": __version__,
         }
+
+    @app.get("/api/live")
+    async def live(season: int | None = None, week: int | None = None) -> dict:
+        """The scoreboard, on its own clock.
+
+        Scores and the game clock are the only thing in this app that is
+        stale within seconds, and they were riding on the same tick as the
+        model: the page asked for a full refresh once a minute, the schedule
+        stage declined because its five-minute interval had not elapsed, and
+        the board sat on a score from four minutes ago. Everything else here
+        -- ratings, projections, the season simulation -- changes when a game
+        *ends*, not while it is being played.
+
+        So this is its own endpoint: one week of ESPN's scoreboard, an upsert,
+        and the live win probability. No stages, no recompute, no lock shared
+        with the refresh, and cheap enough for the page to call every few
+        seconds. The fetch itself is rate-limited in the pipeline, so several
+        open tabs cost one request between them.
+        """
+        season = season or pipeline.season()
+        week = week or pipeline.current_week(season)
+        result = await asyncio.to_thread(pipeline.refresh_live, season, week)
+        rows = db.query(
+            "SELECT g.game_id, g.week, g.kickoff, g.status, g.home, g.away,"
+            " g.home_score, g.away_score,"
+            " l.period, l.clock, l.down, l.distance, l.red_zone,"
+            " l.win_prob_home AS live_home_win_prob "
+            "FROM games g LEFT JOIN live_state l ON l.game_id = g.game_id "
+            "WHERE g.season = ? AND g.week = ? AND g.season_type = 'REG'",
+            (season, week),
+        )
+        games = []
+        for r in rows:
+            live = None
+            if r["status"] == "in_progress" and r["period"] is not None:
+                live = {"period": r["period"], "clock": r["clock"],
+                        "down": r["down"], "distance": r["distance"],
+                        "red_zone": bool(r["red_zone"]),
+                        "home_win_prob": r["live_home_win_prob"]}
+            games.append({
+                "game_id": r["game_id"], "week": r["week"], "status": r["status"],
+                "kickoff": r["kickoff"],
+                "home": r["home"], "away": r["away"],
+                "home_score": r["home_score"], "away_score": r["away_score"],
+                "live": live,
+            })
+        return {"season": season, "week": week, "games": games, **result}
 
     @app.post("/api/refresh")
     async def refresh(stages: str | None = Query(default=None),
@@ -731,6 +779,19 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         }
 
     # ------------------------------------------------------------ picks
+    def survivor_elimination(season: int) -> dict | None:
+        """The week the picked survivor run went out, if it has."""
+        from .picks.survivor import USED_WEEKS_KEY, elimination
+
+        used_weeks = db.get_meta(USED_WEEKS_KEY, {}) or {}
+        if not used_weeks:
+            return None
+        games = db.query(
+            "SELECT week, home, away, home_score, away_score, status FROM games "
+            "WHERE season = ? AND season_type = 'REG'", (season,),
+        )
+        return elimination(used_weeks, games)
+
     @app.get("/api/picks")
     def picks(week: int | None = None, season: int | None = None) -> dict:
         season = season or pipeline.season()
@@ -757,6 +818,10 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "pickem": pickem,
             "survivor": survivor,
             "survivor_used": db.get_meta("survivor_used_teams", []) or [],
+            # Whether the picked run is already dead, and on which week.
+            # Derived here rather than stored, so changing the pick that lost
+            # brings the plan straight back -- see picks.survivor.elimination.
+            "survivor_out": survivor_elimination(season),
         }
 
     @app.post("/api/survivor/pick")

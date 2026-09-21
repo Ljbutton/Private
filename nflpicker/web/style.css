@@ -2338,8 +2338,23 @@ dialog .dialog-body { padding: 18px 20px 24px; }
   letter-spacing: .09em; padding: 2px 6px; border-radius: var(--radius-pill);
   border: 1px solid currentColor; line-height: 1.5;
 }
-.gverdict.upset { color: var(--critical); }
-.gverdict.expected { color: var(--series-1); }
+/* Both grey. Whether the favourite won is a fact about the game, not a
+   verdict on anyone's pick, and on this card green and red are spoken for. */
+.gverdict.upset, .gverdict.expected { color: var(--text-muted); }
+
+/* Your own result, in those two colours, because this one really is a win or
+   a loss. Same pill as the badge beside it, drawn in ink rather than filled:
+   the green is a light mint on the dark theme and a dark green on the light
+   one, so a solid chip would need a different text colour in each -- and a
+   coloured outline already reads ahead of a grey one without needing to. */
+.gresult {
+  font-size: 9.5px; font-weight: 750; text-transform: uppercase;
+  letter-spacing: .09em; padding: 2px 6px; border-radius: var(--radius-pill);
+  border: 1px solid currentColor; line-height: 1.5; white-space: nowrap;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.gresult.win  { color: var(--good); }
+.gresult.loss { color: var(--critical); }
 
 /* ------------------------------------------------------------ coming soon */
 /* A page for work that is real but unfinished. The alternative was leaving
@@ -2393,6 +2408,14 @@ dialog .dialog-body { padding: 18px 20px 24px; }
    the point of the colour is that something is happening now. */
 .side-game.on .sg-when { color: var(--series-1); font-weight: 650; }
 .side-updated { display: flex; align-items: center; gap: 8px; }
+/* What the last refresh did, under the button that did it. */
+.side-note {
+  font-size: 10.5px; line-height: 1.4; margin-top: 5px; padding: 0 1px;
+  color: var(--text-muted);
+}
+.side-note.pos  { color: var(--good); }
+.side-note.warn { color: var(--warning); }
+.side-note.neg  { color: var(--critical); }
 .icon-btn.tiny { width: 22px; height: 22px; padding: 0; margin-left: 2px; }
 .icon-btn.tiny svg { width: 13px; height: 13px; }
 .eyebrow { gap: 7px; }
@@ -2686,6 +2709,20 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 /* A team that is mathematically out. */
 .seedtable tr.dead .who span { color: var(--critical); }
 .out-flag { color: var(--critical); font-weight: 700; }
+/* The same word in the survivor panel's header, where the plan's hint would
+   otherwise sit. It takes the hint's place rather than joining it: there is
+   no horizon to describe once the run is over. */
+.survivor-now header .out-flag {
+  margin-left: auto; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .09em; padding: 2px 8px; line-height: 1.6;
+  border: 1px solid currentColor; border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--critical) 12%, transparent);
+}
+/* What ended it, and how to take it back. */
+.sv-out { padding: 10px 2px 0; display: grid; gap: 8px; }
+.sv-out-line { margin: 0; font-size: 13px; color: var(--text-primary); }
+.sv-out-line b { font-weight: 700; }
+.sv-out .note { margin: 0; }
 .br-side {
   display: flex; align-items: center; gap: 7px; font-size: 12.5px;
   font-weight: 620; border-radius: 5px; padding: 2px 3px; cursor: pointer;

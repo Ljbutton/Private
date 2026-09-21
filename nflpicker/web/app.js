@@ -330,7 +330,14 @@ function sideFoot(meta) {
       ${row("home")}
       <div class="sg-when">${kicking
         ? esc(untilKickoff(g.kickoff))
-        : esc(g.clock || "in progress")}</div>
+        /* The quarter and the clock, the same label the board's live cards
+           carry. It used to read "in progress", which is the one thing you
+           can already see from the scores being there -- and leaves out the
+           only part that says whether the score still means anything. The
+           live row is the fallback, not the other way round. */
+        : `<span class="live-dot"></span>${esc(g.live
+            ? liveLabel(g.live, true)
+            : (g.clock || "in progress"))}`}</div>
     </div>`;
   };
 
@@ -1009,6 +1016,140 @@ function gameStamp(g) {
   return esc(kickoffShort(g.kickoff)) || "Scheduled";
 }
 
+/* The scoreboard, patched in place.
+
+   A score changes every few minutes on a Sunday and the rest of the page
+   does not change at all -- the projections, the lines, the picks and the
+   season simulation are all settled until a game *ends*. Redrawing the whole
+   board to move one number costs the scroll position, the hover, and a fetch
+   of four endpoints, which is why the live tick used to be tied to the same
+   minute timer as everything else and still felt late.
+
+   So the tick writes the numbers straight into the cells that hold them and
+   touches nothing else. The one thing it cannot do is grading: a game going
+   final turns the card green and red, marks your pick won or lost and tallies
+   the week, and none of that is a text node. A status change hands over to a
+   real render, which is the one moment it is worth one. */
+function paintLive(games) {
+  let statusChanged = false;
+  for (const g of games) {
+    const card = $(`.gcard[data-game="${CSS.escape(String(g.game_id))}"]`);
+    if (!card) continue;
+    for (const side of ["away", "home"]) {
+      const cell = $(`.gteam[data-side="${side}"] .tscore`, card);
+      if (!cell) continue;
+      const v = g[`${side}_score`];
+      const text = v === null || v === undefined ? "" : String(v);
+      if (cell.textContent !== text) cell.textContent = text;
+    }
+    const stamp = $(".gstate", card);
+    if (stamp) {
+      const wasLive = !!$(".live-dot", stamp);
+      const html = gameStamp(g);
+      if (stamp.innerHTML !== html) stamp.innerHTML = html;
+      if (wasLive !== (g.status === "in_progress")) statusChanged = true;
+    }
+  }
+  return statusChanged;
+}
+
+/* The slate the sidebar reads, brought up to date without refetching it.
+   It holds the full game rows -- predictions, lines, records -- and the live
+   payload holds four fields, so this merges rather than replaces. */
+function mergeLive(games) {
+  const slate = state.liveSlate;
+  if (!Array.isArray(slate) || !slate.length) return false;
+  const by = new Map(games.map((g) => [String(g.game_id), g]));
+  let changed = false;
+  for (const row of slate) {
+    const g = by.get(String(row.game_id));
+    if (!g) continue;
+    if (row.status !== g.status) changed = true;
+    row.status = g.status;
+    row.home_score = g.home_score;
+    row.away_score = g.away_score;
+    row.live = g.live;
+  }
+  return changed;
+}
+
+/* How often to ask. Fast while something is being played, slow otherwise --
+   the slow tick exists only to notice a kickoff, which is the one transition
+   nothing else would catch. The fetch behind this is rate-limited on the
+   server, so several windows open on the same app cost one request between
+   them. */
+const LIVE_TICK_FAST = 15000;
+const LIVE_TICK_IDLE = 60000;
+
+/* The outcome of a refresh, said where the button that started it is.
+
+   There are two of these buttons -- one on Settings beside a result line, one
+   in the sidebar on every page -- and only the first had anywhere to report
+   to. So a failure pressed from the sidebar went nowhere at all: the spinner
+   stopped and the page looked the same, which is indistinguishable from the
+   button doing nothing. Both now say something, and the sidebar's line clears
+   itself so it does not become furniture. */
+let refreshNoteTimer = null;
+function sayRefresh(text, tone) {
+  const settings = $("#refresh-result");
+  if (settings) {
+    settings.textContent = text;
+    settings.className = tone;
+  }
+  const note = $("#side-refresh-note");
+  if (!note) return;
+  note.textContent = text;
+  note.className = `side-note ${tone}`;
+  note.hidden = false;
+  clearTimeout(refreshNoteTimer);
+  // A failure stays up; good news does not need to.
+  if (tone === "pos") {
+    refreshNoteTimer = setTimeout(() => { note.hidden = true; }, 4000);
+  }
+}
+
+function startLiveTicker() {
+  let timer = null;
+  const tick = async () => {
+    let next = LIVE_TICK_IDLE;
+    /* Not while a refresh is running -- it is about to redraw everything
+       anyway -- and not while the window is hidden, which is most of the week
+       for an app left open in the background. */
+    if (!state.busy && !document.hidden) {
+      try {
+        const week = state.meta?.week ?? state.week;
+        const season = state.meta?.season ?? state.season;
+        const data = await api(`/api/live?season=${season}&week=${week}`);
+        const games = data.games || [];
+        const anyLive = games.some((g) => g.status === "in_progress");
+        next = anyLive ? LIVE_TICK_FAST : LIVE_TICK_IDLE;
+        // The board is only on screen, and only showing these games, when
+        // Home has the live week up.
+        const onLiveWeek = state.tab === "home"
+          && state.week === week && state.season === season;
+        const statusChanged = onLiveWeek ? paintLive(games) : false;
+        const slateChanged = mergeLive(games);
+        if (slateChanged || anyLive) sideFoot(state.meta);
+        // A game has started or finished: the cards need grading, the picks
+        // need tallying, and neither is a text node.
+        if (statusChanged || (slateChanged && !onLiveWeek)) {
+          await render({ keepPlace: true });
+        }
+      } catch { /* transient: the next tick asks again */ }
+    }
+    timer = setTimeout(tick, next);
+  };
+  timer = setTimeout(tick, LIVE_TICK_FAST);
+  // A window coming back to the front has been showing a frozen score for as
+  // long as it was hidden, so it asks at once rather than waiting out the
+  // rest of an interval it spent asleep.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    clearTimeout(timer);
+    timer = setTimeout(tick, 200);
+  });
+}
+
 async function renderHome(ticket) {
   const root = $("#view");
   const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
@@ -1224,7 +1365,8 @@ async function renderHome(ticket) {
         ? "" : (abbr === actualWinner ? " hit" : " miss");
       const beaten = actualWinner !== null && abbr !== actualWinner;
       const won = actualWinner !== null && abbr === actualWinner;
-      return `<div class="gteam${beaten ? " beaten" : ""}${won ? " won" : ""}">
+      return `<div class="gteam${beaten ? " beaten" : ""}${won ? " won" : ""}"
+        data-side="${side}">
         <button class="pickdot${mineHere ? " on" : ""}${yourVerdict}" data-pick="${esc(g.game_id)}"
           data-team="${esc(abbr)}" title="${mineHere ? "Your pick — click to clear" : `Pick ${esc(abbr)}`}"
           aria-label="${mineHere ? "Your pick" : `Pick ${esc(abbr)}`}">${
@@ -1325,9 +1467,27 @@ async function renderHome(ticket) {
         ? `<span class="gverdict expected" title="The book's favourite won">Expected</span>`
         : `<span class="gverdict upset" title="The underdog won">Upset</span>`);
 
+    /* Did *your* pick win. The one plain result on a card otherwise made of
+       probabilities, so it is said in a word and in the two colours the rest
+       of the card already grades with.
+
+       Upset and Expected are neutral now for the same reason. They are facts
+       about the game -- the favourite won, or did not -- and neither is good
+       news or bad news until you know who someone was on. Colouring them
+       green and red put a verdict on the market's opinion and, on a card
+       where green and red mean "right" and "wrong" everywhere else, read as
+       one. Grey says what happened and leaves the scoring to this mark. */
+    const yourResult = !actualWinner || !yourPick ? "" : (
+      yourPick === actualWinner
+        ? `<span class="gresult win" title="You picked ${
+            esc(yourPick)} and they won">Win</span>`
+        : `<span class="gresult loss" title="You picked ${
+            esc(yourPick)}; ${esc(actualWinner)} won">Loss</span>`);
+
     return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
       <div class="gcard-top">
         <span class="gstate">${gameStamp(g)}</span>
+        ${yourResult}
         ${movedBadge}
         ${verdictBadge}
         <span class="gopen" title="Open this game">&rsaquo;</span>
@@ -2306,6 +2466,13 @@ async function renderPicks(ticket) {
      was a control you had to go and look at. The API still returns both. */
   const board = pickem.ev || {};
 
+  /* A run that has already lost. The panel used to go on recommending a team
+     and quoting a path survival percentage for someone who is out of the
+     pool -- numbers that are not wrong so much as no longer addressed to
+     anybody. It says so instead, and says how to take it back, because the
+     commonest reason to be looking at it is having pressed the wrong S. */
+  const out = data.survivor_out || null;
+
   /* Why this page is empty, when it is.
      Picks are made for the week that is coming, so a week already played and a
      week not yet reached both have nothing on them -- and both were showing
@@ -2403,11 +2570,27 @@ async function renderPicks(ticket) {
        height and meant reading four weeks at a time of a thing that is only
        useful whole. Side by side the run gets the column's full height, and
        joined they read as one subject, which is what they are. -->
-  <div class="panel survivor-pair">
+  <div class="panel survivor-pair${out ? " eliminated" : ""}">
   <section class="sv-half survivor-now">
     <header><h2>Survivor</h2>
-      <span class="hint">${survivor.horizon ? `planned ${survivor.horizon} weeks ahead` : ""}</span></header>
-    ${survivor.recommendation ? `
+      ${out ? `<span class="out-flag" title="Your run ended in week ${
+        esc(String(out.week))}">Eliminated</span>`
+        : `<span class="hint">${survivor.horizon
+          ? `planned ${survivor.horizon} weeks ahead` : ""}</span>`}</header>
+    ${out ? `<div class="sv-out">
+      <p class="sv-out-line">Out in <b>week ${esc(String(out.week))}</b> —
+        you had <b>${esc(out.team)}</b>${out.opponent
+          ? ` against ${esc(out.opponent)}` : ""}${out.score
+          ? `, and it finished ${esc(out.score)}` : ""}.
+        ${out.weeks_survived
+          ? `You survived ${out.weeks_survived} week${
+              out.weeks_survived === 1 ? "" : "s"} before that.`
+          : ""}</p>
+      <p class="note">Nothing is locked. Change week ${esc(String(out.week))}'s
+        S on Home to a team that won and the plan picks up again from here —
+        this page is read from your picks, not from a verdict kept somewhere.</p>
+    </div>` : ""}
+    ${!out && survivor.recommendation ? `
       <div class="tiles">
         <div class="tile"><div class="label">This week</div>
           <div class="value">${esc(survivor.recommendation.team)}</div>
@@ -2425,12 +2608,12 @@ async function renderPicks(ticket) {
         <div class="alt-list">${altRows
           || '<div class="empty">No alternatives.</div>'}</div>
       </div>
-    ` : `<div class="empty">${esc(survivor.note || "").replace(/\s+/g, " ")
+    ` : out ? "" : `<div class="empty">${esc(survivor.note || "").replace(/\s+/g, " ")
       || esc(why).replace(/\s+/g, " ")
       || "No survivor plan available."}</div>`}
   </section>
 
-  ${survivor.recommendation ? `
+  ${!out && survivor.recommendation ? `
   <section class="sv-run-below survivor-run">
     <header><h2>The rest of the run</h2>
       <span class="hint" title="The recommendation is not always this week's safest team. Spending a strong team now can cost more later than it gains today, so the optimiser solves the whole remaining path — which is why the cost of switching, shown beside this week's options, is measured over this run rather than over Sunday.">every week from here</span></header>
@@ -3882,7 +4065,16 @@ async function main() {
   // where it says it will.
   const initial = location.hash.slice(1);
   if (initial && VIEWS[initial]) state.tab = initial;
-  $$(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+  /* Pressing the tab you are already on does nothing.
+     It used to tear the page down to "Loading…" and fetch the whole view
+     again -- so the one gesture that means "I am staying here" was the most
+     disruptive thing on the bar. Boot and the Next-up card still call setTab
+     directly, because those genuinely need the render: one is the first
+     paint, the other has just changed the week under it. */
+  $$(".tab").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.tab === state.tab) return;
+    setTab(b.dataset.tab);
+  }));
   $("#week").addEventListener("change", (e) => { state.week = Number(e.target.value); render(); });
   $("#season").addEventListener("change", async (e) => {
     state.season = Number(e.target.value);
@@ -3943,7 +4135,6 @@ async function main() {
   document.addEventListener("click", async (ev) => {
     const refreshBtn = ev.target.closest("#refresh, #side-refresh");
     if (!refreshBtn || state.busy) return;
-    const out = $("#refresh-result");
     state.busy = true;
     refreshBtn.disabled = true;
     const label = $("span", refreshBtn) || refreshBtn;
@@ -3954,16 +4145,24 @@ async function main() {
       // full=1: the button means "do it now", not "do whatever is due". A
       // stage inside its own polling interval is exactly the stage a person
       // pressing refresh wants fetched again.
-      await api("/api/refresh?full=1", { method: "POST" });
+      const result = await api("/api/refresh?full=1", { method: "POST" });
       await loadState();
       await render();
-      const done = $("#refresh-result");
-      if (done) {
-        done.textContent = "Up to date.";
-        done.className = "pos";
-      }
+      /* What actually happened, rather than "it returned 200".
+
+         Every stage reports its own ok, and a refresh where the schedule feed
+         was down or the news feed timed out used to finish green and silent:
+         the board then sat on yesterday's data with nothing anywhere saying
+         why. A stage that failed is the single most useful thing this button
+         can tell anyone, so it is named. */
+      const stages = (result && result.stages) || {};
+      const failed = Object.entries(stages)
+        .filter(([, v]) => v && v.ok === false).map(([k]) => k);
+      sayRefresh(failed.length
+        ? `Refreshed, but ${failed.join(", ")} failed.`
+        : "Up to date.", failed.length ? "warn" : "pos");
     } catch (err) {
-      if (out) { out.textContent = `Refresh failed: ${err.message}`; out.className = "neg"; }
+      sayRefresh(`Refresh failed: ${err.message}`, "neg");
     } finally {
       state.busy = false;
       // render() has rebuilt the Settings page, so that one is a different
@@ -4057,7 +4256,14 @@ async function main() {
      Each stage already carries an interval saying how often it is worth
      redoing. Left to them, the minute tick costs a scoreboard request and
      nothing else on most minutes. full=1 belongs to the button, which is the
-     one place someone has actually asked for all of it. */
+     one place someone has actually asked for all of it.
+
+     The scores are no longer on this tick at all. They have their own, far
+     shorter one -- see startLiveTicker -- because a score is stale in
+     seconds and everything this tick brings in is settled until a game ends.
+     What is left here is the slow half: the lines, the injury report, the
+     headlines and the pass that turns them into numbers. */
+  startLiveTicker();
   setInterval(async () => {
     if (state.busy || document.hidden || busyBeingRead()) return;
     const before = state.meta?.last_recompute;
