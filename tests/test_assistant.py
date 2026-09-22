@@ -619,3 +619,105 @@ def test_the_model_is_asked_to_stay_loaded(monkeypatch):
     assert sent.get("keep_alive") == assistant.KEEP_ALIVE
     assert sent["options"]["num_predict"] == assistant.MAX_TOKENS
     assert sent["options"]["num_ctx"] == assistant.CONTEXT_TOKENS
+
+
+# --------------------------------------------------------------- streaming
+
+def _stream_response(chunks, status_code=200):
+    """A stand-in for httpx's streaming response context manager."""
+    import json as _json
+
+    class _Response:
+        def __init__(self):
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if status_code >= 400:
+                raise RuntimeError(f"HTTP {status_code}")
+
+        @staticmethod
+        def iter_lines():
+            for chunk in chunks:
+                yield _json.dumps(chunk)
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, *a, **k):
+            import contextlib as _ctx
+
+            @_ctx.contextmanager
+            def _open():
+                yield _Response()
+            return _open()
+
+    return _Client
+
+
+def test_the_answer_arrives_in_pieces_and_then_whole(monkeypatch, temp_env):
+    """What streaming is for. The wait is generation on somebody's own CPU and
+    nothing here shortens it; what changes is that it is spent reading."""
+    import httpx
+
+    from nflpicker import assistant
+
+    monkeypatch.setattr(assistant, "status", lambda: {
+        "ready": True, "model": "m", "endpoint": "http://127.0.0.1:11434/v1"})
+    monkeypatch.setattr(assistant, "context", lambda s, w: {"season": s})
+    monkeypatch.setattr(httpx, "Client", _stream_response([
+        {"message": {"content": "KC "}, "done": False},
+        {"message": {"content": "by 3."}, "done": False},
+        {"message": {"content": ""}, "done": True, "model": "m"},
+    ]))
+
+    events = list(assistant.stream([{"role": "user", "content": "who wins"}],
+                                   2026, 8))
+    assert [e["delta"] for e in events if "delta" in e] == ["KC ", "by 3."]
+    final = events[-1]
+    assert final["done"] is True
+    assert final["reply"] == "KC by 3.", "the whole answer, for storing"
+
+
+def test_thinking_is_stripped_across_chunk_boundaries(monkeypatch, temp_env):
+    """A tag can be split between two chunks, which is exactly why the strip
+    happens once at the end rather than per piece -- doing it per piece lets
+    half a tag through and eats the other half."""
+    import httpx
+
+    from nflpicker import assistant
+
+    monkeypatch.setattr(assistant, "status", lambda: {
+        "ready": True, "model": "m", "endpoint": "http://127.0.0.1:11434/v1"})
+    monkeypatch.setattr(assistant, "context", lambda s, w: {})
+    monkeypatch.setattr(httpx, "Client", _stream_response([
+        {"message": {"content": "<thi"}, "done": False},
+        {"message": {"content": "nk>plan</think>KC by 3."}, "done": False},
+        {"message": {"content": ""}, "done": True},
+    ]))
+
+    final = list(assistant.stream([{"role": "user", "content": "q"}], 2026, 8))[-1]
+    assert final["reply"] == "KC by 3."
+    assert "think" not in final["reply"]
+
+
+def test_streaming_needs_ollama_and_says_so(monkeypatch, temp_env):
+    """Anything that is not Ollama cannot be told not to think, so it falls
+    back to the blocking path rather than streaming a model's working-out.
+
+    A llama.cpp server is the case: loopback, ready, and serving a plain
+    `/chat/completions` rather than the `/v1` Ollama puts its compatibility
+    layer behind. It must refuse before opening a connection, not after.
+    """
+    from nflpicker import assistant
+
+    monkeypatch.setattr(assistant, "status", lambda: {
+        "ready": True, "model": "m", "endpoint": "http://127.0.0.1:8080"})
+    with pytest.raises(assistant.AssistantError, match="Ollama"):
+        list(assistant.stream([{"role": "user", "content": "q"}], 2026, 8))

@@ -1205,6 +1205,42 @@ td.team { font-weight: 600; }
 #view.fit-screen > .pick-board,
 #view.fit-screen > .panel.board,
 #view.fit-screen > .perf-grid { flex: 1; min-height: 0; margin-bottom: 0; }
+/* News: the crest row keeps its height, the two lists share what is left and
+   scroll inside themselves. `.news-filter` is named explicitly rather than
+   left to `flex: none` on every panel, because the panels below it are the
+   ones that must shrink. */
+#view.fit-screen > .panel.news-filter { flex: none; }
+/* Settings: the save bar is fixed, the rest scrolls. Its own bar rather than
+   the page's, so Save is always where you left it while you are editing the
+   boxes above it. The bottom bar rides along inside the scroller, which is
+   right -- it marks the end of the form. */
+#view.fit-screen > .save-bar.top { flex: none; }
+#view.fit-screen > .settings-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  /* Room for the scrollbar so the panels do not shift when it appears, and a
+     little at the foot so the last panel does not end flush against the cut. */
+  scrollbar-gutter: stable; padding-right: 4px; padding-bottom: 10px;
+}
+#view.fit-screen > .settings-body::-webkit-scrollbar { width: 10px; }
+#view.fit-screen > .settings-body::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb-strong); background-clip: padding-box;
+}
+#view.fit-screen > .settings-body::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-strongest); background-clip: padding-box;
+}
+#view.fit-screen > .grid-2.news-split { align-items: stretch; }
+#view.fit-screen > .grid-2.news-split > .panel {
+  display: flex; flex-direction: column; min-height: 0; margin-bottom: 0;
+}
+#view.fit-screen > .grid-2.news-split > .panel > header,
+#view.fit-screen > .grid-2.news-split > .panel > .note { flex: none; }
+/* The lists themselves. `max-height` is what the un-fitted page uses to cap
+   them; inside the window the height is whatever is left, so the cap has to
+   go or it fights the flex basis. */
+#view.fit-screen > .grid-2.news-split > .panel > .table-scroll,
+#view.fit-screen > .grid-2.news-split > .panel > .news-feed {
+  flex: 1; min-height: 0; max-height: none; overflow-y: auto;
+}
 /* The board's own scroll: the header and the disclaimer stay put, the cards
    move. `min-height: 0` on both is what lets a grid child shrink below its
    content instead of pushing the page down. */

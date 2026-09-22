@@ -516,6 +516,96 @@ def _ask_ollama(base: str, payload: dict, timeout: float) -> dict | None:
     return {"reply": answer, "model": body.get("model", payload["model"])}
 
 
+def _payload_for(messages: list[dict], season: int, week: int) -> dict:
+    """The request body both the blocking and the streaming path send."""
+    return {
+        "model": status()["model"],
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system",
+             "content": "Current state:\n" + json.dumps(context(season, week))},
+            *[{"role": m.get("role", "user"), "content": str(m.get("content", ""))}
+              for m in messages[-12:]],
+        ],
+        "temperature": 0.2,
+        "stream": False,
+        "max_tokens": MAX_TOKENS,
+        **NO_THINKING,
+    }
+
+
+def stream(messages: list[dict], season: int, week: int, *,
+           timeout: float = 120.0):
+    """Yield the answer as it is written, a piece at a time.
+
+    The wait here is generation on somebody's own CPU, and no amount of
+    trimming the prompt changes the fact that three hundred tokens at fifteen
+    a second is twenty seconds. What *can* change is whether those twenty
+    seconds are spent watching a spinner or reading. A local model produces
+    the first token in about a second; the rest is the answer arriving at
+    reading speed, which is the difference between "slow" and "typing".
+
+    Ollama's native endpoint only, because it is the one that can be told not
+    to think -- a streamed reasoning model would otherwise spend the first
+    hundred tokens narrating its plan in full view. Anything else falls back
+    to the blocking path, which is what the caller does when this raises.
+
+    Yields dicts: {"delta": str} as text arrives, then one {"done": True,
+    "reply": str, "model": str} carrying the whole answer for storing.
+    """
+    import httpx
+
+    state = status()
+    if not state.get("ready"):
+        raise AssistantError(state["message"])
+    base = _ollama_base(state["endpoint"])
+    if not base:
+        raise AssistantError("streaming needs Ollama")
+
+    payload = _payload_for(messages, season, week)
+    native = {
+        "model": payload["model"],
+        "messages": payload["messages"],
+        "stream": True,
+        "think": False,
+        "keep_alive": KEEP_ALIVE,
+        "options": {"temperature": 0.2, "num_predict": MAX_TOKENS,
+                    "num_ctx": CONTEXT_TOKENS},
+    }
+
+    whole: list[str] = []
+    model = payload["model"]
+    with httpx.Client(timeout=timeout) as client, client.stream(
+            "POST", f"{base}/api/chat", json=native) as response:
+        if response.status_code == 404:
+            raise AssistantError("not Ollama")
+        response.raise_for_status()
+        for line in response.iter_lines():
+            line = (line or "").strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except ValueError:
+                continue
+            model = chunk.get("model") or model
+            piece = str((chunk.get("message") or {}).get("content") or "")
+            if piece:
+                whole.append(piece)
+                yield {"delta": piece}
+            if chunk.get("done"):
+                break
+
+    # Stripped once, at the end. A tag can be split across two chunks, so
+    # doing this per piece would let half of one through and eat the other.
+    answer = _STRAY_TAG.sub("", _THINK.sub("", "".join(whole))).strip()
+    if answer:
+        answer = _strip_untagged_thinking(answer)
+    if not answer:
+        raise AssistantError("The model returned an empty answer.")
+    yield {"done": True, "reply": answer, "model": model}
+
+
 def ask(messages: list[dict], season: int, week: int, *, timeout: float = 120.0) -> dict:
     """Send a conversation to the local model with the board attached."""
     state = status()

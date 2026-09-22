@@ -2991,6 +2991,13 @@ async function renderNews(ticket) {
     </tr>`).join("");
 
   const who = team === ALL ? "the league" : team;
+  /* The crest row is fixed, the two lists take what is left.
+
+     Both of them are long by nature -- a league-wide injury report is thirty
+     rows and the feed is eighty stories -- so the page grew to fit them and
+     the window scrolled, which on this page takes the team picker off the top
+     of the screen. The picker is the control you came here to use. */
+  fitsOneScreen(root);
   if (!paint(root, `
     <div class="panel news-filter">
       <div class="team-picker wide">${picker}</div>
@@ -3267,7 +3274,16 @@ async function renderSettings(ticket) {
       page, kept here because this is where a setting is looked for.</div>
   </div>`;
 
+  /* The save bar stays put; everything under it scrolls.
+
+     Settings is the one page with no single long list to shrink -- it is six
+     stacked blocks that come to more than a window even with every section
+     closed, so there is nothing to scroll *inside*. What there is instead is
+     a bar with Save on it, which is the one thing that must never scroll out
+     of reach while you are editing the boxes above it. */
+  fitsOneScreen(root);
   if (!paint(root, `${saveBar("top")}
+  <div class="settings-body">
   <div class="settings-grid">
   ${(data.groups || []).map((g) => `<details class="panel set-group"${
     openSettings.has(g.name) ? " open" : ""} data-group="${esc(g.name)}">
@@ -3371,6 +3387,7 @@ async function renderSettings(ticket) {
       <span class="hint">did the line move toward your picks after you made
         them</span></header>
     <div class="panel-body"><div class="empty">Loading…</div></div>
+  </div>
   </div>`)) return;
 
   // The odds line is written by paintOdds, which runs when state loads --
@@ -3687,6 +3704,21 @@ async function renderAssistant(ticket, root = $("#view")) {
     if (log) log.scrollTop = log.scrollHeight;
   };
 
+  /* The answer, written into the page as it is written by the model.
+
+     The total wait is generation on this machine and nothing here shortens
+     it: three hundred tokens at fifteen a second is twenty seconds whatever
+     the page does. What it changes is what those twenty seconds look like.
+     The first token lands in about a second and the rest arrives at roughly
+     reading speed, so the wait is spent reading rather than watching a
+     spinner -- which is the whole of the difference between "slow" and
+     "typing".
+
+     Written straight into the bubble rather than through render(): a full
+     re-render per token would be hundreds of them, and every one would fight
+     the scroll position and rebuild the sidebar. The transcript is reloaded
+     once at the end, from the database, so what stays on screen is what was
+     actually stored. */
   const send = async (question) => {
     if (!question.trim() || chat.busy) return;
     // Shown immediately, and kept on screen while the model thinks: a 4B model
@@ -3695,17 +3727,59 @@ async function renderAssistant(ticket, root = $("#view")) {
     chat.messages = [...chat.messages, { role: "user", content: question }];
     chat.busy = true;
     await render();
+
+    const log = $("#chat-log");
+    const pending = log && $(".msg.assistant.pending .msg-body", log);
+    let text = "";
+    let failed = "";
     try {
-      const r = await api("/api/assistant/ask", {
+      const res = await fetch("/api/assistant/ask/stream", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat.id, question,
                                season: state.season, week: state.week }),
       });
-      chat.id = r.chat_id;
-      chat.messages = r.messages;
+      if (!res.ok || !res.body) throw new Error(`stream → ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let stop = false;
+      while (!stop) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Events are separated by a blank line; the last piece may be half of
+        // the next one, so it stays in the buffer.
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const part of parts) {
+          const line = part.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let event = {};
+          try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (event.chat_id) chat.id = event.chat_id;
+          if (event.error) { failed = event.error; stop = true; break; }
+          if (event.delta && pending) {
+            text += event.delta;
+            // Plain text while it streams, markdown once it is whole: a
+            // half-written list or a lone backtick renders as neither.
+            pending.textContent = text;
+            pending.parentElement?.classList.remove("pending");
+            scroll();
+          }
+          if (event.done) { text = event.reply || text; stop = true; break; }
+        }
+      }
+      if (failed) throw new Error(failed);
+      // From the database rather than from what is on screen, so a reload
+      // shows the same thing this does.
+      if (chat.id) {
+        chat.messages = (await api(`/api/assistant/chats/${chat.id}`)
+          .catch(() => ({ messages: chat.messages }))).messages;
+      }
     } catch (err) {
       chat.messages = [...chat.messages,
-        { role: "assistant", content: `Could not answer: ${err}` }];
+        { role: "assistant", content: `Could not answer: ${err.message || err}` }];
     } finally {
       chat.busy = false;
     }

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, buildinfo, db, identity, licensing
@@ -23,6 +23,16 @@ from .teams import DIVISIONS, TEAMS, reference
 from .util import MARGIN_SD, margin_to_win_prob, now_iso
 
 WEB_DIR = Path(__file__).parent / "web"
+
+
+def _sse(data: dict) -> str:
+    """One server-sent event carrying one JSON object.
+
+    The blank line is the record separator the format requires; without it
+    the browser holds everything until the connection closes, which is
+    exactly the behaviour this endpoint exists to avoid.
+    """
+    return f"data: {json.dumps(data)}\n\n"
 
 
 def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastAPI:
@@ -1155,6 +1165,79 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         assistant.append_message(chat_id, "assistant", result["reply"])
         return {**result, "chat_id": chat_id,
                 "messages": assistant.chat_messages(chat_id)}
+
+    @app.post("/api/assistant/ask/stream")
+    def assistant_ask_stream(payload: dict):
+        """The same question, answered as it is written.
+
+        The total wait is generation on the user's own machine and nothing
+        here shortens it. What this changes is that the wait is spent reading
+        rather than watching: the first token lands in about a second and the
+        rest arrives at something close to reading speed.
+
+        Server-sent events, because the payload is one-way and text -- a
+        WebSocket would be a second protocol for no gain. Each line is one
+        JSON object: `{"delta": "..."}` while it writes, then a final
+        `{"done": true, ...}` or `{"error": "..."}`.
+
+        The transcript is written here rather than in the generator so that
+        an answer is stored exactly once, whether the stream finished or the
+        reader went away mid-sentence.
+        """
+        from . import assistant
+
+        question = str(payload.get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="expected a question")
+        season = int(payload.get("season") or pipeline.season())
+        week = int(payload.get("week") or pipeline.current_week(season))
+
+        chat_id = payload.get("chat_id")
+        if not chat_id:
+            chat_id = assistant.create_chat(assistant.title_from(question))["id"]
+        elif not assistant.chat_messages(chat_id):
+            with contextlib.suppress(Exception):
+                assistant.rename_chat(chat_id, assistant.title_from(question))
+
+        assistant.append_message(chat_id, "user", question)
+        history = assistant.chat_messages(chat_id)
+
+        def events():
+            yield _sse({"chat_id": chat_id})
+            stored = False
+            try:
+                for event in assistant.stream(history, season, week):
+                    if event.get("done"):
+                        assistant.append_message(
+                            chat_id, "assistant", event["reply"])
+                        stored = True
+                        yield _sse({**event, "chat_id": chat_id})
+                    else:
+                        yield _sse(event)
+            except Exception as exc:                          # noqa: BLE001
+                # Streaming is the fast path, not the only one. Anything that
+                # is not Ollama, and anything that broke mid-stream before a
+                # word arrived, falls back to the blocking call rather than
+                # showing the reader an error they can do nothing about.
+                if stored:
+                    yield _sse({"error": str(exc)})
+                    return
+                try:
+                    result = assistant.ask(history, season, week)
+                except assistant.AssistantError as fallback_exc:
+                    yield _sse({"error": str(fallback_exc)})
+                    return
+                assistant.append_message(chat_id, "assistant", result["reply"])
+                yield _sse({"delta": result["reply"]})
+                yield _sse({"done": True, "reply": result["reply"],
+                            "model": result.get("model", ""),
+                            "chat_id": chat_id})
+
+        return StreamingResponse(
+            events(), media_type="text/event-stream",
+            # Nothing between here and the browser should be holding this in a
+            # buffer: the whole point is that the first token arrives early.
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/news")
     def news(limit: int = 60, min_impact: float = 0.0, team: str | None = None) -> dict:
