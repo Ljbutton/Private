@@ -72,6 +72,12 @@ export default {
       // hour, before grading, because after kickoff it is no longer a
       // prediction -- and this run is the last chance to catch it.
       try {
+        // The early number first: a game picked a fortnight out gets its row
+        // on the run that first sees the pick, not once its week comes round.
+        const first = await captureFirst(env, season, now);
+        if (first.captured) {
+          console.log("picks: froze a first look", JSON.stringify(first));
+        }
         const out = await captureConsensus(env, season, week, now);
         if (out.captured) console.log("picks: froze the split", JSON.stringify(out));
       } catch (err) {
@@ -750,16 +756,19 @@ export const CAPTURE_WINDOW_MS = 60 * 60 * 1000;
 // half done. Every statement is IF NOT EXISTS; the ALTER is not, so it is run
 // on its own and its failure ignored -- "duplicate column" is what success
 // looks like the second time.
+export const CONSENSUS_DDL =
+  "CREATE TABLE IF NOT EXISTS consensus (game_id TEXT NOT NULL, "
+  + "phase TEXT NOT NULL, season INTEGER NOT NULL, week INTEGER NOT NULL, "
+  + "side TEXT, picks INTEGER NOT NULL, total_picks INTEGER NOT NULL, "
+  + "proven_picks INTEGER NOT NULL, proven_side TEXT, avg_line REAL, "
+  + "model_side TEXT, captured_at TEXT NOT NULL, result TEXT, "
+  + "close_line REAL, clv REAL, proven_clv REAL, graded_at TEXT, "
+  + "PRIMARY KEY (game_id, phase))";
+
 export async function ensureSchema(env) {
   if (!env.PICKS_DB) return false;
   try {
-    await env.PICKS_DB.exec(
-      "CREATE TABLE IF NOT EXISTS consensus (game_id TEXT PRIMARY KEY, "
-      + "season INTEGER NOT NULL, week INTEGER NOT NULL, side TEXT, "
-      + "picks INTEGER NOT NULL, total_picks INTEGER NOT NULL, "
-      + "proven_picks INTEGER NOT NULL, proven_side TEXT, avg_line REAL, "
-      + "model_side TEXT, captured_at TEXT NOT NULL, result TEXT, "
-      + "graded_at TEXT)");
+    await env.PICKS_DB.exec(CONSENSUS_DDL);
   } catch (err) {
     console.log("picks: could not ensure the consensus table",
                 String(err && err.message || err));
@@ -769,6 +778,29 @@ export async function ensureSchema(env) {
     await env.PICKS_DB.exec("ALTER TABLE picks ADD COLUMN model_side TEXT");
   } catch {
     // Already there, which is the usual case.
+  }
+
+  // The one thing this cannot do for itself. CREATE TABLE IF NOT EXISTS is a
+  // no-op against a table that already exists in the older single-row shape,
+  // so a database carrying that shape needs the DROP in the README run by
+  // hand -- and a silent no-op is exactly how somebody discovers that three
+  // weeks later with a season of captures missing. Said loudly instead, every
+  // run, until it is done. No automatic DROP: this code cannot know the table
+  // is still empty on a database it has never seen.
+  try {
+    const info = await env.PICKS_DB.prepare(
+      "SELECT name FROM pragma_table_info('consensus')").all();
+    const columns = new Set((info.results || []).map((r) => r.name));
+    if (columns.size && !columns.has("phase")) {
+      console.log("picks: the consensus table is the old single-row shape and "
+        + "cannot be migrated from here. Run the DROP and CREATE in "
+        + "license-server/README.md, under 'Migrating the consensus table'. "
+        + "Until then no split is being captured.");
+      return false;
+    }
+  } catch (err) {
+    console.log("picks: could not read the consensus shape",
+                String(err && err.message || err));
   }
   return true;
 }
@@ -847,6 +879,69 @@ export function splitFor(picks, proven) {
   };
 }
 
+// A row, from a split. The same shape whichever phase it is being written for,
+// because the two phases are the same measurement taken at different moments
+// and a field that existed on one and not the other would be a trap later.
+function consensusInsert(env, game, phase, split, at) {
+  return env.PICKS_DB.prepare(
+    "INSERT INTO consensus(game_id, phase, season, week, side, picks,"
+    + " total_picks, proven_picks, proven_side, avg_line, model_side,"
+    + " captured_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+    // Belt as well as braces: the reads below already skip what is frozen,
+    // and this makes a second run harmless even if two fire at once.
+    + " ON CONFLICT(game_id, phase) DO NOTHING",
+  ).bind(game.game_id, phase, game.season, game.week, split.side, split.picks,
+         split.total, split.proven_picks, split.proven_side, split.avg_line,
+         split.model_side, at);
+}
+
+// The first time the crowd had an opinion at all.
+//
+// Not scoped to the current week: the app lets somebody pick a game a fortnight
+// out, and "the first time we saw a pick for this game" is the whole point of
+// the row -- catching it only once the week comes round would make the early
+// number a late one. Scoped to games that have not kicked off, which is what
+// bounds it.
+//
+// Three queries: the picks on upcoming games, the first rows already written,
+// and the career records. Reads pickers x upcoming games, one row per game
+// already captured this season (~270 at most), and one per picker.
+export async function captureFirst(env, season, now = new Date()) {
+  const rows = await env.PICKS_DB.prepare(
+    "SELECT p.game_id, p.picker, p.kind, p.side, p.line, p.model_side,"
+    + " p.received_at, r.season, r.week, r.kickoff"
+    + " FROM picks p JOIN results r ON r.game_id = p.game_id"
+    + " WHERE r.kickoff > ?",
+  ).bind(now.toISOString()).all();
+  if (!(rows.results || []).length) return { captured: 0 };
+
+  const already = await env.PICKS_DB.prepare(
+    "SELECT game_id FROM consensus WHERE phase = 'first' AND season = ?",
+  ).bind(season).all();
+  const frozen = new Set((already.results || []).map((r) => r.game_id));
+
+  const byGame = new Map();
+  for (const p of rows.results || []) {
+    if (frozen.has(p.game_id)) continue;
+    if (!byGame.has(p.game_id)) byGame.set(p.game_id, []);
+    byGame.get(p.game_id).push(p);
+  }
+  if (!byGame.size) return { captured: 0 };
+
+  const { proven } = await provenPickers(env);
+  const at = now.toISOString();
+  const writes = [];
+  for (const [gameId, picks] of byGame) {
+    const split = splitFor(picks, proven);
+    // A game whose only picks are totals has no side and nothing to measure.
+    if (!split.total) continue;
+    const game = { game_id: gameId, season: picks[0].season, week: picks[0].week };
+    writes.push(consensusInsert(env, game, "first", split, at));
+  }
+  if (writes.length) await env.PICKS_DB.batch(writes);
+  return { captured: writes.length };
+}
+
 // Freeze the split for every game kicking off within the hour.
 //
 // Three queries in total, whatever the size of the slate: the games, their
@@ -869,7 +964,8 @@ export async function captureConsensus(env, season, week, now = new Date()) {
   if (!due.length) return { captured: 0, skipped: 0 };
 
   const already = await env.PICKS_DB.prepare(
-    "SELECT game_id FROM consensus WHERE season = ? AND week = ?",
+    "SELECT game_id FROM consensus WHERE season = ? AND week = ?"
+    + " AND phase = 'prekick'",
   ).bind(season, week).all();
   const frozen = new Set((already.results || []).map((r) => r.game_id));
   const wanted = due.filter((g) => !frozen.has(g.game_id));
@@ -887,47 +983,107 @@ export async function captureConsensus(env, season, week, now = new Date()) {
   const { proven } = await provenPickers(env);
 
   const at = now.toISOString();
-  const writes = wanted.map((g) => {
-    const split = splitFor(byGame.get(g.game_id) || [], proven);
-    return env.PICKS_DB.prepare(
-      "INSERT INTO consensus(game_id, season, week, side, picks, total_picks,"
-      + " proven_picks, proven_side, avg_line, model_side, captured_at)"
-      + " VALUES(?,?,?,?,?,?,?,?,?,?,?)"
-      // Belt as well as braces: the read above already skips what is frozen,
-      // and this makes a second run harmless even if two fire at once.
-      + " ON CONFLICT(game_id) DO NOTHING",
-    ).bind(g.game_id, season, week, split.side, split.picks, split.total,
-           split.proven_picks, split.proven_side, split.avg_line,
-           split.model_side, at);
-  });
+  const writes = wanted.map((g) => consensusInsert(
+    env, { game_id: g.game_id, season, week }, "prekick",
+    splitFor(byGame.get(g.game_id) || [], proven), at));
   await env.PICKS_DB.batch(writes);
   return { captured: writes.length, skipped: due.length - writes.length };
 }
 
-// The crowd's side against the final score. Individual picks are graded by
-// gradeWeek and nothing here touches them.
+// What a number was worth against the one the game closed at.
+//
+// Lines are stored as the home team's spread throughout this project, so the
+// sign has to be read through whichever side the pick was on. Backing the home
+// side, a smaller number is better -- laying 3.5 where the close lays 7 is
+// three points in hand -- so the difference is taken in that direction and
+// flipped for the away side. Positive always means the number beat the close.
+export function crowdClv(side, home, avgLine, closeLine) {
+  if (!side || !home) return null;
+  if (avgLine === null || avgLine === undefined) return null;
+  if (closeLine === null || closeLine === undefined) return null;
+  const diff = Number(avgLine) - Number(closeLine);
+  if (!Number.isFinite(diff)) return null;
+  return side === home ? diff : -diff;
+}
+
+// The crowd's side against the final score, and its early number against the
+// closing one. Individual picks are graded by gradeWeek and nothing here
+// touches them.
+//
+// Two passes over two phases, each with its own job, so neither is done twice
+// and neither can be counted twice. graded_at is the marker for both: a row
+// that has it is finished, whichever phase it is.
+//
+// Three queries: the ungraded rows, the lines on those games, and the writes.
+// Reads one row per captured game this week (~32 across both phases) and one
+// per shared pick this week.
 export async function gradeCrowd(env, season, week) {
   const rows = await env.PICKS_DB.prepare(
-    "SELECT c.game_id, c.side, r.home, r.away, r.home_score, r.away_score"
+    "SELECT c.game_id, c.phase, c.side, c.proven_side, c.avg_line,"
+    + " r.home, r.away, r.home_score, r.away_score, r.kickoff"
     + " FROM consensus c JOIN results r ON r.game_id = c.game_id"
-    + " WHERE c.season = ? AND c.week = ? AND c.result IS NULL",
+    + " WHERE c.season = ? AND c.week = ? AND c.graded_at IS NULL",
   ).bind(season, week).all();
+  const pending = (rows.results || []).filter(
+    (r) => r.home_score !== null && r.home_score !== undefined);
+  if (!pending.length) return { graded: 0, valued: 0 };
+
+  // The closing line, as far as a server with no odds feed can know one: the
+  // last line to arrive on a shared pick before the ball was kicked. Read at
+  // grading rather than frozen at the prekick capture, because that capture
+  // happens up to an hour out and the last hour is where a line moves.
+  const lines = await env.PICKS_DB.prepare(
+    "SELECT p.game_id, p.line, p.received_at FROM picks p"
+    + " WHERE p.season = ? AND p.week = ? AND p.line IS NOT NULL",
+  ).bind(season, week).all();
+  const closing = new Map();
+  const closingAt = new Map();
+  for (const row of pending) {
+    if (!row.kickoff) continue;
+    for (const p of lines.results || []) {
+      if (p.game_id !== row.game_id) continue;
+      const at = String(p.received_at || "");
+      if (at > String(row.kickoff)) continue;          // not a closing line
+      if (at >= (closingAt.get(p.game_id) || "")) {
+        closingAt.set(p.game_id, at);
+        closing.set(p.game_id, p.line);
+      }
+    }
+  }
 
   const at = new Date().toISOString();
   const writes = [];
-  for (const row of rows.results || []) {
-    if (row.home_score === null || row.home_score === undefined) continue;
-    // A game nobody picked has no side, so the crowd said nothing and there is
-    // nothing to grade. Not a loss: silence is not a wrong answer.
-    if (!row.side) continue;
-    const verdict = gradePick({ kind: "winner", side: row.side }, row);
-    if (!verdict) continue;
+  let graded = 0;
+  let valued = 0;
+  for (const row of pending) {
+    if (row.phase === "prekick") {
+      // A game nobody picked has no side, so the crowd said nothing and there
+      // is nothing to grade. Not a loss: silence is not a wrong answer.
+      if (!row.side) continue;
+      const verdict = gradePick({ kind: "winner", side: row.side }, row);
+      if (!verdict) continue;
+      graded += 1;
+      writes.push(env.PICKS_DB.prepare(
+        "UPDATE consensus SET result = ?, graded_at = ?"
+        + " WHERE game_id = ? AND phase = 'prekick'",
+      ).bind(verdict, at, row.game_id));
+      continue;
+    }
+    // The first row carries the early number, so it is the one a closing-line
+    // figure belongs on. Written even when the close is unknown, so the row is
+    // finished and not rescanned every hour for ever -- clv stays null, which
+    // is what the page shows as blank rather than as zero.
+    const close = closing.has(row.game_id) ? closing.get(row.game_id) : null;
+    const clv = crowdClv(row.side, row.home, row.avg_line, close);
+    const provenClv = crowdClv(row.proven_side, row.home, row.avg_line, close);
+    if (clv !== null) valued += 1;
     writes.push(env.PICKS_DB.prepare(
-      "UPDATE consensus SET result = ?, graded_at = ? WHERE game_id = ?",
-    ).bind(verdict, at, row.game_id));
+      "UPDATE consensus SET close_line = ?, clv = ?, proven_clv = ?,"
+      + " graded_at = ? WHERE game_id = ? AND phase = 'first'",
+    ).bind(close, clv, provenClv, at, row.game_id));
   }
   if (writes.length) await env.PICKS_DB.batch(writes);
-  return { graded: writes.length };
+  return { graded, valued };
 }
 
 // ---------------------------------------------------------------- dashboard
@@ -1300,7 +1456,27 @@ function crowdRecords(rows) {
     return byTeam.get(name);
   };
 
+  // Two phases, two different measurements, never mixed. The record comes off
+  // the prekick rows -- what the crowd went into the game with -- and the
+  // closing-line figures off the first rows, which hold the early number. A
+  // query that forgot to separate them would count every game twice.
+  const clv = { sum: 0, n: 0 };
+  const provenClv = { sum: 0, n: 0 };
+
   for (const r of rows) {
+    if (r.phase === "first") {
+      // Blank, not zero, when no closing line is known: an average that quietly
+      // counts unknowns as par is an average that flatters the crowd.
+      if (r.clv !== null && r.clv !== undefined) {
+        clv.sum += Number(r.clv);
+        clv.n += 1;
+      }
+      if (r.proven_clv !== null && r.proven_clv !== undefined) {
+        provenClv.sum += Number(r.proven_clv);
+        provenClv.n += 1;
+      }
+      continue;
+    }
     if (r.home_score === null || r.home_score === undefined) continue;
     const tie = r.home_score === r.away_score;
     const winner = tie ? null : (r.home_score > r.away_score ? r.home : r.away);
@@ -1322,6 +1498,10 @@ function crowdRecords(rows) {
       else t.model_losses += 1;
     }
   }
+  crowd.clv = clv.n ? clv.sum / clv.n : null;
+  crowd.clv_n = clv.n;
+  provenOnly.clv = provenClv.n ? provenClv.sum / provenClv.n : null;
+  provenOnly.clv_n = provenClv.n;
   return { crowd, provenOnly, model, byTeam };
 }
 
@@ -1337,12 +1517,25 @@ async function boardView(env, season, query) {
   //   frozen    one row per captured game this season   (~270 at most)
   //   byTeam    one row per team the crowd has picked   (<= 32)
   const board = await leaderboard(env, season);
-  const frozen = await env.PICKS_DB.prepare(
-    "SELECT c.game_id, c.side, c.proven_side, c.model_side, c.result,"
-    + " r.home, r.away, r.home_score, r.away_score"
-    + " FROM consensus c LEFT JOIN results r ON r.game_id = c.game_id"
-    + " WHERE c.season = ?",
-  ).bind(season).all();
+  // Said out loud rather than swallowed: until the consensus table has been
+  // migrated by hand (see the README) this query names columns it does not
+  // have, and a dashboard that 500s on its own leaderboard is a worse answer
+  // than one that says which statement has not been run yet.
+  let frozen = { results: [] };
+  let migrationNeeded = false;
+  try {
+    frozen = await env.PICKS_DB.prepare(
+      "SELECT c.game_id, c.phase, c.side, c.proven_side, c.model_side,"
+      + " c.result, c.clv, c.proven_clv,"
+      + " r.home, r.away, r.home_score, r.away_score"
+      + " FROM consensus c LEFT JOIN results r ON r.game_id = c.game_id"
+      + " WHERE c.season = ?",
+    ).bind(season).all();
+  } catch (err) {
+    migrationNeeded = true;
+    console.log("picks: the leaderboard could not read consensus",
+                String(err && err.message || err));
+  }
   const crowdTeams = await env.PICKS_DB.prepare(
     "SELECT side AS team, COUNT(*) AS picked, SUM(result = 'win') AS wins,"
     + " SUM(result = 'loss') AS losses"
@@ -1357,6 +1550,7 @@ async function boardView(env, season, query) {
     <td><a href="?${query}&picker=${encodeURIComponent(r.picker)}">${
       escapeHtml(r.name)}</a><span class="mono under">${escapeHtml(r.picker)}</span></td>
     ${recordCell({ wins: r.wins || 0, losses: r.losses || 0, pushes: r.pushes || 0 })}
+    <td class="n dim">—</td>
     <td class="n dim">${r.pending || 0}</td>
     <td class="n dim">${r.late || 0}</td>
     <td class="dim">${escapeHtml(String(r.last_at || "").slice(0, 10))}</td>
@@ -1364,15 +1558,24 @@ async function boardView(env, season, query) {
 
   // The crowd sits in the same table as the people in it, because the only
   // interesting thing about its record is what it beat.
+  // What the early number was worth against the close, averaged. Blank rather
+  // than zero when nothing has a closing line to measure against.
+  const clvCell = (r) => (r.clv === null
+    ? '<td class="n dim">—</td>'
+    : `<td class="n ${r.clv > 0 ? "win" : r.clv < 0 ? "loss" : ""}">${
+      r.clv > 0 ? "+" : ""}${r.clv.toFixed(2)}<span class="mono"> of ${
+      r.clv_n}</span></td>`);
+
   const crowdRows = `<tr class="dim">
       <td class="n">—</td><td><b>The crowd</b><span class="mono under">the frozen
-        pre-kickoff side on every captured game</span></td>
-      ${recordCell(crowd)}<td class="n">—</td><td class="n">—</td><td>—</td></tr>
+        pre-kickoff side on every captured game, and the first number it had
+        against the close</span></td>
+      ${recordCell(crowd)}${clvCell(crowd)}<td class="n">—</td><td class="n">—</td><td>—</td></tr>
     <tr class="dim">
       <td class="n">—</td><td><b>Proven pickers only</b><span class="mono under">the
         same games, counting only pickers past ${PROVEN_MIN_PICKS} graded
         picks and above break-even</span></td>
-      ${recordCell(provenOnly)}<td class="n">—</td><td class="n">—</td><td>—</td></tr>`;
+      ${recordCell(provenOnly)}${clvCell(provenOnly)}<td class="n">—</td><td class="n">—</td><td>—</td></tr>`;
 
   const teams = (crowdTeams.results || []).map((t) => {
     const model = byTeam.get(t.team) || { model_wins: 0, model_losses: 0 };
@@ -1397,14 +1600,19 @@ async function boardView(env, season, query) {
   return `<div class="panel">
     <header><h2>Pickers · ${season}</h2>
       <span class="hint">straight-up winners · pushes and picks that arrived
-        after kickoff are in neither column</span></header>
+        after kickoff are in neither column</span>
+      ${migrationNeeded ? '<span class="hint push late">the consensus table '
+        + 'still needs its migration — see the README; no crowd rows until '
+        + 'then</span>' : ""}</header>
     ${// The crowd's record comes from the frozen splits, not from this board,
       // so it shows even in a week when nobody's own picks have been graded --
       // which is exactly the week it is most interesting.
       board.length || crowd.wins + crowd.losses + crowd.pushes
       ? `<table><thead><tr><th class="n">#</th><th>Picker</th>
-      <th class="n">Record</th><th class="n">Rate</th><th class="n">Open</th>
-      <th class="n">Late</th><th>Last seen</th></tr></thead>
+      <th class="n">Record</th><th class="n">Rate</th>
+      <th class="n" title="Average closing-line value: the first number the crowd had on a game against the last line seen before kickoff, in points, positive when it beat the close. Only the crowd rows carry one — an individual picker's number is on their own page.">CLV</th>
+      <th class="n">Open</th><th class="n">Late</th><th>Last seen</th>
+      </tr></thead>
       <tbody>${rows}${crowdRows}</tbody></table>`
     : '<div class="empty">No shared picks yet this season.</div>'}
   </div>

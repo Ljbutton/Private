@@ -253,31 +253,111 @@ the one before it — a Monday night game is graded after the week has rolled
 over. Results come from ESPN's public scoreboard, the same source the app uses,
 so the two cannot disagree about who won.
 
+### Migrating the consensus table
+
+**Run these two statements in the D1 console before deploying**, or as soon
+after as you can. `consensus` gained a `phase` column and a two-part primary
+key, and `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already
+exists — so `ensureSchema` **cannot** do this for you. It detects the old shape
+and logs a line pointing back here on every scheduled run, but it will not
+`DROP` a table by itself on a database it has never seen.
+
+The table is empty, so nothing is lost:
+
+```sql
+DROP TABLE IF EXISTS consensus;
+
+CREATE TABLE consensus (
+    game_id      TEXT NOT NULL,
+    phase        TEXT NOT NULL,        -- first|prekick
+    season       INTEGER NOT NULL,
+    week         INTEGER NOT NULL,
+    side         TEXT,
+    picks        INTEGER NOT NULL,
+    total_picks  INTEGER NOT NULL,
+    proven_picks INTEGER NOT NULL,
+    proven_side  TEXT,
+    avg_line     REAL,
+    model_side   TEXT,
+    captured_at  TEXT NOT NULL,
+    result       TEXT,
+    close_line   REAL,
+    clv          REAL,
+    proven_clv   REAL,
+    graded_at    TEXT,
+    PRIMARY KEY (game_id, phase)
+);
+
+CREATE INDEX IF NOT EXISTS idx_consensus_week ON consensus(season, week);
+CREATE INDEX IF NOT EXISTS idx_consensus_phase ON consensus(phase, graded_at);
+```
+
+A **fresh** database needs none of this: `ensureSchema` creates exactly that
+table on its first scheduled run, and `schema.sql` carries the same definition.
+
+**What happens if you deploy before running it.** `ensureSchema` only runs on
+the scheduled handler, so there is a window of up to an hour between a deploy
+and the next hourly run. In that window, on a database still carrying the old
+shape: the leaderboard's crowd rows are unavailable — the panel says so in its
+header rather than erroring, and the rest of the page is unaffected — and no
+split is captured, which for games kicking off inside that window is data that
+cannot be recovered afterwards. Running the statements above at deploy time
+closes the window entirely, which is why this section is first.
+
 **The pre-kickoff snapshot.** The `consensus` table holds what the crowd said
 about each game *before it started*, so "would following the crowd have beaten
 the model" stays answerable. It cannot be answered from `picks` after the fact:
 a pick can change right up to kickoff, so a split recomputed on Tuesday is not
 what anybody could have acted on come Sunday.
 
-The same hourly run, before grading, writes one row for each game kicking off
-**within the next hour** and not already started — one capture per game, as
-close to kickoff as an hourly cron allows. A game five hours out is left for a
+There are two rows per game, and neither is ever overwritten.
+
+| Phase | When | What it is for |
+| --- | --- | --- |
+| `first` | the first hourly run that sees *any* shared pick for the game, however many days out | the early number, which is what a closing-line figure is measured from |
+| `prekick` | the run inside the hour before kickoff | the opinion the crowd went into the game with, which is what its win-loss record is graded on |
+
+The `first` capture is deliberately not scoped to the current week: the app
+lets somebody pick a game a fortnight out, and catching it only once that week
+came round would make the early number a late one.
+
+The same hourly run, before grading, writes one `prekick` row for each game
+kicking off **within the next hour** and not already started — one capture per
+game, as close to kickoff as an hourly cron allows. A game five hours out is left for a
 later run; a game already under way is skipped, because whatever is in the
 table by then includes picks made after the ball was kicked. An existing row is
 never overwritten: the read skips what is frozen and the insert is
 `ON CONFLICT DO NOTHING` on top, so two runs firing at once cannot rewrite
 history.
 
-Grading then compares each frozen side against the final score and stores the
-verdict on the row, which gives the crowd a graded record of its own. It
-appears on the leaderboard as **The crowd**, with **Proven pickers only**
-beside it — the same games, counting only the pickers who qualify. A game
-nobody picked has no side and is not graded as a loss: silence is not a wrong
-answer. None of this changes how an individual pick is graded.
+Grading does two things, one per phase. It compares the `prekick` side against
+the final score and stores the verdict, which gives the crowd a graded record
+of its own; and it compares the `first` row's average line against the closing
+line and stores the difference, which gives it a **closing-line value** — a
+record says whether the crowd picks winners, CLV says whether it gets better
+numbers than the close, and the second is the one that predicts the first. Both
+appear on the leaderboard as **The crowd**, with **Proven pickers only** beside
+it: the same games, counting only the pickers who qualify.
 
-The table is in `schema.sql`, and the Worker also puts it up itself on each
-scheduled run (`CREATE TABLE IF NOT EXISTS`, plus an `ALTER TABLE picks ADD
-COLUMN model_side` whose failure is ignored because "duplicate column" is what
-success looks like the second time). Schema arrives through the D1 console, and
-a deploy that needs a console visit before it works is a deploy that gets half
-done.
+CLV is in points, signed so that positive means the crowd beat the close —
+taking a favourite at -3.5 that closed at -7 is +3.5, and the sign is read
+through whichever side the crowd was on, since lines are stored as the home
+team's spread throughout. It is **blank rather than zero** when no closing line
+is known: an average that quietly counts unknowns as par is an average that
+flatters the crowd.
+
+**The closing line** is the last line to arrive on a shared pick before
+kickoff. There is no odds feed on this server, so that is the best it can know;
+it is read at grading time rather than frozen at the `prekick` capture, because
+that capture happens up to an hour out and the last hour is where a line moves.
+A pick that landed after kickoff is not a close and is not used as one.
+
+A game nobody picked has no side and is not graded as a loss: silence is not a
+wrong answer. None of this changes how an individual pick is graded.
+
+The table is in `schema.sql`, and the Worker puts it up itself on each
+scheduled run for a database that does not have it (`CREATE TABLE IF NOT
+EXISTS`, plus an `ALTER TABLE picks ADD COLUMN model_side` whose failure is
+ignored because "duplicate column" is what success looks like the second time).
+What it cannot do is reshape a table that is already there — see **Migrating
+the consensus table** above.

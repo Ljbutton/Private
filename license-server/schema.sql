@@ -56,20 +56,28 @@ CREATE TABLE IF NOT EXISTS results (
     fetched_at TEXT NOT NULL
 );
 
--- What the crowd said before kickoff, frozen.
+-- What the crowd said, frozen, twice per game.
 --
 -- The question this exists to answer is "would following the crowd have beaten
--- the model", and that question cannot be answered from the picks table after
--- the fact: a pick can change right up to kickoff, and a row recomputed on
--- Tuesday is not what anybody could have acted on come Sunday. So the split is
--- captured once, as close to kickoff as the hourly run allows, and never
--- rewritten -- see captureConsensus, which refuses to overwrite.
+-- the model", and that cannot be answered from the picks table after the fact:
+-- a pick can change right up to kickoff, so a row recomputed on Tuesday is not
+-- what anybody could have acted on come Sunday.
 --
--- `result` is the crowd's own graded record: its side against the final score,
--- which is a record the crowd earns separately from any individual picker.
--- Grading individual picks is untouched by any of this.
+-- Two phases, because there are two different questions.
+--   'first'    the moment the crowd first had an opinion on this game, days
+--              out. Its avg_line is the early number, which is what a CLV
+--              figure is measured from.
+--   'prekick'  the opinion it went into the game with, captured within the
+--              hour before kickoff. Its side is what the crowd's win-loss
+--              record is graded on.
+-- Both rows coexist and neither is ever overwritten, which is why the primary
+-- key carries the phase.
+--
+-- Grading writes `result` on the prekick row and the closing-line figures on
+-- the first row. Neither touches how an individual pick is graded.
 CREATE TABLE IF NOT EXISTS consensus (
-    game_id      TEXT PRIMARY KEY,
+    game_id      TEXT NOT NULL,
+    phase        TEXT NOT NULL,        -- first|prekick
     season       INTEGER NOT NULL,
     week         INTEGER NOT NULL,
     side         TEXT,                 -- the side most shared picks were on
@@ -80,7 +88,12 @@ CREATE TABLE IF NOT EXISTS consensus (
     avg_line     REAL,                 -- the mean line those pickers got
     model_side   TEXT,                 -- what the app's model said at the time
     captured_at  TEXT NOT NULL,
-    result       TEXT,                 -- win|loss|push for `side`, once played
-    graded_at    TEXT
+    result       TEXT,                 -- win|loss|push for `side` (prekick)
+    close_line   REAL,                 -- the last line seen before kickoff
+    clv          REAL,                 -- avg_line against it, crowd's side
+    proven_clv   REAL,                 -- the same, from the proven side
+    graded_at    TEXT,
+    PRIMARY KEY (game_id, phase)
 );
 CREATE INDEX IF NOT EXISTS idx_consensus_week ON consensus(season, week);
+CREATE INDEX IF NOT EXISTS idx_consensus_phase ON consensus(phase, graded_at);

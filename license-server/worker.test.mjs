@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
-  captureConsensus, gradeCrowd, gradePick, gradeWeek, leaderboard, nflWeek,
-  support, validate } from "./worker.js";
+  captureConsensus, captureFirst, crowdClv, ensureSchema, gradeCrowd,
+  gradePick, gradeWeek, leaderboard, nflWeek, support, validate }
+  from "./worker.js";
 import worker from "./worker.js";
 
 function fakeWhop(membership, { status = 200, patchStatus = 200 } = {}) {
@@ -900,13 +901,31 @@ function fakeDash(tables = {}) {
     }
     if (/FROM consensus c JOIN results r/.test(sql)) {
       return t.consensus
-        .filter((c) => c.season === args[0] && c.week === args[1] && !c.result)
+        .filter((c) => c.season === args[0] && c.week === args[1] && !c.graded_at)
         .map((c) => ({ ...c, ...(t.results.find((r) => r.game_id === c.game_id) || {}),
-                       side: c.side }))
+                       side: c.side, phase: c.phase, avg_line: c.avg_line }))
         .filter((c) => c.home);
     }
+    if (/FROM consensus WHERE phase = 'first' AND season = \?/.test(sql)) {
+      return t.consensus.filter((c) => c.phase === "first" && c.season === args[0]);
+    }
     if (/FROM consensus WHERE season = \? AND week = \?/.test(sql)) {
-      return t.consensus.filter((c) => c.season === args[0] && c.week === args[1]);
+      return t.consensus.filter((c) => c.season === args[0] && c.week === args[1]
+        && c.phase === "prekick");
+    }
+    if (/FROM picks p JOIN results r ON r\.game_id = p\.game_id\s+WHERE r\.kickoff > \?/s.test(sql)) {
+      return t.picks
+        .map((p) => ({ ...p, ...(t.results.find((r) => r.game_id === p.game_id) || {}),
+                       side: p.side, line: p.line, kind: p.kind,
+                       received_at: p.received_at, model_side: p.model_side }))
+        .filter((p) => p.kickoff && p.kickoff > args[0]);
+    }
+    if (/FROM picks p\s+WHERE p\.season = \? AND p\.week = \? AND p\.line IS NOT NULL/s.test(sql)) {
+      return t.picks.filter((p) => p.season === args[0] && p.week === args[1]
+        && p.line !== null && p.line !== undefined);
+    }
+    if (/pragma_table_info/.test(sql)) {
+      return (t.consensusColumns || ["game_id", "phase"]).map((name) => ({ name }));
     }
     if (/FROM picks WHERE season = \? AND kind IN/.test(sql)) {
       const by = new Map();
@@ -1230,10 +1249,12 @@ test("leaderboard: the crowd gets a row of its own, and so do proven pickers", a
       aGame({ game_id: "g2", home: "SEA", away: "SF", home_score: 10, away_score: 24 }),
     ],
     consensus: [
-      { game_id: "g1", season: nowWeek.season, week: nowWeek.week, side: "KC",
-        proven_side: "KC", model_side: "KC", result: "win" },
-      { game_id: "g2", season: nowWeek.season, week: nowWeek.week, side: "SEA",
-        proven_side: "SF", model_side: "SF", result: "loss" },
+      { game_id: "g1", phase: "prekick", season: nowWeek.season,
+        week: nowWeek.week, side: "KC", proven_side: "KC", model_side: "KC",
+        result: "win" },
+      { game_id: "g2", phase: "prekick", season: nowWeek.season,
+        week: nowWeek.week, side: "SEA", proven_side: "SF", model_side: "SF",
+        result: "loss" },
     ],
   });
   const html = await (await worker.fetch(dashGet("&view=board"), dashEnv(db))).text();
@@ -1251,8 +1272,9 @@ test("leaderboard: by team puts the crowd next to the model", async () => {
     results: [aGame({ game_id: "g1", home: "KC", away: "DEN",
                       home_score: 27, away_score: 20 })],
     picks: [aPick({ result: "win" }), aPick({ picker: "b".repeat(16), result: "win" })],
-    consensus: [{ game_id: "g1", season: nowWeek.season, week: nowWeek.week,
-                  side: "KC", proven_side: null, model_side: "KC", result: "win" }],
+    consensus: [{ game_id: "g1", phase: "prekick", season: nowWeek.season,
+                  week: nowWeek.week, side: "KC", proven_side: null,
+                  model_side: "KC", result: "win" }],
   });
   const html = await (await worker.fetch(dashGet("&view=board"), dashEnv(db))).text();
   const table = html.split("<h2>By team</h2>")[1];
@@ -1277,10 +1299,11 @@ test("consensus: a game kicking off within the hour is frozen", async () => {
   const write = db.writes.find((w) => /INSERT INTO consensus/.test(w.sql));
   assert.ok(write, "a row was written");
   assert.equal(write.args[0], "soon");
-  assert.equal(write.args[3], "KC", "the side");
-  assert.equal(write.args[4], 2, "on that side");
-  assert.equal(write.args[5], 2, "out of that many");
-  assert.equal(write.args[9], "KC", "and what the model said");
+  assert.equal(write.args[1], "prekick", "the phase");
+  assert.equal(write.args[4], "KC", "the side");
+  assert.equal(write.args[5], 2, "on that side");
+  assert.equal(write.args[6], 2, "out of that many");
+  assert.equal(write.args[10], "KC", "and what the model said");
 });
 
 test("consensus: a game five hours out is not frozen yet", async () => {
@@ -1315,8 +1338,8 @@ test("consensus: a second run does not overwrite what is already frozen", async 
     results: [aGame({ game_id: "soon", kickoff: "2026-10-11T17:00:00Z",
                       season: 2026, week: 5 })],
     picks: [aPick({ game_id: "soon", season: 2026, week: 5 })],
-    consensus: [{ game_id: "soon", season: 2026, week: 5, side: "DEN",
-                  picks: 1, total_picks: 1 }],
+    consensus: [{ game_id: "soon", phase: "prekick", season: 2026, week: 5,
+                  side: "DEN", picks: 1, total_picks: 1 }],
   });
   const out = await captureConsensus({ PICKS_DB: db }, 2026, 5, now);
   assert.equal(out.captured, 0);
@@ -1335,9 +1358,9 @@ test("consensus: the crowd's record grades, pushes included", async () => {
               home_score: 20, away_score: 20 }),
     ],
     consensus: [
-      { game_id: "g1", season: 2026, week: 5, side: "KC", result: null },
-      { game_id: "g2", season: 2026, week: 5, side: "SEA", result: null },
-      { game_id: "g3", season: 2026, week: 5, side: "BUF", result: null },
+      { game_id: "g1", phase: "prekick", season: 2026, week: 5, side: "KC" },
+      { game_id: "g2", phase: "prekick", season: 2026, week: 5, side: "SEA" },
+      { game_id: "g3", phase: "prekick", season: 2026, week: 5, side: "BUF" },
     ],
   });
   const out = await gradeCrowd({ PICKS_DB: db }, 2026, 5);
@@ -1354,7 +1377,8 @@ test("consensus: a game nobody picked is not graded as a loss", async () => {
   const db = fakeDash({
     results: [aGame({ game_id: "g1", season: 2026, week: 5, home: "KC",
                       away: "DEN", home_score: 27, away_score: 20 })],
-    consensus: [{ game_id: "g1", season: 2026, week: 5, side: null, result: null }],
+    consensus: [{ game_id: "g1", phase: "prekick", season: 2026, week: 5,
+                  side: null }],
   });
   const out = await gradeCrowd({ PICKS_DB: db }, 2026, 5);
   assert.equal(out.graded, 0);
@@ -1369,12 +1393,297 @@ test("no dashboard page ever carries a licence key", async () => {
     results: [aGame({ home_score: 27, away_score: 20 })],
     picks: [aPick({ picker: me, result: "win" })],
     pickers: [{ picker: me, name: "Tester" }],
-    consensus: [{ game_id: "g1", season: nowWeek.season, week: nowWeek.week,
-                  side: "KC", model_side: "KC", result: "win" }],
+    consensus: [{ game_id: "g1", phase: "prekick", season: nowWeek.season,
+                  week: nowWeek.week, side: "KC", model_side: "KC",
+                  result: "win" }],
   });
   for (const query of ["", "&view=board", `&picker=${me}`]) {
     const html = await (await worker.fetch(dashGet(query), dashEnv(db))).text();
     assert.equal(html.includes(key), false);
     assert.equal(/license_key/i.test(html), false);
   }
+});
+
+// ------------------------------------------------- the first look, and CLV
+//
+// Two phases per game, and the closing-line figure that only the early one can
+// carry. The record and the number are separate facts: the crowd can be right
+// at a bad price and wrong at a good one, and the whole reason for measuring
+// both is that the second is the one that predicts the first.
+
+const DAY = 24 * 3600 * 1000;
+const iso = (ms) => new Date(ms).toISOString();
+
+test("a game picked five days out is frozen on that run", async () => {
+  const now = new Date("2026-10-06T12:00:00Z");
+  const db = fakeDash({
+    results: [aGame({ game_id: "early", season: 2026, week: 5,
+                      kickoff: iso(now.getTime() + 5 * DAY) })],
+    picks: [aPick({ game_id: "early", season: 2026, week: 5, side: "KC",
+                    line: -3.5, model_side: "KC" }),
+            aPick({ picker: "b".repeat(16), game_id: "early", season: 2026,
+                    week: 5, side: "KC", line: -2.5 })],
+  });
+  const out = await captureFirst({ PICKS_DB: db }, 2026, now);
+  assert.equal(out.captured, 1);
+
+  const write = db.writes.find((w) => /INSERT INTO consensus/.test(w.sql));
+  assert.equal(write.args[0], "early");
+  assert.equal(write.args[1], "first", "the phase");
+  assert.equal(write.args[4], "KC", "the side");
+  assert.equal(write.args[5], 2);
+  assert.equal(write.args[9], -3, "the early number, averaged");
+});
+
+test("a later run does not overwrite the first look", async () => {
+  // The early number is the whole point of the row; a second capture would be
+  // a later number wearing its name.
+  const now = new Date("2026-10-08T12:00:00Z");
+  const db = fakeDash({
+    results: [aGame({ game_id: "early", season: 2026, week: 5,
+                      kickoff: iso(now.getTime() + 3 * DAY) })],
+    picks: [aPick({ game_id: "early", season: 2026, week: 5, line: -7 })],
+    consensus: [{ game_id: "early", phase: "first", season: 2026, week: 5,
+                  side: "KC", avg_line: -3 }],
+  });
+  const out = await captureFirst({ PICKS_DB: db }, 2026, now);
+  assert.equal(out.captured, 0);
+  assert.equal(db.writes.length, 0);
+});
+
+test("a game with no picks yet gets no first row", async () => {
+  const now = new Date("2026-10-06T12:00:00Z");
+  const db = fakeDash({
+    results: [aGame({ game_id: "quiet", season: 2026, week: 5,
+                      kickoff: iso(now.getTime() + 5 * DAY) })],
+  });
+  assert.equal((await captureFirst({ PICKS_DB: db }, 2026, now)).captured, 0);
+});
+
+test("the same game still gets its own prekick row near kickoff", async () => {
+  // Both rows coexist: one says what the crowd first thought, the other what
+  // it went in with.
+  const kickoff = "2026-10-11T17:00:00Z";
+  const near = new Date("2026-10-11T16:20:00Z");
+  const db = fakeDash({
+    results: [aGame({ game_id: "early", season: 2026, week: 5, kickoff })],
+    picks: [aPick({ game_id: "early", season: 2026, week: 5, side: "KC",
+                    line: -6 })],
+    // The first row is already on file from five days ago.
+    consensus: [{ game_id: "early", phase: "first", season: 2026, week: 5,
+                  side: "KC", avg_line: -3 }],
+  });
+  const out = await captureConsensus({ PICKS_DB: db }, 2026, 5, near);
+  assert.equal(out.captured, 1, "the first row does not block the prekick one");
+  const write = db.writes.find((w) => /INSERT INTO consensus/.test(w.sql));
+  assert.equal(write.args[1], "prekick");
+  assert.equal(write.args[9], -6, "and it carries the late number");
+});
+
+test("CLV is positive when the crowd beat the close, on either side", () => {
+  // Lines are the home team's spread throughout, so the sign has to be read
+  // through the side the crowd was on.
+  //
+  // Favourite: took KC laying 3.5, the game closed laying 7. Three points in
+  // hand, so positive.
+  assert.equal(crowdClv("KC", "KC", -3.5, -7), 3.5);
+  // The same favourite the other way round: laid 7, closed at 3.5. Worse.
+  assert.equal(crowdClv("KC", "KC", -7, -3.5), -3.5);
+  // Underdog: took DEN getting 3.5 (home -3.5), closed getting 7 (home -7).
+  // The dog got longer without them, so they got the worse of it.
+  assert.equal(crowdClv("DEN", "KC", -3.5, -7), -3.5);
+  // And the dog that shortened: took DEN +7, closed +3.5. Better.
+  assert.equal(crowdClv("DEN", "KC", -7, -3.5), 3.5);
+  // No movement is no value, which is zero rather than blank.
+  assert.equal(crowdClv("KC", "KC", -3, -3), 0);
+});
+
+test("CLV is blank, not zero, when there is nothing to measure against", () => {
+  assert.equal(crowdClv("KC", "KC", -3.5, null), null);
+  assert.equal(crowdClv("KC", "KC", null, -3.5), null);
+  assert.equal(crowdClv(null, "KC", -3.5, -7), null, "a game nobody picked");
+  assert.equal(crowdClv("KC", "KC", -3.5, undefined), null);
+});
+
+test("grading writes the closing line and the value onto the first row", async () => {
+  const kickoff = "2026-10-11T17:00:00Z";
+  const db = fakeDash({
+    results: [aGame({ game_id: "g1", season: 2026, week: 5, kickoff,
+                      home: "KC", away: "DEN",
+                      home_score: 27, away_score: 20 })],
+    picks: [
+      // The early number, and the last one before kickoff.
+      aPick({ game_id: "g1", season: 2026, week: 5, line: -3,
+              received_at: "2026-10-06T12:00:00Z" }),
+      aPick({ picker: "b".repeat(16), game_id: "g1", season: 2026, week: 5,
+              line: -7, received_at: "2026-10-11T16:50:00Z" }),
+      // And one that landed after the ball was kicked, which is not a close.
+      aPick({ picker: "c".repeat(16), game_id: "g1", season: 2026, week: 5,
+              line: -13, received_at: "2026-10-11T19:00:00Z" }),
+    ],
+    consensus: [{ game_id: "g1", phase: "first", season: 2026, week: 5,
+                  side: "KC", proven_side: "KC", avg_line: -3 }],
+  });
+  const out = await gradeCrowd({ PICKS_DB: db }, 2026, 5);
+  assert.equal(out.valued, 1);
+
+  const write = db.writes.find((w) => /SET close_line/.test(w.sql));
+  assert.equal(write.args[0], -7, "the last line before kickoff, not after");
+  assert.equal(write.args[1], 4, "KC at -3 against a -7 close is four points");
+  assert.equal(write.args[2], 4, "and the proven side agreed");
+  assert.match(write.sql, /phase = 'first'/);
+});
+
+test("a right pick at a worse number is a win with negative CLV", async () => {
+  // The record and the number are independent, which is the point of having
+  // both: a crowd that is right at bad prices is not a crowd to follow.
+  const kickoff = "2026-10-11T17:00:00Z";
+  const db = fakeDash({
+    results: [aGame({ game_id: "g1", season: 2026, week: 5, kickoff,
+                      home: "KC", away: "DEN",
+                      home_score: 27, away_score: 20 })],
+    picks: [aPick({ game_id: "g1", season: 2026, week: 5, line: -3,
+                    received_at: "2026-10-11T16:00:00Z" })],
+    consensus: [
+      // Took KC laying 9 early; it closed at 3. Right team, bad number.
+      { game_id: "g1", phase: "first", season: 2026, week: 5, side: "KC",
+        proven_side: "KC", avg_line: -9 },
+      { game_id: "g1", phase: "prekick", season: 2026, week: 5, side: "KC" },
+    ],
+  });
+  const out = await gradeCrowd({ PICKS_DB: db }, 2026, 5);
+  assert.equal(out.graded, 1, "the prekick row got the verdict");
+  assert.equal(out.valued, 1, "and the first row got the number");
+
+  const verdict = db.writes.find((w) => /SET result/.test(w.sql));
+  assert.equal(verdict.args[0], "win");
+  const value = db.writes.find((w) => /SET close_line/.test(w.sql));
+  assert.equal(value.args[1], -6, "nine laid against a three close is six lost");
+});
+
+test("a first row with no closing line is finished, not rescanned for ever", async () => {
+  const db = fakeDash({
+    results: [aGame({ game_id: "g1", season: 2026, week: 5,
+                      kickoff: "2026-10-11T17:00:00Z",
+                      home: "KC", away: "DEN", home_score: 27, away_score: 20 })],
+    // Nobody's pick carried a line, so there is no close to measure against.
+    picks: [aPick({ game_id: "g1", season: 2026, week: 5, line: null })],
+    consensus: [{ game_id: "g1", phase: "first", season: 2026, week: 5,
+                  side: "KC", avg_line: null }],
+  });
+  const out = await gradeCrowd({ PICKS_DB: db }, 2026, 5);
+  assert.equal(out.valued, 0);
+  const write = db.writes.find((w) => /SET close_line/.test(w.sql));
+  assert.equal(write.args[1], null, "blank");
+  assert.ok(write.args[3], "but graded_at is set, so it is done");
+});
+
+test("the leaderboard shows the crowd's average CLV beside its record", async () => {
+  const db = fakeDash({
+    results: [
+      aGame({ game_id: "g1", home: "KC", away: "DEN", home_score: 27, away_score: 20 }),
+      aGame({ game_id: "g2", home: "SEA", away: "SF", home_score: 10, away_score: 24 }),
+    ],
+    consensus: [
+      { game_id: "g1", phase: "prekick", season: nowWeek.season,
+        week: nowWeek.week, side: "KC", proven_side: "KC", result: "win" },
+      { game_id: "g2", phase: "prekick", season: nowWeek.season,
+        week: nowWeek.week, side: "SEA", proven_side: "SEA", result: "loss" },
+      { game_id: "g1", phase: "first", season: nowWeek.season,
+        week: nowWeek.week, side: "KC", clv: 3, proven_clv: 3 },
+      { game_id: "g2", phase: "first", season: nowWeek.season,
+        week: nowWeek.week, side: "SEA", clv: -1, proven_clv: -1 },
+    ],
+  });
+  const html = await (await worker.fetch(dashGet("&view=board"), dashEnv(db))).text();
+  const crowdRow = html.split("<b>The crowd</b>")[1].split("</tr>")[0];
+  assert.match(crowdRow, /1-1/, "the record comes off the prekick rows");
+  assert.match(crowdRow, /\+1\.00/, "and the value off the first ones");
+  assert.match(crowdRow, /of 2/, "with how many it is an average of");
+  // Counting the two phases together would have made this 2-2.
+  assert.equal(/2-2/.test(crowdRow), false);
+});
+
+test("the leaderboard leaves CLV blank rather than calling an unknown zero", async () => {
+  const db = fakeDash({
+    results: [aGame({ game_id: "g1", home: "KC", away: "DEN",
+                      home_score: 27, away_score: 20 })],
+    consensus: [
+      { game_id: "g1", phase: "prekick", season: nowWeek.season,
+        week: nowWeek.week, side: "KC", result: "win" },
+      { game_id: "g1", phase: "first", season: nowWeek.season,
+        week: nowWeek.week, side: "KC", clv: null, proven_clv: null },
+    ],
+  });
+  const html = await (await worker.fetch(dashGet("&view=board"), dashEnv(db))).text();
+  const crowdRow = html.split("<b>The crowd</b>")[1].split("</tr>")[0];
+  assert.match(crowdRow, /<td class="n dim">—<\/td>/);
+  assert.equal(/0\.00/.test(crowdRow), false, "zero would be a claim");
+});
+
+test("a fresh database reaches the new shape through ensureSchema alone", async () => {
+  const run = [];
+  const fresh = {
+    async exec(sql) { run.push(sql); return { count: 1 }; },
+    prepare(sql) {
+      return { sql, bind: () => ({ async all() { return { results: [] }; } }) };
+    },
+  };
+  assert.equal(await ensureSchema({ PICKS_DB: fresh }), true);
+  const ddl = run.find((sql) => /CREATE TABLE IF NOT EXISTS consensus/.test(sql));
+  assert.ok(ddl, "the table is created");
+  assert.match(ddl, /PRIMARY KEY \(game_id, phase\)/);
+  for (const column of ["phase", "close_line", "clv", "proven_clv"]) {
+    assert.match(ddl, new RegExp(`\\b${column}\\b`), `${column} is in the DDL`);
+  }
+  assert.ok(run.some((sql) => /ALTER TABLE picks ADD COLUMN model_side/.test(sql)));
+});
+
+test("the old table shape is reported rather than silently left alone", async () => {
+  // CREATE TABLE IF NOT EXISTS cannot migrate a table that already exists, and
+  // a no-op is how somebody finds out three weeks later with a season missing.
+  const logged = [];
+  const realLog = console.log;
+  console.log = (...args) => logged.push(args.join(" "));
+  let ok;
+  try {
+    const old = {
+      async exec() { return { count: 1 }; },
+      prepare(sql) {
+        return { sql, bind: () => ({ async all() { return { results: [] }; } }),
+                 async all() {
+                   return { results: [{ name: "game_id" }, { name: "side" }] };
+                 } };
+      },
+    };
+    ok = await ensureSchema({ PICKS_DB: old });
+  } finally {
+    console.log = realLog;
+  }
+  assert.equal(ok, false, "and it says it did not get there");
+  assert.ok(logged.some((l) => /old single-row shape/.test(l)));
+  assert.ok(logged.some((l) => /README/.test(l)), "pointing at the fix");
+});
+
+test("the leaderboard says so rather than 500ing before the migration", async () => {
+  const db = fakeDash();
+  db.prepare = (sql) => {
+    if (/FROM consensus/.test(sql)) {
+      return { sql, bind: () => ({ async all() {
+        throw new Error("no such column: c.phase");
+      } }) };
+    }
+    return { sql, bind: () => ({ async all() { return { results: [] }; } }),
+             async all() { return { results: [] }; } };
+  };
+  const realLog = console.log;
+  console.log = () => {};
+  let res;
+  try {
+    res = await worker.fetch(dashGet("&view=board"), dashEnv(db));
+  } finally {
+    console.log = realLog;
+  }
+  assert.equal(res.status, 200, "the page still renders");
+  assert.match(await res.text(), /still needs its migration/);
 });
