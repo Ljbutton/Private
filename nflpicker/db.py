@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -48,6 +48,10 @@ COLUMN_ADDITIONS: tuple[tuple[str, str, str], ...] = (
     # it on the row was live, so week 2's table showed a 2-0 team -- the games
     # played on the Thursday of the week the ranking was supposed to precede.
     ("power_snapshots", "projection", "TEXT"),
+    # v14: a shared pick now carries what our own model said about that game,
+    # so the dashboard can show agreement and disagreement with the crowd
+    # without having to recompute a prediction it does not have.
+    ("share_queue", "model_side", "TEXT"),
     ("injuries", "injury", "TEXT"),
     ("injuries", "return_date", "TEXT"),
     ("injuries", "first_seen", "TEXT"),
@@ -345,6 +349,7 @@ CREATE TABLE IF NOT EXISTS share_queue (
     price      INTEGER,                  -- American odds at that moment
     total_line REAL,
     book_prob  REAL,                     -- the book's win probability then
+    model_side TEXT,                     -- what our own model said, then
     picked_at  TEXT NOT NULL,            -- when the user chose
     queued_at  TEXT NOT NULL,
     tries      INTEGER NOT NULL DEFAULT 0,

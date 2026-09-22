@@ -161,6 +161,47 @@ def test_making_a_pick_shares_it_with_the_line_of_the_moment(client, keyed):
     assert rows[0]["book_prob"] == 0.64
 
 
+def test_the_model_s_own_side_travels_with_the_pick(client, keyed):
+    """So the dashboard can show agreement and disagreement without the server
+    having to hold a model of its own."""
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    a_game()
+    db.execute(
+        "INSERT OR REPLACE INTO predictions"
+        "(game_id, captured_at, model_version, margin_home, total_points,"
+        " home_win_prob) VALUES('demo-1','2026-10-06T12:00:00Z','t',6.0,44.0,0.71)")
+
+    client.post("/api/my-picks", json={"game_id": "demo-1", "selection": "KC"})
+    rows = sharing.pending()
+    assert len(rows) == 1
+    assert rows[0]["model_side"] == "KC", "the home side, at 71%"
+    assert sharing._payload(rows)["picks"][0]["model_side"] == "KC"
+
+
+def test_the_model_s_side_is_the_away_team_when_it_says_so(client, keyed):
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    a_game()
+    db.execute(
+        "INSERT OR REPLACE INTO predictions"
+        "(game_id, captured_at, model_version, margin_home, total_points,"
+        " home_win_prob) VALUES('demo-1','2026-10-06T12:00:00Z','t',-6.0,44.0,0.29)")
+
+    client.post("/api/my-picks", json={"game_id": "demo-1", "selection": "KC"})
+    assert sharing.pending()[0]["model_side"] == "DEN"
+
+
+def test_no_prediction_means_no_claim_about_one(client, keyed):
+    """A blank is honest; inventing the market's side and calling it the
+    model's would not be."""
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    a_game()
+    client.post("/api/my-picks", json={"game_id": "demo-1", "selection": "KC"})
+    assert sharing.pending()[0]["model_side"] is None
+
+
 def test_clearing_a_pick_takes_it_out_of_the_queue(client, keyed):
     sharing.mark_notice_seen()
     sharing.set_enabled(True)

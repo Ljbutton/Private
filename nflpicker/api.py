@@ -505,10 +505,22 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         row = db.query_one(
             "SELECT * FROM consensus WHERE game_id = ? "
             "ORDER BY captured_at DESC LIMIT 1", (game_id,))
+        # Which side our own model was on when the pick was made. It travels
+        # with the pick so the dashboard can show agreement and disagreement
+        # without the server having to hold a model of its own.
+        pred = db.query_one(
+            "SELECT p.home_win_prob, g.home, g.away FROM predictions p "
+            "JOIN games g ON g.game_id = p.game_id WHERE p.game_id = ? "
+            "ORDER BY p.captured_at DESC LIMIT 1", (game_id,))
+        model_side = None
+        if pred and pred["home_win_prob"] is not None:
+            model_side = (pred["home"] if float(pred["home_win_prob"]) >= 0.5
+                          else pred["away"])
         if not row:
-            return {}
+            return {"model_side": model_side}
         return {"line": row["spread_home"], "total_line": row["total_points"],
-                "price": row["ml_home"], "book_prob": row["home_win_prob"]}
+                "price": row["ml_home"], "book_prob": row["home_win_prob"],
+                "model_side": model_side}
 
     def share_pick(kind: str, game: dict, side: str | None,
                    picked_at: str | None = None) -> None:

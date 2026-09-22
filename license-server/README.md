@@ -214,13 +214,70 @@ With no `PICKS_DB` bound the endpoint answers `{ok: false, reason:
 "not_configured"}` with a 200, which tells the app to drop the batch rather
 than queue it for ever.
 
-**The dashboard.** `GET /v1/dashboard?token=...&season=2026`. The token is the
-whole of the authentication and it travels in a URL, so it ends up in browser
-history — treat it like a password, and anything but an exact match is a 404
-rather than a 403, so the page does not announce itself. The response is
-`no-store`: it is every sharing customer's record.
+**The dashboard.** Three views behind one token, laid out like the app's own
+Performance tab. The token is the whole of the authentication and it travels in
+a URL, so it ends up in browser history — treat it like a password. Anything
+but an exact match is a 404 rather than a 403 on every view, so the page does
+not announce itself, and every response is `no-store`: this is every sharing
+customer's record.
+
+| URL | What it is |
+| --- | --- |
+| `/v1/dashboard?token=…` | **This week.** One row per game, by kickoff, with a countdown. |
+| `…&week=6&season=2026` | The same, for a week you name. Defaults to the current NFL week. |
+| `…&view=board` | **Leaderboard**, plus a league-wide by-team table. |
+| `…&picker=<16 hex>` | **One picker**: record, week by week, by team. |
+
+*This week* is for deciding before kickoff, so it is about live picks rather
+than graded history. Per game: the split as a count *and* a share — the raw
+count always sits beside the percentage, and two picks read "2 of 2" rather
+than "100% on KC", because a percentage standing on its own is how a thin
+sample starts looking like a signal; the model's own side, so agreement and
+disagreement are visible at a glance; the average line the pickers got against
+the last line to arrive, which is what makes being early visible; a weighted
+split counting only pickers past 20 graded picks and above break-even, left
+blank rather than zeroed when fewer than three of them picked that game; and an
+expandable list of the individual picks, newest first, with anything that
+arrived after kickoff marked **late**. A game nobody picked still appears, with
+zeros. Above the games: how many pickers shared this week, how many ever have,
+and how many subscriptions are live — so the thinness of the sample is always
+in view. The subscription count is best effort from Whop and shows an em dash
+rather than a number nobody should trust if the call fails.
+
+A picker id that is not exactly sixteen hex characters is a 404, and so is an
+unknown one: a page that renders for any sixteen characters is a page that
+tells you which ids exist.
 
 **Grading.** A cron trigger (hourly, `17 * * * *`) grades the current week and
 the one before it — a Monday night game is graded after the week has rolled
 over. Results come from ESPN's public scoreboard, the same source the app uses,
 so the two cannot disagree about who won.
+
+**The pre-kickoff snapshot.** The `consensus` table holds what the crowd said
+about each game *before it started*, so "would following the crowd have beaten
+the model" stays answerable. It cannot be answered from `picks` after the fact:
+a pick can change right up to kickoff, so a split recomputed on Tuesday is not
+what anybody could have acted on come Sunday.
+
+The same hourly run, before grading, writes one row for each game kicking off
+**within the next hour** and not already started — one capture per game, as
+close to kickoff as an hourly cron allows. A game five hours out is left for a
+later run; a game already under way is skipped, because whatever is in the
+table by then includes picks made after the ball was kicked. An existing row is
+never overwritten: the read skips what is frozen and the insert is
+`ON CONFLICT DO NOTHING` on top, so two runs firing at once cannot rewrite
+history.
+
+Grading then compares each frozen side against the final score and stores the
+verdict on the row, which gives the crowd a graded record of its own. It
+appears on the leaderboard as **The crowd**, with **Proven pickers only**
+beside it — the same games, counting only the pickers who qualify. A game
+nobody picked has no side and is not graded as a loss: silence is not a wrong
+answer. None of this changes how an individual pick is graded.
+
+The table is in `schema.sql`, and the Worker also puts it up itself on each
+scheduled run (`CREATE TABLE IF NOT EXISTS`, plus an `ALTER TABLE picks ADD
+COLUMN model_side` whose failure is ignored because "duplicate column" is what
+success looks like the second time). Schema arrives through the D1 console, and
+a deploy that needs a console visit before it works is a deploy that gets half
+done.

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS picks (
     price       INTEGER,
     total_line  REAL,
     book_prob   REAL,
+    model_side  TEXT,                   -- what the app's own model said, then
     picked_at   TEXT,                   -- the client's clock, untrusted
     received_at TEXT NOT NULL,          -- ours, and the one grading believes
     result      TEXT,                   -- win|loss|push, NULL until graded
@@ -54,3 +55,32 @@ CREATE TABLE IF NOT EXISTS results (
     away_score INTEGER,
     fetched_at TEXT NOT NULL
 );
+
+-- What the crowd said before kickoff, frozen.
+--
+-- The question this exists to answer is "would following the crowd have beaten
+-- the model", and that question cannot be answered from the picks table after
+-- the fact: a pick can change right up to kickoff, and a row recomputed on
+-- Tuesday is not what anybody could have acted on come Sunday. So the split is
+-- captured once, as close to kickoff as the hourly run allows, and never
+-- rewritten -- see captureConsensus, which refuses to overwrite.
+--
+-- `result` is the crowd's own graded record: its side against the final score,
+-- which is a record the crowd earns separately from any individual picker.
+-- Grading individual picks is untouched by any of this.
+CREATE TABLE IF NOT EXISTS consensus (
+    game_id      TEXT PRIMARY KEY,
+    season       INTEGER NOT NULL,
+    week         INTEGER NOT NULL,
+    side         TEXT,                 -- the side most shared picks were on
+    picks        INTEGER NOT NULL,     -- how many were on that side
+    total_picks  INTEGER NOT NULL,     -- how many there were altogether
+    proven_picks INTEGER NOT NULL,     -- of those, how many from proven pickers
+    proven_side  TEXT,                 -- and which side they were on
+    avg_line     REAL,                 -- the mean line those pickers got
+    model_side   TEXT,                 -- what the app's model said at the time
+    captured_at  TEXT NOT NULL,
+    result       TEXT,                 -- win|loss|push for `side`, once played
+    graded_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_consensus_week ON consensus(season, week);

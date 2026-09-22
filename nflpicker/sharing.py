@@ -185,7 +185,7 @@ DEFAULT_ON = True
 def enqueue(kind: str, *, game_id: str, season: int, week: int, side: str,
             line: float | None = None, price: int | None = None,
             total_line: float | None = None, book_prob: float | None = None,
-            picked_at: str | None = None) -> bool:
+            model_side: str | None = None, picked_at: str | None = None) -> bool:
     """Put one pick in the outbox, or don't.
 
     Returns whether it was queued, which is what the tests assert on: the
@@ -198,10 +198,10 @@ def enqueue(kind: str, *, game_id: str, season: int, week: int, side: str,
         db.execute(
             "INSERT OR REPLACE INTO share_queue"
             "(kind, game_id, season, week, side, line, price, total_line,"
-            " book_prob, picked_at, queued_at, tries) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",
+            " book_prob, model_side, picked_at, queued_at, tries) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)",
             (kind, game_id, int(season), int(week), str(side or ""),
-             line, price, total_line, book_prob,
+             line, price, total_line, book_prob, model_side,
              picked_at or now_iso(), now_iso()))
     except Exception:                                         # noqa: BLE001
         log.debug("could not queue a shared pick", exc_info=True)
@@ -249,6 +249,7 @@ def _payload(rows: list[dict]) -> dict:
             "price": r["price"],
             "total_line": r["total_line"],
             "book_prob": r["book_prob"],
+            "model_side": r["model_side"],
             "picked_at": r["picked_at"],
         } for r in rows],
     }
