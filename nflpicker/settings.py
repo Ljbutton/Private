@@ -229,7 +229,7 @@ SETTINGS: tuple[Setting, ...] = (
              "to delete everything already sent.",
         needed_for="The leaderboard, and letting strong pickers feed back "
                    "into the model. Nothing in the app needs it to work.",
-        default="false",
+        default="true",
     ),
 )
 

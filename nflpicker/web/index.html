@@ -311,6 +311,33 @@
   </div>
 </dialog>
 
+<!-- The pick-sharing notice. Shown once, before anything is queued or sent.
+
+     A modal rather than a card, and no way to dismiss it except by choosing:
+     sharing is on by default, and the only thing that makes that defensible
+     is that nobody is sharing until they have read this and pressed one of
+     the two buttons. Both buttons are the same size and shape -- a "Turn off"
+     rendered as a small grey link is not a choice being offered. -->
+<dialog class="dialog" id="share-notice">
+  <div class="dialog-body">
+    <h3 class="share-notice-title">Your picks help make The Edge better</h3>
+    <p>When you pick a game here, The Edge takes a copy: who you took, and the
+      line and price showing when you took them. It goes with an id — sixteen
+      characters worked out from your licence key.</p>
+    <p><b>Your name, your email and your licence key are not sent.</b> The id
+      isn't your name, but The Edge can work out which customer it belongs to.</p>
+    <p>Picks are used to grade pickers, to improve the model, and The Edge may
+      follow picks from people who are consistently right — which is what that
+      last part is for.</p>
+    <p class="muted">You can turn this off at any time in Settings, and delete
+      everything that's been shared.</p>
+    <div class="share-notice-actions">
+      <button class="btn primary" data-notice-choice="on">Keep sharing</button>
+      <button class="btn" data-notice-choice="off">Turn off</button>
+    </div>
+  </div>
+</dialog>
+
 <dialog class="detail" id="detail">
   <div class="dialog-head">
     <!-- One card leads to another: a game opens a team, a team opens the

@@ -181,7 +181,10 @@ def test_a_pick_after_kickoff_is_never_shared(client, keyed):
 
 def test_the_endpoint_reports_and_sets_the_state(client, keyed):
     body = client.get("/api/sharing").json()
-    assert body["enabled"] is False and body["needs_notice"] is True
+    # On by default and not yet allowed to send: the page needs both facts to
+    # know it has to put the notice up.
+    assert body["enabled"] is True and body["needs_notice"] is True
+    assert body["chosen"] is False
     assert body["picker_id"] == keyed
 
     body = client.post("/api/sharing",
@@ -224,3 +227,83 @@ def test_deleting_sends_the_key_as_proof(client, keyed, monkeypatch):
     assert seen["url"].endswith("/v1/picks")
     assert seen["json"] == {"picker": keyed,
                             "license_key": "EDGE-TEST-KEY-0001"}
+
+
+# --------------------------------------------------- default on, with notice
+#
+# Sharing is on for anybody who has not made a choice. The whole of what makes
+# that defensible is the notice: on until told is one thing, on quietly is
+# another, and these are the tests that keep them apart.
+
+def test_a_new_install_is_on_but_silent_until_the_notice_is_answered(keyed):
+    """Both halves. It is on -- and it sends nothing."""
+    assert sharing.chosen() is False, "nobody has chosen anything yet"
+    assert sharing.enabled() is True, "on by default"
+    assert sharing.needs_notice() is True
+    assert sharing.may_send() is False, "and so, nothing goes"
+    assert sharing.enqueue("winner", game_id="demo-1", season=2026, week=5,
+                           side="KC") is False
+    assert sharing.pending() == []
+
+
+def test_keep_sharing_leaves_it_on_and_lets_picks_through(client, keyed):
+    """The primary button on the notice, and what it has to do."""
+    body = client.post("/api/sharing",
+                       json={"enabled": True, "notice_seen": True}).json()
+    assert body["enabled"] is True and body["needs_notice"] is False
+    assert sharing.may_send() is True
+    assert sharing.enqueue("winner", game_id="demo-1", season=2026, week=5,
+                           side="KC") is True
+
+
+def test_turn_off_sends_nothing_ever(client, keyed):
+    """The other button. Equally easy to press, and it has to mean it."""
+    body = client.post("/api/sharing",
+                       json={"enabled": False, "notice_seen": True}).json()
+    assert body["enabled"] is False
+    assert body["needs_notice"] is False, "they answered; do not ask again"
+    assert sharing.may_send() is False
+
+    a_game()
+    client.post("/api/my-picks", json={"game_id": "demo-1", "selection": "KC"})
+    assert sharing.pending() == [], "not even queued"
+
+
+def test_somebody_who_turned_it_off_stays_off_across_the_update(keyed):
+    """The upgrade path, and the one that would be a betrayal to get wrong.
+
+    A user who switched this off before the default changed must not be opted
+    back in by a later build deciding the default is now on. Their choice is
+    written down, and a default only ever applies to somebody who has not made
+    one.
+    """
+    sharing.set_enabled(False)
+    assert sharing.chosen() is True
+
+    # The update lands: the default flips, and the notice version moves on.
+    assert sharing.DEFAULT_ON is True
+    assert sharing.enabled() is False, "their choice outranks the new default"
+    assert sharing.may_send() is False
+
+
+def test_bumping_the_notice_version_asks_again(keyed, monkeypatch):
+    """A changed bargain is not a silent one. If the wording moves materially,
+    the version moves with it and everybody sees it once more."""
+    sharing.mark_notice_seen()
+    assert sharing.needs_notice() is False
+
+    monkeypatch.setattr(sharing, "NOTICE_VERSION", sharing.NOTICE_VERSION + 1)
+    assert sharing.needs_notice() is True
+    assert sharing.may_send() is False, "and nothing goes while it is pending"
+
+    # Answering the new one settles it again.
+    sharing.mark_notice_seen(sharing.NOTICE_VERSION)
+    assert sharing.needs_notice() is False
+
+
+def test_the_notice_is_only_shown_once_per_version(keyed):
+    sharing.mark_notice_seen()
+    assert sharing.needs_notice() is False
+    # A second launch, a third, a reload: the answer is recorded, not asked for.
+    assert sharing.state()["needs_notice"] is False
+    assert sharing.state()["notice_seen"] == sharing.NOTICE_VERSION

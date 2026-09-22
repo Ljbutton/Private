@@ -1619,6 +1619,21 @@ dialog.detail::backdrop {
   background: rgba(0, 0, 0, .5);
   backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
 }
+/* Every other dialog in the app: the support form, the sharing notice.
+   `dialog.detail` had this and `.dialog` never did, so those two were taking
+   the browser's default -- white panel, black text -- and sitting on a dark
+   app looking like a page from a different program. The theme tokens are the
+   same ones the cards use, so a dialog now belongs to whichever theme is on. */
+dialog.dialog {
+  width: min(620px, 94vw); max-height: 88vh; border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0; background: var(--surface);
+  color: var(--text-primary); overflow: auto; box-shadow: var(--shadow-lg);
+}
+dialog.dialog::backdrop {
+  background: rgba(0, 0, 0, .5);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+
 dialog[open] { animation: dialog-in var(--slow) var(--ease); }
 @keyframes dialog-in {
   from { opacity: 0; transform: translateY(8px) scale(.99); }
@@ -3019,3 +3034,36 @@ dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
   border-radius: var(--radius-sm); border: 1px solid var(--border);
   background: var(--bg-input, var(--bg-panel)); color: var(--text-primary);
 }
+
+/* The one-time notice. Sized and worded to be read, not skimmed past. */
+#share-notice { width: min(540px, 94vw); }
+#share-notice p { font-size: 13.5px; line-height: 1.65; margin: 0 0 12px; }
+#share-notice p.muted { font-size: 12.5px; }
+.share-notice-title {
+  margin: 0 0 14px; font-size: 19px; line-height: 1.3;
+  color: var(--text-primary);
+}
+/* Two buttons, equally weighted. Both the same width, the same height and the
+   same shape: the difference between them is which one is filled, and that is
+   as far as the thumb on the scale is allowed to go. */
+.share-notice-actions {
+  display: flex; gap: 10px; margin-top: 18px;
+}
+.share-notice-actions .btn {
+  flex: 1 1 0; justify-content: center; padding-block: 9px; font-size: 13.5px;
+}
+
+/* The standing reminder on Picks. A choice made once in a modal is a choice
+   somebody has forgotten by November. */
+.share-flag {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: var(--radius-pill); cursor: pointer;
+  border: 1px solid var(--border); background: transparent;
+  color: var(--text-muted); font: inherit; font-size: 11px;
+}
+.share-flag:hover { color: var(--text-primary); border-color: var(--series-1); }
+.share-flag .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--series-1);
+}
+.share-flag .sep { opacity: .5; }
+.share-flag b { color: var(--text-secondary); font-weight: 650; }

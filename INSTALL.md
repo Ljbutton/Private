@@ -127,6 +127,32 @@ matter to you.
 
 ---
 
+## Pick sharing
+
+The first time you open The Edge after activating it, you will be asked about
+this. It is on unless you turn it off, and nothing is sent until you have
+answered.
+
+**What is shared.** The picks you make — who you took, and the line and price
+showing when you took them — along with an id: sixteen characters worked out
+from your licence key.
+
+**What is not.** Your name, your email and your licence key. None of the three
+is sent.
+
+**What it is for.** Picks are graded and pickers ranked, which is what makes
+the model better over a season; The Edge may follow picks from people who turn
+out to be consistently right. The id is not your name, but The Edge can work
+out which customer it belongs to — that is how a strong picker gets followed,
+and it is why the app does not call the id "anonymous".
+
+**Turning it off.** **Settings → Sharing** at any time. Switching it off stops
+it immediately, and there is a button beside the switch that deletes everything
+already shared. While it is on, the Picks page carries a small "Sharing picks ·
+change" line that takes you straight to the switch.
+
+---
+
 ## If something goes wrong
 
 **The board is full of dashes.** That is always "we do not have this", never

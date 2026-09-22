@@ -15,10 +15,12 @@ keys, so the owner can work out which customer an id belongs to whenever they
 want to. That is the point of the feature and it is what the notice says. What
 it does *not* say, and must not, is "anonymous".
 
-**Nothing is sent before the notice has been seen.** :func:`may_send` is the
-one gate, and it is checked on the way into the queue as well as on the way
-out, so a pick made before the notice was acknowledged is not sitting in a
-queue waiting to be flushed the moment it is.
+**Nothing is sent before the notice has been seen.** Sharing is on by default,
+which is only defensible because this is true: :func:`may_send` is the one
+gate, checked on the way into the queue as well as on the way out, so a pick
+made before the notice was acknowledged is not sitting in a queue waiting to be
+flushed the moment it is. Default on plus a notice nobody has read would be
+collecting quietly, which is a different feature.
 
 **Off means off, and deleted means deleted.** Turning the switch off stops the
 sender and leaves the queue to be dropped; the delete button asks the server to
@@ -159,10 +161,17 @@ def may_send() -> bool:
     return enabled() and not needs_notice() and bool(picker_id())
 
 
-# Whether an installation that has never chosen is sharing. Phase two of this
-# feature flips it; the constant is here so the switch is one line and the
-# tests can state which regime they are describing.
-DEFAULT_ON = False
+# Whether an installation that has never chosen is sharing.
+#
+# On. That is a decision with a cost, and the notice is what pays it: nothing
+# is queued or sent until the user has seen the modal and pressed one of its
+# two buttons, so "default on" means "on once they have been told", never "on
+# quietly". :func:`may_send` is where that is enforced.
+#
+# It applies to somebody who has never made a choice. Anybody who has -- and
+# turning it off is a choice -- keeps theirs, which is why :func:`chosen`
+# exists and why this is not simply a default on the Setting.
+DEFAULT_ON = True
 
 
 # ---------------------------------------------------------------- the queue

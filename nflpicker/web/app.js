@@ -476,39 +476,56 @@ function shareControls(state) {
   </div>`;
 }
 
-/* The card on Picks. Shown once, above the board, because this is the page
-   where the thing being shared is made -- an explanation of what happens to
-   your picks belongs where you are making them, not three tabs away in
-   Settings where nobody goes until something is wrong. */
-function shareCard(state) {
-  if (!state || !state.needs_notice) return "";
-  return `<div class="panel share-card" id="share-card">
-    <header><h2>Sharing your picks</h2>
-      <span class="hint">one-time notice</span></header>
-    <p>The Edge can take a copy of the picks you make here, grade them, and
-      rank pickers against each other.</p>
-    <div class="share-cols">
-      <div><h3>What's sent</h3><ul>${
-        SHARE_WHAT_GOES.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></div>
-      <div><h3>What isn't</h3><ul>${
-        SHARE_WHAT_STAYS.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></div>
-    </div>
-    <p>${esc(SHARE_WHAT_FOR)}</p>
-    <p class="muted">You can switch this off at any time in Settings, and
-      there's a button there to delete everything already sent.</p>
-    <div class="controls">
-      <button class="btn primary" data-share-choice="on">Share my picks</button>
-      <button class="btn" data-share-choice="off">No thanks</button>
-    </div>
-  </div>`;
+/* The notice, once, before a single pick is queued.
+
+   Sharing is on by default. The only thing that makes that defensible is this
+   modal: it is shown on the first launch after activation, and to anybody
+   upgrading into this version on their first launch after it, and nothing is
+   collected until one of its two buttons has been pressed. The server enforces
+   that as well -- see sharing.may_send -- so a modal somebody managed to skip
+   does not quietly turn into consent.
+
+   It cannot be dismissed by clicking away or pressing Escape, which is the one
+   place in this app where that is the right call: every other dialog is
+   something you opened, and this is something being told to you. */
+async function showShareNotice() {
+  const state = await loadSharing(true);
+  if (!state || !state.needs_notice) return;
+  const dlg = $("#share-notice");
+  if (!dlg || dlg.open) return;
+
+  const choose = async (on) => {
+    await setSharing({ enabled: on, notice_seen: true });
+    dlg.close();
+    // Whatever page is up may be showing the indicator, or about to.
+    render().catch(() => {});
+  };
+  $$("[data-notice-choice]", dlg).forEach((b) => b.addEventListener("click",
+    () => choose(b.dataset.noticeChoice === "on")));
+  // Escape is a way to be counted as sharing without having chosen to, so it
+  // is not a way out of this one.
+  dlg.addEventListener("cancel", (ev) => ev.preventDefault());
+  dlg.showModal();
 }
 
-function wireShareCard(root, after) {
-  $$("[data-share-choice]", root).forEach((b) => b.addEventListener("click", async () => {
-    await setSharing({ enabled: b.dataset.shareChoice === "on",
-                       notice_seen: true });
-    await loadSharing(true);
-    if (after) after();
+/* While sharing is on, say so, on the page where the picks are made.
+
+   A choice made once in a modal is a choice somebody has forgotten by
+   November. This is the line that keeps it from being a thing that happens to
+   them quietly -- small, permanent, and one click from the switch. */
+function shareIndicator(state) {
+  if (!state || !state.enabled || state.needs_notice) return "";
+  return `<button class="share-flag" type="button" data-open-share
+    title="Your picks are shared with The Edge, with the line you took and an id — not your name, email or licence key. Click to change it or to delete what has been shared.">
+    <span class="dot"></span>Sharing picks<span class="sep">·</span><b>change</b></button>`;
+}
+
+function wireShareIndicator(root) {
+  $$("[data-open-share]", root).forEach((b) => b.addEventListener("click", () => {
+    // Open the group it lives in first, so the switch is on screen rather than
+    // behind a closed section on a page of closed sections.
+    openSettings.add("Sharing");
+    setTab("settings");
   }));
 }
 
@@ -3130,11 +3147,12 @@ async function renderPicks(ticket) {
   </div>`).join("");
 
   fitsOneScreen(root);
-  if (!paint(root, `${shareCard(share)}
+  if (!paint(root, `
   <div class="pick-board">
   <div class="panel">
     <header><h2>Picks</h2>
       <span class="hint" title="Ordered by how sure the blend is, most confident first. The number beside each pick is that confidence.">most confident first</span>
+      ${shareIndicator(share)}
     </header>
     ${(board.picks || []).length ? `<div class="tiles pick-tiles">
       <div class="tile"><div class="label">Expected correct</div>
@@ -3204,7 +3222,7 @@ async function renderPicks(ticket) {
   </div>
   </div>`)) return;
 
-  wireShareCard(root, () => render());
+  wireShareIndicator(root);
 
   /* No crest grid to wire any more. Which teams have been spent is recorded
      by picking them on the board, beside the game, where the week comes with
@@ -4968,6 +4986,12 @@ async function main() {
   }, 30000);
 
   await ensureLicensed();
+  /* After the gate and before the first pick can be made. On a new install
+     that is the first launch after activation; on an upgrade it is the first
+     launch after this build, because the version the user acknowledged is
+     recorded and this one is higher. Not awaited: the app carries on behind
+     it, and nothing is collected until it has been answered anyway. */
+  showShareNotice();
   await loadState();
   setTab(state.tab, { fromHash: true });
   checkForUpdate();
