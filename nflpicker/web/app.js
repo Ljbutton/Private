@@ -405,6 +405,149 @@ function wireReport() {
   });
 }
 
+/* ----------------------------------------------------------- pick sharing */
+
+/* One copy of the bargain, in one place.
+
+   The words below are the same words in Settings, on the Picks card and in
+   INSTALL.md, because three descriptions of one arrangement is three chances
+   to describe it differently -- and the one that matters is whichever the
+   person happened to read.
+
+   "An id that is not your name" rather than "anonymous", because it is not:
+   it is derived from the licence key, and the whole point of the feature is
+   that a strong picker can be identified and followed. Saying anonymous would
+   be easier and would be a lie. */
+const SHARE_WHAT_GOES = [
+  "Your picks — who you took, and the line and price showing when you took them.",
+  "An id that isn't your name: sixteen characters worked out from your licence key.",
+];
+const SHARE_WHAT_STAYS = [
+  "Your name, your email and your licence key. None of the three is sent.",
+];
+const SHARE_WHAT_FOR = "They're used to grade pickers, to improve the model, "
+  + "and The Edge may follow picks from people who are consistently right. "
+  + "The id isn't your name, but The Edge can work out which customer it "
+  + "belongs to — that's how a strong picker gets followed.";
+
+let shareState = null;
+
+async function loadSharing(force = false) {
+  if (shareState && !force) return shareState;
+  try {
+    shareState = await api("/api/sharing");
+  } catch {
+    shareState = null;
+  }
+  return shareState;
+}
+
+async function setSharing(patch) {
+  try {
+    shareState = await api("/api/sharing", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  } catch { /* the switch stays where it was; nothing is sent either way */ }
+  return shareState;
+}
+
+/* The controls that hang off the switch in Settings: who you are on the
+   leaderboard, and the way out. Under the switch rather than on a page of
+   their own -- "delete what you sent" is worth nothing if it is somewhere
+   other than where you just turned the thing off. */
+function shareControls(state) {
+  if (!state) return "";
+  return `<div class="share-extra">
+    <div class="share-id">You are
+      <b>${esc(state.display_name)}</b>
+      <span class="mono">${esc(state.picker_id || "no licence key yet")}</span></div>
+    <label class="side-label" for="share-name">Name on the leaderboard
+      <span class="muted">(optional)</span></label>
+    <input id="share-name" type="text" maxlength="40" spellcheck="false"
+      placeholder="${esc(state.default_name)}"
+      value="${esc(state.display_name === state.default_name ? "" : state.display_name)}" />
+    <div class="controls">
+      <button class="btn" id="share-delete" type="button">Delete my shared picks</button>
+      <span class="muted" id="share-msg">${state.queued
+        ? `${state.queued} pick${state.queued === 1 ? "" : "s"} waiting to send`
+        : ""}</span>
+    </div>
+  </div>`;
+}
+
+/* The card on Picks. Shown once, above the board, because this is the page
+   where the thing being shared is made -- an explanation of what happens to
+   your picks belongs where you are making them, not three tabs away in
+   Settings where nobody goes until something is wrong. */
+function shareCard(state) {
+  if (!state || !state.needs_notice) return "";
+  return `<div class="panel share-card" id="share-card">
+    <header><h2>Sharing your picks</h2>
+      <span class="hint">one-time notice</span></header>
+    <p>The Edge can take a copy of the picks you make here, grade them, and
+      rank pickers against each other.</p>
+    <div class="share-cols">
+      <div><h3>What's sent</h3><ul>${
+        SHARE_WHAT_GOES.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></div>
+      <div><h3>What isn't</h3><ul>${
+        SHARE_WHAT_STAYS.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></div>
+    </div>
+    <p>${esc(SHARE_WHAT_FOR)}</p>
+    <p class="muted">You can switch this off at any time in Settings, and
+      there's a button there to delete everything already sent.</p>
+    <div class="controls">
+      <button class="btn primary" data-share-choice="on">Share my picks</button>
+      <button class="btn" data-share-choice="off">No thanks</button>
+    </div>
+  </div>`;
+}
+
+function wireShareCard(root, after) {
+  $$("[data-share-choice]", root).forEach((b) => b.addEventListener("click", async () => {
+    await setSharing({ enabled: b.dataset.shareChoice === "on",
+                       notice_seen: true });
+    await loadSharing(true);
+    if (after) after();
+  }));
+}
+
+function wireShareControls(root) {
+  const name = $("#share-name", root);
+  if (name) {
+    name.addEventListener("change", async () => {
+      await setSharing({ display_name: name.value });
+      const msg = $("#share-msg", root);
+      if (msg) msg.textContent = `You are ${shareState?.display_name || ""}.`;
+    });
+  }
+  const del = $("#share-delete", root);
+  if (del) {
+    del.addEventListener("click", async () => {
+      const msg = $("#share-msg", root);
+      // Asked once, because it cannot be undone: the server keeps no copy.
+      if (!window.confirm("Delete every pick you have shared? This removes "
+        + "them from The Edge's server and cannot be undone.")) return;
+      del.disabled = true;
+      const was = del.textContent;
+      del.textContent = "Deleting…";
+      try {
+        const out = await api("/api/sharing/delete", { method: "POST" });
+        if (msg) {
+          msg.textContent = out.ok
+            ? `Deleted${out.deleted ? ` ${out.deleted} pick${
+              out.deleted === 1 ? "" : "s"}` : ""}.`
+            : (out.message || "That could not be deleted.");
+        }
+      } finally {
+        del.disabled = false;
+        del.textContent = was;
+      }
+      await loadSharing(true);
+    });
+  }
+}
+
 /* ------------------------------------------------------------- licensing */
 
 let gatePromise = null;
@@ -2891,6 +3034,7 @@ async function renderPicks(ticket) {
   }
   const data = await api(`/api/picks?week=${state.week}&season=${state.season}`);
   if (stale(ticket)) return;
+  const share = await loadSharing();
   const pickem = data.pickem || {};
   const survivor = data.survivor || {};
 
@@ -2986,7 +3130,7 @@ async function renderPicks(ticket) {
   </div>`).join("");
 
   fitsOneScreen(root);
-  if (!paint(root, `
+  if (!paint(root, `${shareCard(share)}
   <div class="pick-board">
   <div class="panel">
     <header><h2>Picks</h2>
@@ -3059,6 +3203,8 @@ async function renderPicks(ticket) {
   </section>` : ""}
   </div>
   </div>`)) return;
+
+  wireShareCard(root, () => render());
 
   /* No crest grid to wire any more. Which teams have been spent is recorded
      by picking them on the board, beside the game, where the week comes with
@@ -3462,6 +3608,7 @@ async function renderSoon(ticket) {
 
 
 async function renderSettings(ticket) {
+  const share = await loadSharing(true);
   const root = $("#view");
   // The backup list is not worth failing the whole page over: settings still
   // need editing on a machine where the directory cannot be read.
@@ -3554,6 +3701,7 @@ async function renderSettings(ticket) {
         ${s.key === "ODDS_API_KEY"
           ? `<div class="controls"><button class="btn" id="test-odds">Test this key</button>
              <span id="odds-result" class="muted"></span></div>` : ""}
+        ${s.key === "NFLPICKER_SHARE_PICKS" ? shareControls(share) : ""}
       </div>`).join("")}
     </div>
   </details>`).join("")}
@@ -3652,6 +3800,7 @@ async function renderSettings(ticket) {
   /* A refresh re-renders this whole page, which used to close every section
      the reader had opened -- including the one they were halfway through
      filling in. What is open is remembered for the session instead. */
+  wireShareControls(root);
   $$("details.set-group", root).forEach((d) => {
     d.addEventListener("toggle", () => {
       if (d.open) openSettings.add(d.dataset.group);

@@ -21,7 +21,7 @@ from .config import get_config
 
 log = logging.getLogger("nflpicker.db")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Columns added to tables that already shipped, as (table, column, declaration).
 # Adding a column to SCHEMA alone does nothing to a database that already has
@@ -322,6 +322,33 @@ CREATE TABLE IF NOT EXISTS user_picks (
     note       TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (season, week, game_id, contest)
+);
+
+-- Picks waiting to be shared with the licence server, when the user has said
+-- they may be. An outbox rather than a log: a row here is a pick that has not
+-- gone yet, and it is deleted the moment it has. One row per pick, so editing
+-- a pick before kickoff replaces the queued copy instead of sending a second
+-- one -- what the server should hold is the pick as it stands, not a history
+-- of somebody changing their mind.
+--
+-- Nothing reaches this table unless sharing is on and the notice has been
+-- acknowledged; see sharing.may_send, which is checked on the way in as well
+-- as on the way out.
+CREATE TABLE IF NOT EXISTS share_queue (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,            -- winner|spread|total|survivor
+    game_id    TEXT NOT NULL,
+    season     INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    side       TEXT NOT NULL,
+    line       REAL,                     -- the spread as it was when picked
+    price      INTEGER,                  -- American odds at that moment
+    total_line REAL,
+    book_prob  REAL,                     -- the book's win probability then
+    picked_at  TEXT NOT NULL,            -- when the user chose
+    queued_at  TEXT NOT NULL,
+    tries      INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(kind, game_id)
 );
 
 -- Assistant conversations. In the database rather than the browser so they

@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { IMAGE_BYTES_MAX, IMAGE_MAX, SUPPORT_MAX, SUPPORT_RATE, support, validate }
-  from "./worker.js";
+import { IMAGE_BYTES_MAX, IMAGE_MAX, SUPPORT_MAX, SUPPORT_RATE, gradePick,
+  gradeWeek, leaderboard, nflWeek, support, validate } from "./worker.js";
 import worker from "./worker.js";
 
 function fakeWhop(membership, { status = 200, patchStatus = 200 } = {}) {
@@ -356,4 +356,272 @@ test("a rate limiter that is down does not take reporting down with it", async (
   };
   const response = await worker.fetch(post({ description: "still works" }), broken);
   assert.equal(response.status, 200);
+});
+
+// -------------------------------------------------------------------- picks
+//
+// The two things worth pinning: a pick is graded against the line the picker
+// took rather than the one the game closed at, and an id read off the
+// leaderboard is not enough to delete somebody's record.
+
+// D1, in the dozen lines of it these tests need. Enough to prove the routes
+// bind what they say they bind; the SQL itself is D1's problem.
+function fakeD1() {
+  const calls = [];
+  const rows = { picks: [], results: [] };
+  const db = {
+    calls,
+    rows,
+    prepare(sql) {
+      const stmt = {
+        sql,
+        args: [],
+        bind(...args) { stmt.args = args; calls.push({ sql, args }); return stmt; },
+        async run() { return { meta: { changes: 7 } }; },
+        async all() {
+          if (/FROM picks/.test(sql)) return { results: rows.picks };
+          return { results: [] };
+        },
+      };
+      return stmt;
+    },
+    async batch(statements) { return statements.map(() => ({ success: true })); },
+  };
+  return db;
+}
+
+function picksPost(body) {
+  return new Request("https://edge.example/v1/picks", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+const A_PICKER = "0123456789abcdef";
+
+test("a batch of picks is stored under the picker's id", async () => {
+  const PICKS_DB = fakeD1();
+  const response = await worker.fetch(picksPost({
+    picker: A_PICKER,
+    name: "The Commissioner",
+    picks: [
+      { game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5,
+        line: -3.5, book_prob: 0.64, picked_at: "2026-10-06T12:00:00Z" },
+      { game_id: "g1", kind: "survivor", side: "KC", season: 2026, week: 5 },
+    ],
+  }), { PICKS_DB });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, stored: 2 });
+  // The name goes on the picker, the picks on the picks.
+  assert.match(PICKS_DB.calls[0].sql, /INSERT INTO pickers/);
+  assert.equal(PICKS_DB.calls[0].args[1], "The Commissioner");
+  assert.equal(PICKS_DB.calls[1].args[0], A_PICKER);
+  assert.equal(PICKS_DB.calls[1].args[6], -3.5, "the line rides with the pick");
+});
+
+test("the server stamps its own received_at and ignores the client's clock", async () => {
+  // Grading believes this one. A leaderboard graded on a timestamp the client
+  // chose is a ranking of whoever is willing to lie about when they picked.
+  const PICKS_DB = fakeD1();
+  await worker.fetch(picksPost({
+    picker: A_PICKER,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5,
+              picked_at: "1999-01-01T00:00:00Z" }],
+  }), { PICKS_DB });
+  const args = PICKS_DB.calls[1].args;
+  assert.equal(args[10], "1999-01-01T00:00:00Z", "kept, for the record");
+  assert.match(args[11], /^20\d\d-/, "but received_at is ours");
+  assert.notEqual(args[11], args[10]);
+});
+
+test("a picker id that is not sixteen hex characters is refused", async () => {
+  for (const picker of ["", "nope", "0123456789ABCDEF!", "0123456789abcde"]) {
+    const response = await worker.fetch(
+      picksPost({ picker, picks: [{ game_id: "g", kind: "winner", side: "KC" }] }),
+      { PICKS_DB: fakeD1() });
+    assert.equal(response.status, 400, picker);
+  }
+});
+
+test("a pick of a kind this does not grade is dropped, not stored", async () => {
+  const PICKS_DB = fakeD1();
+  const response = await worker.fetch(picksPost({
+    picker: A_PICKER,
+    picks: [{ game_id: "g1", kind: "parlay", side: "KC", season: 2026, week: 5 }],
+  }), { PICKS_DB });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).reason, "empty");
+});
+
+test("with no database bound the app is told to stop rather than retry", async () => {
+  const response = await worker.fetch(picksPost({ picker: A_PICKER, picks: [] }), {});
+  assert.equal(response.status, 200, "not an error the app should queue against");
+  assert.equal((await response.json()).reason, "not_configured");
+});
+
+test("deleting needs the licence key, not just the id", async () => {
+  // The id is printed on the leaderboard. If it authorised a delete, the
+  // leaderboard would be a list of records anybody could erase.
+  const del = (body) => new Request("https://edge.example/v1/picks", {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const PICKS_DB = fakeD1();
+
+  const wrong = await worker.fetch(
+    del({ picker: A_PICKER, license_key: "SOMEONE-ELSES-KEY" }), { PICKS_DB });
+  assert.equal(wrong.status, 403);
+  assert.equal((await wrong.json()).reason, "not_yours");
+
+  // The real one: the id this key actually hashes to.
+  const key = "EDGE-TEST-KEY-0001";
+  const bytes = new TextEncoder().encode(`the-edge:picks:v1:${key}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const mine = [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+
+  const right = await worker.fetch(del({ picker: mine, license_key: key }), { PICKS_DB });
+  assert.equal(right.status, 200);
+  assert.equal((await right.json()).deleted, 7);
+});
+
+// ------------------------------------------------------------------ grading
+
+test("a straight-up pick is graded on who won", () => {
+  const game = { home: "KC", away: "DEN", home_score: 27, away_score: 20 };
+  assert.equal(gradePick({ kind: "winner", side: "KC" }, game), "win");
+  assert.equal(gradePick({ kind: "winner", side: "DEN" }, game), "loss");
+  assert.equal(gradePick({ kind: "survivor", side: "KC" }, game), "win");
+  assert.equal(
+    gradePick({ kind: "winner", side: "KC" },
+              { ...game, home_score: 20 }), "push", "a tie is neither");
+});
+
+test("a spread pick is graded against the line that picker took", () => {
+  // The whole reason the line travels with the pick: KC won by 7, so -3.5 is a
+  // win and -10.5 is a loss, and both people picked the same team.
+  const game = { home: "KC", away: "DEN", home_score: 27, away_score: 20 };
+  assert.equal(gradePick({ kind: "spread", side: "KC", line: -3.5 }, game), "win");
+  assert.equal(gradePick({ kind: "spread", side: "KC", line: -10.5 }, game), "loss");
+  // The away side of the same number, and the exact-number push.
+  assert.equal(gradePick({ kind: "spread", side: "DEN", line: -10.5 }, game), "win");
+  assert.equal(gradePick({ kind: "spread", side: "KC", line: -7 }, game), "push");
+});
+
+test("a total is graded over or under the number on the ticket", () => {
+  const game = { home: "KC", away: "DEN", home_score: 27, away_score: 20 };
+  assert.equal(gradePick({ kind: "total", side: "OVER", total_line: 44.5 }, game), "win");
+  assert.equal(gradePick({ kind: "total", side: "UNDER", total_line: 44.5 }, game), "loss");
+  assert.equal(gradePick({ kind: "total", side: "OVER", total_line: 47 }, game), "push");
+});
+
+test("a game with no final score is not graded at all", () => {
+  const open = { home: "KC", away: "DEN", home_score: null, away_score: null };
+  assert.equal(gradePick({ kind: "winner", side: "KC" }, open), null);
+  // Nor is a spread pick that arrived without a line to grade against.
+  assert.equal(gradePick({ kind: "spread", side: "KC", line: null },
+                         { home: "KC", away: "DEN", home_score: 27, away_score: 20 }),
+               null);
+});
+
+test("a pick that arrived after kickoff is marked late, not counted", async () => {
+  const PICKS_DB = fakeD1();
+  PICKS_DB.rows.picks = [
+    { picker: A_PICKER, game_id: "401", kind: "winner", side: "KC",
+      received_at: "2026-10-11T19:30:00Z" },                 // after kickoff
+    { picker: "aaaaaaaaaaaaaaaa", game_id: "401", kind: "winner", side: "KC",
+      received_at: "2026-10-11T12:00:00Z" },                 // before it
+  ];
+  const espn = async () => new Response(JSON.stringify({
+    events: [{
+      id: "401", date: "2026-10-11T17:00:00Z",
+      competitions: [{
+        status: { type: { completed: true } },
+        competitors: [
+          { homeAway: "home", score: "27", team: { abbreviation: "KC" } },
+          { homeAway: "away", score: "20", team: { abbreviation: "DEN" } },
+        ],
+      }],
+    }],
+  }), { status: 200 });
+
+  const out = await gradeWeek({ PICKS_DB }, 2026, 5, espn);
+  assert.equal(out.games, 1);
+  assert.equal(out.graded, 1, "only the one that beat the kickoff");
+  assert.equal(out.late, 1);
+  const updates = PICKS_DB.calls.filter((c) => /UPDATE picks SET result/.test(c.sql));
+  assert.equal(updates.find((c) => c.args.includes(A_PICKER)).sql.includes("'late'"), true);
+});
+
+test("the leaderboard ranks by rate and leaves pushes out of it", async () => {
+  const PICKS_DB = fakeD1();
+  PICKS_DB.prepare = (sql) => ({
+    bind: () => ({
+      async all() {
+        return { results: [
+          { picker: "b".repeat(16), name: "Steady", wins: 6, losses: 4,
+            pushes: 2, pending: 1, late: 0, total: 13, last_at: "2026-10-11" },
+          { picker: "a".repeat(16), name: "Sharp", wins: 9, losses: 1,
+            pushes: 0, pending: 0, late: 0, total: 10, last_at: "2026-10-11" },
+        ] };
+      },
+    }),
+    sql,
+  });
+  const board = await leaderboard({ PICKS_DB }, 2026);
+  assert.deepEqual(board.map((r) => r.name), ["Sharp", "Steady"]);
+  assert.equal(board[0].rate, 0.9);
+  assert.equal(board[1].decided, 10, "the two pushes are in neither column");
+});
+
+test("the dashboard is a 404 without the token", async () => {
+  const env = { PICKS_DB: fakeD1(), DASHBOARD_TOKEN: "a-long-random-string" };
+  for (const query of ["", "?token=", "?token=guess"]) {
+    const res = await worker.fetch(
+      new Request(`https://edge.example/v1/dashboard${query}`), env);
+    assert.equal(res.status, 404, query);
+  }
+  // And a 404 when no token is configured at all, rather than wide open.
+  const unset = await worker.fetch(
+    new Request("https://edge.example/v1/dashboard?token=anything"),
+    { PICKS_DB: fakeD1() });
+  assert.equal(unset.status, 404);
+});
+
+test("the dashboard never lets itself be cached", async () => {
+  const env = { PICKS_DB: fakeD1(), DASHBOARD_TOKEN: "a-long-random-string" };
+  const res = await worker.fetch(new Request(
+    "https://edge.example/v1/dashboard?token=a-long-random-string&season=2026"), env);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("cache-control"), /no-store/);
+  assert.match(await res.text(), /Pickers · 2026/);
+});
+
+test("a picker's name cannot put markup on the dashboard", async () => {
+  const PICKS_DB = fakeD1();
+  PICKS_DB.prepare = (sql) => ({
+    sql,
+    bind: () => ({
+      async all() {
+        return { results: [{ picker: "c".repeat(16), wins: 1, losses: 0,
+                             pushes: 0, pending: 0, late: 0, total: 1,
+                             name: '<script>alert(1)</script>' }] };
+      },
+    }),
+  });
+  const res = await worker.fetch(new Request(
+    "https://edge.example/v1/dashboard?token=t"), { PICKS_DB, DASHBOARD_TOKEN: "t" });
+  const html = await res.text();
+  assert.equal(html.includes("<script>alert(1)</script>"), false);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test("the season and week a date belongs to", () => {
+  // The case that makes this a function: January is last season.
+  assert.deepEqual(nflWeek(new Date("2027-01-05T12:00:00Z")).season, 2026);
+  assert.equal(nflWeek(new Date("2026-09-10T12:00:00Z")).week, 1);
+  assert.equal(nflWeek(new Date("2026-09-17T12:00:00Z")).week, 2);
+  assert.equal(nflWeek(new Date("2026-06-01T12:00:00Z")).week, 1, "clamped, not negative");
 });

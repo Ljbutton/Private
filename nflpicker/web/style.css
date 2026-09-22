@@ -2984,3 +2984,38 @@ dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
 .report-msg { font-size: 12px; margin-top: 8px; min-height: 1em; }
 .report-msg.ok { color: var(--good); }
 .report-msg.warn { color: var(--warning); }
+
+/* ------------------------------------------------------------ pick sharing */
+/* The one-time notice, above the board on the page where picks are made.
+   Deliberately a panel and not a toast: it is a bargain being explained, and
+   a bargain that fades out after four seconds was not explained. */
+.share-card { border-color: color-mix(in srgb, var(--series-1) 45%, var(--border)); }
+.share-card p { margin: 0 0 10px; font-size: 13px; line-height: 1.6; }
+.share-card p.muted { font-size: 12px; }
+.share-cols {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px; margin: 0 0 12px;
+}
+.share-cols h3 {
+  margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-muted); font-weight: 700;
+}
+.share-cols ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+.share-cols li { font-size: 12.5px; line-height: 1.5; }
+/* Both choices the same size and the same shape. A "no" that is a grey link
+   beside a green button is not a choice being offered, it is one being
+   discouraged, and this is the one place in the app where that would matter. */
+.share-card .controls .btn { min-width: 150px; justify-content: center; }
+
+/* Who you are, and the way out, under the switch in Settings. */
+.share-extra { margin-top: 10px; display: grid; gap: 6px; }
+.share-id { font-size: 12px; color: var(--text-secondary); }
+.share-id .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--text-muted); margin-left: 6px;
+}
+#share-name {
+  width: 100%; font-family: inherit; font-size: 13px; padding: 7px 9px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg-input, var(--bg-panel)); color: var(--text-primary);
+}

@@ -215,6 +215,22 @@ SETTINGS: tuple[Setting, ...] = (
                    "leave on; a worse model is rejected rather than shipped.",
         default="true",
     ),
+    Setting(
+        key="NFLPICKER_SHARE_PICKS",
+        label="Share my picks with The Edge",
+        kind="bool",
+        group="Sharing",
+        help="Sends your picks, the line each one was made at, and an id, so "
+             "they can be graded and ranked. Your name, your email and your "
+             "licence key are not sent. The id is not your name, but it is "
+             "derived from your licence key, so The Edge can tell which "
+             "customer a picker is — that is how a strong picker gets "
+             "followed. Off stops it immediately, and there is a button below "
+             "to delete everything already sent.",
+        needed_for="The leaderboard, and letting strong pickers feed back "
+                   "into the model. Nothing in the app needs it to work.",
+        default="false",
+    ),
 )
 
 _BY_KEY = {s.key: s for s in SETTINGS}
@@ -248,6 +264,22 @@ def _mask(value: str) -> str:
     if not value:
         return ""
     return f"••••{value[-4:]}" if len(value) > 4 else "••••"
+
+
+def raw_value(key: str) -> str | None:
+    """What is written down for a setting, or None if nothing is.
+
+    The difference matters for anything with a default that might change:
+    "absent" and "explicitly off" look the same through :func:`current`, and a
+    user who turned something off is not the same as a user who never met it.
+    """
+    import os
+
+    stored = _parse(env_path())
+    if key in stored:
+        return stored[key]
+    live = os.environ.get(key)
+    return live if live not in (None, "") else None
 
 
 def current() -> dict:

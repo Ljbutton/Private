@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ from .teams import DIVISIONS, TEAMS, reference
 from .util import MARGIN_SD, margin_to_win_prob, now_iso
 
 WEB_DIR = Path(__file__).parent / "web"
+
+log = logging.getLogger(__name__)
 
 
 def _sse(data: dict) -> str:
@@ -468,12 +471,14 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         if not game:
             raise HTTPException(status_code=404, detail="unknown game")
         contest = payload.get("contest") or "straight"
+        kind = "spread" if contest == "spread" else "winner"
         selection = (payload.get("selection") or "").strip().upper()
         if not selection:
             db.execute(
                 "DELETE FROM user_picks WHERE season = ? AND week = ? "
                 "AND game_id = ? AND contest = ?",
                 (game["season"], game["week"], game["game_id"], contest))
+            share_pick(kind, game, None)
             return {"ok": True, "selection": None}
         if selection not in {game["home"], game["away"]}:
             raise HTTPException(status_code=400, detail="not a team in this game")
@@ -483,7 +488,89 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "VALUES(?,?,?,?,?,?,?)",
             (game["season"], game["week"], game["game_id"], contest, selection,
              payload.get("note"), now_iso()))
+        # After the pick is written, never before: sharing is a copy of a
+        # decision the user made for their own reasons, and it must not be
+        # able to stop them making it.
+        share_pick(kind, game, selection, payload.get("picked_at"))
         return {"ok": True, "selection": selection}
+
+    def share_market(game_id: str) -> dict:
+        """The line and price as they stand, for a pick being made now.
+
+        Snapshotted rather than looked up later on purpose: "I took them at
+        -3" and "they closed at -7" are different claims, and a leaderboard
+        that grades against the closing line is grading somebody on a number
+        they never saw.
+        """
+        row = db.query_one(
+            "SELECT * FROM consensus WHERE game_id = ? "
+            "ORDER BY captured_at DESC LIMIT 1", (game_id,))
+        if not row:
+            return {}
+        return {"line": row["spread_home"], "total_line": row["total_points"],
+                "price": row["ml_home"], "book_prob": row["home_win_prob"]}
+
+    def share_pick(kind: str, game: dict, side: str | None,
+                   picked_at: str | None = None) -> None:
+        """Copy one pick into the share queue, if sharing is on.
+
+        Wrapped so nothing about sharing can break making a pick: this is a
+        side effect of an action the user took for their own reasons, and it
+        fails silently by design.
+        """
+        from . import sharing
+
+        try:
+            if not side:
+                sharing.clear(kind, game["game_id"])
+                return
+            if not sharing.may_send():
+                return
+            # Nothing after kickoff. A pick recorded once the game is under
+            # way is worth nothing to a leaderboard and everything to somebody
+            # gaming one, so it is not queued at all.
+            if str(game.get("status") or "scheduled") != "scheduled":
+                return
+            market = share_market(game["game_id"])
+            if sharing.enqueue(kind, game_id=game["game_id"],
+                               season=game["season"], week=game["week"],
+                               side=side, picked_at=picked_at, **market):
+                sharing.nudge()
+        except Exception:                                     # noqa: BLE001
+            log.debug("could not share a pick", exc_info=True)
+
+    @app.get("/api/sharing")
+    def sharing_state() -> dict:
+        from . import sharing
+
+        return sharing.state()
+
+    @app.post("/api/sharing")
+    def sharing_set(payload: dict = Body(default={})) -> dict:  # noqa: B008
+        """The switch, the display name, and acknowledging the notice.
+
+        One endpoint because the notice's two buttons are both a choice about
+        the switch, and a modal that has to make two calls to record one
+        decision is a modal that can record half of it.
+        """
+        from . import sharing
+
+        if "enabled" in payload:
+            sharing.set_enabled(bool(payload.get("enabled")))
+        if payload.get("notice_seen"):
+            sharing.mark_notice_seen()
+        if "display_name" in payload:
+            sharing.set_display_name(str(payload.get("display_name") or ""))
+        if sharing.may_send():
+            sharing.nudge()
+        return sharing.state()
+
+    @app.post("/api/sharing/delete")
+    def sharing_delete() -> dict:
+        """Delete everything the server holds for this installation."""
+        from . import sharing
+
+        return sharing.forget()
 
     @app.post("/api/backfill")
     def backfill(payload: dict) -> dict:
@@ -953,6 +1040,23 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         by_week[str(season)] = season_picks
         db.set_meta(SURVIVOR_PICKS_KEY, by_week)
         _sync_legacy_survivor_keys(season)
+        # The survivor team is a pick like any other, and the one worth the
+        # most to a leaderboard: it is the only one where the picker is
+        # spending something to make it.
+        survivor_game = db.query_one(
+            "SELECT * FROM games WHERE season = ? AND week = ? "
+            "AND (home = ? OR away = ?)",
+            (season, week, team or "", team or "")) if team else None
+        if survivor_game:
+            share_pick("survivor", survivor_game, team,
+                       payload.get("picked_at"))
+        elif not team:
+            for row in db.query(
+                    "SELECT game_id FROM games WHERE season = ? AND week = ?",
+                    (season, week)):
+                from . import sharing
+
+                sharing.clear("survivor", row["game_id"])
         # Only the plan, not the world. This used to force a full recompute --
         # Elo over every game ever, the model over the whole history, twenty
         # thousand season simulations -- none of which depends on which team

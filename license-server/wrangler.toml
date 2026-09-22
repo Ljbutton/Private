@@ -13,6 +13,21 @@ GITHUB_REPO = "Ljbutton/Private"
 RELEASE_TAG = "latest"
 DOWNLOAD_PAGE = "https://whop.com/the-edge-ab78/the-edge-fd-e121"
 
+# Grading runs on a timer: hourly is plenty for a sport that plays three days
+# a week, and it keeps the leaderboard current without making whoever opens it
+# wait for ESPN.
+[triggers]
+crons = ["17 * * * *"]
+
+# The shared-picks database. Create it and paste the id in:
+#   npx wrangler d1 create the-edge-picks
+#   npx wrangler d1 execute the-edge-picks --remote --file license-server/schema.sql
+# [[d1_databases]]
+# binding = "PICKS_DB"
+# database_name = "the-edge-picks"
+# database_id = "paste-the-id-here"
+
 # Secrets are never written here. Set them with:
 #   npx wrangler secret put WHOP_API_KEY
 #   npx wrangler secret put GITHUB_TOKEN     (only once the repo is private)
+#   npx wrangler secret put DASHBOARD_TOKEN  (guards /v1/dashboard — make it long)

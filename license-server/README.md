@@ -152,3 +152,63 @@ simply does not rate-limit.
 With either secret unset the endpoint answers `{ok: false}` with a 502 and says
 only that reporting is not set up — never which secret is missing — and the app
 offers to copy the message to the clipboard so nothing the user wrote is lost.
+
+
+## Shared picks
+
+Customers who turn on **Share my picks with The Edge** send each pick to
+`POST /v1/picks` here as they make it. The Worker stores it, grades it once the
+game is final, and shows a leaderboard at `/v1/dashboard`.
+
+**What arrives.** A picker id, a display name, and one row per pick: the game,
+the kind (winner, spread, total or survivor), the side, and the line, price and
+book probability *as they stood when the pick was made*. Not the closing line —
+somebody who took a team at -3 did not take them at -7, and grading them on a
+number they never saw would make the leaderboard meaningless.
+
+**The id is a pseudonym, not an anonymiser.** Sixteen hex characters of
+`SHA-256("the-edge:picks:v1:" + licence key)`. The key is not in these requests,
+so this database is not a list of anybody's subscription — but the salt is in
+the app's source and you hold the keys, so you can work out which customer a
+picker is whenever you want to. That is the point of the feature; it is what the
+in-app notice says, and it is why the app never uses the word "anonymous".
+
+**Two rules the routes keep.**
+
+* Grading uses `received_at`, stamped here, never the client's `picked_at`. A
+  pick that arrives after its game kicked off is marked `late` and counted in
+  neither column. Without this the leaderboard ranks whoever is most willing to
+  lie about when they picked.
+* Deleting needs the licence key. `DELETE /v1/picks` takes `{picker,
+  license_key}` and checks the key hashes to the id before removing anything —
+  the id is printed on the leaderboard, so it cannot also be what authorises
+  erasing somebody's record.
+
+**Setting it up.** A D1 database and one secret:
+
+```
+npx wrangler d1 create the-edge-picks
+# paste the returned id into wrangler.toml as the PICKS_DB binding, then
+npx wrangler d1 execute the-edge-picks --remote --file license-server/schema.sql
+npx wrangler secret put DASHBOARD_TOKEN    # long and random
+```
+
+D1 rather than the KV the rest of this Worker uses, because a leaderboard is a
+`GROUP BY` and doing that over KV means reading every key on every page load. A
+hundred customers picking sixteen games a week is under two thousand rows a
+week, which is nowhere near the free tier.
+
+With no `PICKS_DB` bound the endpoint answers `{ok: false, reason:
+"not_configured"}` with a 200, which tells the app to drop the batch rather
+than queue it for ever.
+
+**The dashboard.** `GET /v1/dashboard?token=...&season=2026`. The token is the
+whole of the authentication and it travels in a URL, so it ends up in browser
+history — treat it like a password, and anything but an exact match is a 404
+rather than a 403, so the page does not announce itself. The response is
+`no-store`: it is every sharing customer's record.
+
+**Grading.** A cron trigger (hourly, `17 * * * *`) grades the current week and
+the one before it — a Monday night game is graded after the week has rolled
+over. Results come from ESPN's public scoreboard, the same source the app uses,
+so the two cannot disagree about who won.
