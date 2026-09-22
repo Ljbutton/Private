@@ -8,7 +8,7 @@
 // Endpoints
 //   POST /v1/support    {category, description, doing, email, details,
 //                        images[]}                            -> {ok, ref}
-//   POST /v1/picks      {picker, name, picks[]}          -> {ok, stored}
+//   POST /v1/picks      {picker, license_key, name, picks[]} -> {ok, stored}
 //   DELETE /v1/picks    {picker, license_key}            -> {ok, deleted}
 //   GET  /v1/dashboard?token=...                    -> the private leaderboard
 //   POST /v1/validate   {license_key, machine_id}  -> {valid, status, reason, message}
@@ -346,9 +346,62 @@ const PICK_SALT = "the-edge:picks:v1";
 const PICK_ID_CHARS = 16;
 
 // One request's worth. The app batches fifty; this is the ceiling it is held
-// to, because the endpoint takes no licence key.
+// to.
 export const PICKS_MAX = 200;
 const PICK_KINDS = new Set(["winner", "spread", "total", "survivor"]);
+
+// Batches per key per hour. A week of picking is a handful: a full slate goes
+// in one batch of sixteen, and changing your mind all Sunday morning is a few
+// dozen more. Sixty is generous enough that a real customer never sees it and
+// tight enough that a leaked key cannot be used to fill the table.
+export const PICKS_RATE = 60;
+
+// How long a licence check is trusted. Without it, a customer clicking through
+// a full slate makes one Whop call per pick.
+export const LICENCE_TTL_MS = 10 * 60 * 1000;
+
+// Keyed by the picker id, which is a one-way hash of the licence key: one
+// entry per key, which is what this has to be, without a raw key sitting in a
+// long-lived map where a heap dump or an error trace could find it. In memory
+// only -- never serialised, never logged, never written to D1, and gone when
+// the isolate is recycled, which is the right lifetime for a ten-minute cache.
+const licenceCache = new Map();
+
+function cachedLicence(picker) {
+  const hit = licenceCache.get(picker);
+  if (!hit) return null;
+  if (hit.until < Date.now()) {
+    licenceCache.delete(picker);
+    return null;
+  }
+  return hit;
+}
+
+function rememberLicence(picker, valid) {
+  // A ceiling, so a long-lived isolate cannot grow this without bound. Far
+  // more entries than this will ever hold at once.
+  if (licenceCache.size > 1000) licenceCache.clear();
+  licenceCache.set(picker, { valid, until: Date.now() + LICENCE_TTL_MS });
+}
+
+// Per key per hour, in the same KV the support endpoint uses. The bucket name
+// carries the picker id rather than the key, so nothing secret is in KV
+// either.
+async function overPicksLimit(env, picker) {
+  const store = env.PICKS_RL || env.SUPPORT_RL;
+  if (!store) return false;
+  const bucket = `pk:${picker}:${Math.floor(Date.now() / 3_600_000)}`;
+  try {
+    const seen = Number(await store.get(bucket)) || 0;
+    if (seen >= PICKS_RATE) return true;
+    await store.put(bucket, String(seen + 1), { expirationTtl: 7200 });
+  } catch (err) {
+    // A rate limiter that is down must not take pick sharing down with it.
+    console.log("picks: rate limit unavailable", String(err && err.message || err));
+    return false;
+  }
+  return false;
+}
 
 async function pickerFor(key) {
   const bytes = new TextEncoder().encode(`${PICK_SALT}:${key}`);
@@ -397,6 +450,65 @@ async function picksRoute(request, env) {
   if (!/^[0-9a-f]{16}$/.test(picker)) {
     return json({ ok: false, reason: "bad_picker" }, 400);
   }
+
+  // Everything below is the gate. This endpoint shipped without one, on the
+  // support endpoint's reasoning -- that endpoint takes no key because "my key
+  // will not activate" is exactly the message that cannot produce one. Picks
+  // are the opposite case: only a paying customer has picks worth grading, and
+  // an open write endpoint means anybody who finds the URL can fill the table
+  // the leaderboard is built from.
+  const key = String(body.license_key || "").trim();
+  if (!key) {
+    return json({ ok: false, reason: "unlicensed",
+                  message: "Pick sharing needs a live subscription." }, 403);
+  }
+
+  // The id has to be the one this key produces. Without this, one valid
+  // subscription could write under any id it liked -- somebody else's, or a
+  // thousand invented ones -- and the leaderboard would be whatever its
+  // busiest customer decided it was.
+  if (await pickerFor(key) !== picker) {
+    return json({ ok: false, reason: "picker_mismatch",
+                  message: "That picker id does not belong to that key." }, 403);
+  }
+
+  // Before the Whop call, so a flood cannot be turned into a flood of those.
+  if (await overPicksLimit(env, picker)) {
+    return json({ ok: false, reason: "rate_limited",
+                  message: "Too many batches from this key in the last hour." },
+                429);
+  }
+
+  let degraded = false;
+  const cached = cachedLicence(picker);
+  if (cached) {
+    if (!cached.valid) {
+      return json({ ok: false, reason: "unlicensed",
+                    message: "Pick sharing needs a live subscription." }, 403);
+    }
+  } else {
+    // No machine id: this is not an activation, and registering a computer as
+    // a side effect of sharing a pick would spend one of the customer's two
+    // slots without them doing anything.
+    const check = await validate({ license_key: key }, env);
+    if (check.valid === true) {
+      rememberLicence(picker, true);
+    } else if (check.valid === null) {
+      // Whop is having a bad day. Taking the batch is the right call: the
+      // alternative is losing a customer's picks over somebody else's outage,
+      // and the id still had to match a well-formed key to get this far. Not
+      // cached, so the next batch tries Whop again.
+      degraded = true;
+      console.log("picks: accepted without a licence check, Whop unreachable",
+                  String(check.message || check.reason || ""));
+    } else {
+      rememberLicence(picker, false);
+      return json({ ok: false, reason: "unlicensed",
+                    message: check.message
+                      || "Pick sharing needs a live subscription." }, 403);
+    }
+  }
+
   const picks = (Array.isArray(body.picks) ? body.picks : [])
     .slice(0, PICKS_MAX).map(cleanPick).filter(Boolean);
   if (!picks.length) return json({ ok: false, reason: "empty" }, 400);
@@ -433,7 +545,9 @@ async function picksRoute(request, env) {
     console.log("picks: store failed", String(err && err.message || err));
     return json({ ok: false, reason: "store_failed" }, 502);
   }
-  return json({ ok: true, stored: picks.length });
+  return json(degraded
+    ? { ok: true, stored: picks.length, unchecked: true }
+    : { ok: true, stored: picks.length });
 }
 
 async function picksDeleteRoute(request, env) {

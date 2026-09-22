@@ -307,3 +307,85 @@ def test_the_notice_is_only_shown_once_per_version(keyed):
     # A second launch, a third, a reload: the answer is recorded, not asked for.
     assert sharing.state()["needs_notice"] is False
     assert sharing.state()["notice_seen"] == sharing.NOTICE_VERSION
+
+
+# ------------------------------------------------ the key goes, and is checked
+#
+# The endpoint took anything at first: a picker id and some picks, no proof of
+# anything. Checking a subscription means sending the thing that identifies
+# one, so the key now travels with each batch -- which is a claim the notice
+# had to be corrected for, and a thing worth a test.
+
+def test_a_batch_carries_the_key_that_proves_the_subscription(keyed, monkeypatch):
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    sharing.enqueue("winner", game_id="demo-1", season=2026, week=5, side="KC")
+
+    sent = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, json=None):
+            sent.update({"url": url, "body": json})
+            return FakeResponse()
+
+    monkeypatch.setattr("httpx.Client", FakeClient)
+    assert sharing.flush()["sent"] == 1
+    assert sent["url"].endswith("/v1/picks")
+    assert sent["body"]["license_key"] == "EDGE-TEST-KEY-0001"
+    assert sent["body"]["picker"] == keyed
+    assert sharing.pending() == [], "and the queue is emptied on success"
+
+
+def test_a_refusal_drops_the_batch_rather_than_retrying_for_ever(keyed, monkeypatch):
+    """A lapsed subscription will not start working because the app asked
+    sixty more times. A rate limit is the other way round -- that one is
+    temporary, so those rows stay and wait."""
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+
+    def answer(status):
+        class FakeResponse:
+            status_code = status
+
+            def raise_for_status(self):
+                raise RuntimeError(f"HTTP {status}")
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def post(self, url, json=None):
+                return FakeResponse()
+
+        return FakeClient
+
+    sharing.enqueue("winner", game_id="demo-1", season=2026, week=5, side="KC")
+    monkeypatch.setattr("httpx.Client", answer(403))
+    assert sharing.flush()["reason"] == "refused"
+    assert sharing.pending() == [], "dropped, not queued against a day that is not coming"
+
+    sharing.enqueue("winner", game_id="demo-2", season=2026, week=5, side="DEN")
+    monkeypatch.setattr("httpx.Client", answer(429))
+    assert sharing.flush()["reason"] == "unreachable"
+    assert len(sharing.pending()) == 1, "a rate limit is worth waiting out"

@@ -2,8 +2,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { IMAGE_BYTES_MAX, IMAGE_MAX, SUPPORT_MAX, SUPPORT_RATE, gradePick,
-  gradeWeek, leaderboard, nflWeek, support, validate } from "./worker.js";
+import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
+  gradePick, gradeWeek, leaderboard, nflWeek, support, validate }
+  from "./worker.js";
 import worker from "./worker.js";
 
 function fakeWhop(membership, { status = 200, patchStatus = 200 } = {}) {
@@ -398,37 +399,63 @@ function picksPost(body) {
   });
 }
 
+// The id a key produces, worked out the same way the app and the Worker do.
+// Tests use a different key each time: the licence check is cached per key for
+// ten minutes in a module-level map, so sharing one key between tests would
+// let the first decide the rest.
+async function pickerIdFor(key) {
+  const bytes = new TextEncoder().encode(`the-edge:picks:v1:${key}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+
+// Whop, the picks database, and nothing else.
+const picksEnv = (PICKS_DB) => ({
+  PICKS_DB, WHOP_API_KEY: "k", WHOP_PRODUCT_ID: "prod_1",
+});
+const live = { id: "mem_1", status: "active", product: { id: "prod_1" }, metadata: {} };
+
 const A_PICKER = "0123456789abcdef";
 
 test("a batch of picks is stored under the picker's id", async () => {
   const PICKS_DB = fakeD1();
+  const key = "KEY-STORE-0001";
+  fakeWhop({ ...live });
   const response = await worker.fetch(picksPost({
-    picker: A_PICKER,
+    picker: await pickerIdFor(key),
+    license_key: key,
     name: "The Commissioner",
     picks: [
       { game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5,
         line: -3.5, book_prob: 0.64, picked_at: "2026-10-06T12:00:00Z" },
       { game_id: "g1", kind: "survivor", side: "KC", season: 2026, week: 5 },
     ],
-  }), { PICKS_DB });
+  }), picksEnv(PICKS_DB));
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, stored: 2 });
   // The name goes on the picker, the picks on the picks.
   assert.match(PICKS_DB.calls[0].sql, /INSERT INTO pickers/);
   assert.equal(PICKS_DB.calls[0].args[1], "The Commissioner");
-  assert.equal(PICKS_DB.calls[1].args[0], A_PICKER);
+  assert.equal(PICKS_DB.calls[1].args[0], await pickerIdFor(key));
   assert.equal(PICKS_DB.calls[1].args[6], -3.5, "the line rides with the pick");
+  // Only the id is stored. The key authenticated the batch and goes no further.
+  const everything = JSON.stringify(PICKS_DB.calls);
+  assert.equal(everything.includes(key), false, "no licence key reaches D1");
 });
 
 test("the server stamps its own received_at and ignores the client's clock", async () => {
   // Grading believes this one. A leaderboard graded on a timestamp the client
   // chose is a ranking of whoever is willing to lie about when they picked.
   const PICKS_DB = fakeD1();
+  const key = "KEY-CLOCK-0002";
+  fakeWhop({ ...live });
   await worker.fetch(picksPost({
-    picker: A_PICKER,
+    picker: await pickerIdFor(key),
+    license_key: key,
     picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5,
               picked_at: "1999-01-01T00:00:00Z" }],
-  }), { PICKS_DB });
+  }), picksEnv(PICKS_DB));
   const args = PICKS_DB.calls[1].args;
   assert.equal(args[10], "1999-01-01T00:00:00Z", "kept, for the record");
   assert.match(args[11], /^20\d\d-/, "but received_at is ours");
@@ -446,10 +473,13 @@ test("a picker id that is not sixteen hex characters is refused", async () => {
 
 test("a pick of a kind this does not grade is dropped, not stored", async () => {
   const PICKS_DB = fakeD1();
+  const key = "KEY-PARLAY-0003";
+  fakeWhop({ ...live });
   const response = await worker.fetch(picksPost({
-    picker: A_PICKER,
+    picker: await pickerIdFor(key),
+    license_key: key,
     picks: [{ game_id: "g1", kind: "parlay", side: "KC", season: 2026, week: 5 }],
-  }), { PICKS_DB });
+  }), picksEnv(PICKS_DB));
   assert.equal(response.status, 400);
   assert.equal((await response.json()).reason, "empty");
 });
@@ -624,4 +654,205 @@ test("the season and week a date belongs to", () => {
   assert.equal(nflWeek(new Date("2026-09-10T12:00:00Z")).week, 1);
   assert.equal(nflWeek(new Date("2026-09-17T12:00:00Z")).week, 2);
   assert.equal(nflWeek(new Date("2026-06-01T12:00:00Z")).week, 1, "clamped, not negative");
+});
+
+// ------------------------------------------------- picks need a subscription
+//
+// This endpoint shipped without a licence check: anybody with the URL could
+// write to the picks table, under any id they invented. These are the tests
+// that keep it shut.
+
+test("a valid key with a matching picker id is stored", async () => {
+  const PICKS_DB = fakeD1();
+  const key = "KEY-GOOD-1001";
+  const calls = fakeWhop({ ...live });
+  const response = await worker.fetch(picksPost({
+    picker: await pickerIdFor(key),
+    license_key: key,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }],
+  }), picksEnv(PICKS_DB));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, stored: 1 });
+  assert.ok(calls.some((c) => c.url.includes("/memberships/")), "Whop was asked");
+  // No machine is registered by sharing a pick: that would quietly spend one
+  // of the customer's two computer slots.
+  assert.equal(calls.some((c) => c.method === "PATCH"), false);
+});
+
+test("an invalid key is refused and nothing is written", async () => {
+  const PICKS_DB = fakeD1();
+  const key = "KEY-DEAD-1002";
+  fakeWhop({ ...live, status: "canceled" });
+  const response = await worker.fetch(picksPost({
+    picker: await pickerIdFor(key),
+    license_key: key,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }],
+  }), picksEnv(PICKS_DB));
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).reason, "unlicensed");
+  assert.deepEqual(PICKS_DB.calls, [], "not one statement ran");
+});
+
+test("no key at all is refused", async () => {
+  // The shape the endpoint shipped in: a picker id and some picks.
+  const PICKS_DB = fakeD1();
+  fakeWhop({ ...live });
+  const response = await worker.fetch(picksPost({
+    picker: A_PICKER,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }],
+  }), picksEnv(PICKS_DB));
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).reason, "unlicensed");
+  assert.deepEqual(PICKS_DB.calls, []);
+});
+
+test("a valid key cannot write under somebody else's picker id", async () => {
+  // Otherwise one subscription is a licence to write the whole leaderboard:
+  // somebody else's row, or a thousand invented ones.
+  const PICKS_DB = fakeD1();
+  const key = "KEY-GOOD-1003";
+  const calls = fakeWhop({ ...live });
+  const response = await worker.fetch(picksPost({
+    picker: await pickerIdFor("SOMEBODY-ELSES-KEY"),
+    license_key: key,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }],
+  }), picksEnv(PICKS_DB));
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).reason, "picker_mismatch");
+  assert.deepEqual(PICKS_DB.calls, []);
+  assert.equal(calls.length, 0, "refused before Whop is even asked");
+});
+
+test("Whop being down takes the batch rather than punishing the customer", async () => {
+  const PICKS_DB = fakeD1();
+  const key = "KEY-OUTAGE-1004";
+  fakeWhop({ ...live }, { status: 503 });
+  const logged = [];
+  const realLog = console.log;
+  console.log = (...args) => logged.push(args.join(" "));
+  let body;
+  try {
+    const response = await worker.fetch(picksPost({
+      picker: await pickerIdFor(key),
+      license_key: key,
+      picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }],
+    }), picksEnv(PICKS_DB));
+    assert.equal(response.status, 200);
+    body = await response.json();
+  } finally {
+    console.log = realLog;
+  }
+  assert.equal(body.ok, true);
+  assert.equal(body.unchecked, true, "and it says the check was skipped");
+  assert.ok(logged.some((l) => /Whop unreachable/.test(l)), "and it is logged");
+  assert.equal(logged.join(" ").includes(key), false, "without the key in it");
+});
+
+test("an outage is not cached, so the next batch asks Whop again", async () => {
+  const key = "KEY-OUTAGE-1005";
+  const picker = await pickerIdFor(key);
+  const batch = { picker, license_key: key,
+                  picks: [{ game_id: "g1", kind: "winner", side: "KC",
+                            season: 2026, week: 5 }] };
+  const realLog = console.log;
+  console.log = () => {};
+  try {
+    const down = fakeWhop({ ...live }, { status: 503 });
+    await worker.fetch(picksPost(batch), picksEnv(fakeD1()));
+    assert.equal(down.length, 1);
+    const up = fakeWhop({ ...live }, { status: 503 });
+    await worker.fetch(picksPost(batch), picksEnv(fakeD1()));
+    assert.equal(up.length, 1, "asked again rather than trusting the outage");
+  } finally {
+    console.log = realLog;
+  }
+});
+
+test("the licence check is cached: two batches, one Whop call", async () => {
+  const key = "KEY-CACHE-1006";
+  const picker = await pickerIdFor(key);
+  const calls = fakeWhop({ ...live });
+  const batch = (gameId) => picksPost({
+    picker, license_key: key,
+    picks: [{ game_id: gameId, kind: "winner", side: "KC", season: 2026, week: 5 }],
+  });
+
+  const first = await worker.fetch(batch("g1"), picksEnv(fakeD1()));
+  const second = await worker.fetch(batch("g2"), picksEnv(fakeD1()));
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(calls.filter((c) => c.url.includes("/memberships/")).length, 1,
+               "a full slate must not be one Whop call per pick");
+});
+
+test("a refusal is cached too, so a dead key cannot be used to hammer Whop", async () => {
+  const key = "KEY-DEAD-1007";
+  const picker = await pickerIdFor(key);
+  const calls = fakeWhop({ ...live, status: "expired" });
+  const batch = picksPost({ picker, license_key: key,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }] });
+
+  assert.equal((await worker.fetch(batch, picksEnv(fakeD1()))).status, 403);
+  assert.equal((await worker.fetch(picksPost({ picker, license_key: key,
+    picks: [{ game_id: "g2", kind: "winner", side: "KC", season: 2026, week: 5 }] }),
+    picksEnv(fakeD1()))).status, 403);
+  assert.equal(calls.filter((c) => c.url.includes("/memberships/")).length, 1);
+});
+
+test("the batch after the cap is refused", async () => {
+  const key = "KEY-FLOOD-1008";
+  const picker = await pickerIdFor(key);
+  fakeWhop({ ...live });
+  const PICKS_RL = fakeKv();
+  const env2 = { ...picksEnv(fakeD1()), PICKS_RL };
+  const batch = () => picksPost({ picker, license_key: key,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }] });
+
+  for (let i = 0; i < PICKS_RATE; i += 1) {
+    assert.equal((await worker.fetch(batch(), env2)).status, 200, `batch ${i}`);
+  }
+  const blocked = await worker.fetch(batch(), env2);
+  assert.equal(blocked.status, 429);
+  assert.equal((await blocked.json()).reason, "rate_limited");
+
+  // Per key, not global: somebody else's week is not affected.
+  const other = "KEY-OTHER-1009";
+  const fine = await worker.fetch(picksPost({
+    picker: await pickerIdFor(other), license_key: other,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }],
+  }), env2);
+  assert.equal(fine.status, 200);
+});
+
+test("a normal week of picking never trips the cap", async () => {
+  // Sixteen games, changed a few times each, is nowhere near it.
+  assert.ok(PICKS_RATE >= 50, `${PICKS_RATE} batches an hour is not generous`);
+});
+
+test("no picks response ever carries the licence key", async () => {
+  const good = "KEY-ECHO-1010";
+  const dead = "KEY-ECHO-1011";
+  const cases = [
+    [{ picker: await pickerIdFor(good), license_key: good,
+       picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }] },
+     () => fakeWhop({ ...live })],
+    [{ picker: await pickerIdFor(dead), license_key: dead,
+       picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5 }] },
+     () => fakeWhop({ ...live, status: "canceled" })],
+    [{ picker: await pickerIdFor("MISMATCH-1012"), license_key: good, picks: [] },
+     () => fakeWhop({ ...live })],
+    [{ picker: A_PICKER, license_key: good, picks: [] },
+     () => fakeWhop({ ...live })],
+  ];
+  for (const [body, arrange] of cases) {
+    arrange();
+    const response = await worker.fetch(picksPost(body), picksEnv(fakeD1()));
+    const text = await response.text();
+    assert.equal(text.includes(body.license_key), false,
+                 `the key came back in ${text}`);
+  }
 });

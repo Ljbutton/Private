@@ -407,28 +407,13 @@ function wireReport() {
 
 /* ----------------------------------------------------------- pick sharing */
 
-/* One copy of the bargain, in one place.
+/* The bargain is stated in one place: the notice in index.html.
 
-   The words below are the same words in Settings, on the Picks card and in
-   INSTALL.md, because three descriptions of one arrangement is three chances
-   to describe it differently -- and the one that matters is whichever the
-   person happened to read.
-
-   "An id that is not your name" rather than "anonymous", because it is not:
-   it is derived from the licence key, and the whole point of the feature is
-   that a strong picker can be identified and followed. Saying anonymous would
-   be easier and would be a lie. */
-const SHARE_WHAT_GOES = [
-  "Your picks — who you took, and the line and price showing when you took them.",
-  "An id that isn't your name: sixteen characters worked out from your licence key.",
-];
-const SHARE_WHAT_STAYS = [
-  "Your name, your email and your licence key. None of the three is sent.",
-];
-const SHARE_WHAT_FOR = "They're used to grade pickers, to improve the model, "
-  + "and The Edge may follow picks from people who are consistently right. "
-  + "The id isn't your name, but The Edge can work out which customer it "
-  + "belongs to — that's how a strong picker gets followed.";
+   It was duplicated here too, for a card above the board, and the card went
+   when the notice became a modal -- leaving a second copy of the wording
+   behind, still saying the licence key is never sent. It is sent now, to prove
+   the subscription is live. One copy, in the markup, is how that stops being
+   possible. */
 
 let shareState = null;
 

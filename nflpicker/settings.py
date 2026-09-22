@@ -221,12 +221,13 @@ SETTINGS: tuple[Setting, ...] = (
         kind="bool",
         group="Sharing",
         help="Sends your picks, the line each one was made at, and an id, so "
-             "they can be graded and ranked. Your name, your email and your "
-             "licence key are not sent. The id is not your name, but it is "
-             "derived from your licence key, so The Edge can tell which "
-             "customer a picker is — that is how a strong picker gets "
-             "followed. Off stops it immediately, and there is a button below "
-             "to delete everything already sent.",
+             "they can be graded and ranked. Your name and your email are not "
+             "sent; your licence key is, because sharing needs a live "
+             "subscription, and it is not stored with your picks. The id is "
+             "not your name, but it is derived from your licence key, so The "
+             "Edge can tell which customer a picker is — that is how a strong "
+             "picker gets followed. Off stops it immediately, and there is a "
+             "button below to delete everything already sent.",
         needed_for="The leaderboard, and letting strong pickers feed back "
                    "into the model. Nothing in the app needs it to work.",
         default="true",

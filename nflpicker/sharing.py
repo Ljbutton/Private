@@ -8,12 +8,18 @@ consistently right.
 Three things decide whether that is acceptable, and all three live here.
 
 **It is a pseudonym, not an anonymiser.** The id is a SHA-256 of the licence
-key and a fixed salt, cut to sixteen hex characters. The key itself never
-travels in these requests, so a leak of this database is not a leak of
-anybody's subscription -- but the salt is in the source and the owner holds the
-keys, so the owner can work out which customer an id belongs to whenever they
-want to. That is the point of the feature and it is what the notice says. What
-it does *not* say, and must not, is "anonymous".
+key and a fixed salt, cut to sixteen hex characters. The salt is in the source
+and the owner holds the keys, so the owner can work out which customer an id
+belongs to whenever they want to. That is the point of the feature and it is
+what the notice says. What it does *not* say, and must not, is "anonymous".
+
+**The key travels, and is not stored.** It did not, at first, and the notice
+said so -- but an endpoint that takes picks from anybody who finds its URL is
+an endpoint whose table is whatever a stranger decides it is, and checking a
+subscription means sending the thing that identifies one. So the key goes with
+each batch, the server checks it against Whop and throws it away: what is
+written down there is the id, as before. The notice says this now, because the
+sentence it used to carry stopped being true.
 
 **Nothing is sent before the notice has been seen.** Sharing is on by default,
 which is only defensible because this is true: :func:`may_send` is the one
@@ -220,8 +226,18 @@ def pending(limit: int = BATCH) -> list[dict]:
 
 
 def _payload(rows: list[dict]) -> dict:
+    """The batch, as the server wants it.
+
+    The licence key is in here and nowhere else in this module's normal
+    traffic: it is what proves the subscription is live, and it is the reason
+    the id below cannot simply be invented. It is not logged here and is not
+    stored there -- see the module docstring.
+    """
+    from . import licensing
+
     return {
         "picker": picker_id(),
+        "license_key": licensing.saved_key(),
         "name": display_name(),
         "picks": [{
             "game_id": r["game_id"],
@@ -257,21 +273,30 @@ def flush(limit: int = BATCH, *, timeout: float = 10.0) -> dict:
     if not rows:
         return {"sent": 0, "reason": "empty"}
 
+    ids = ",".join(str(r["id"]) for r in rows)
     try:
         import httpx
 
         with httpx.Client(timeout=timeout) as client:
             response = client.post(f"{server}/v1/picks", json=_payload(rows))
+        # A refusal is an answer, not a hiccup. Sharing needs a live
+        # subscription, and a lapsed one will not start working because the
+        # app asked sixty more times -- so the batch is dropped rather than
+        # queued against a day that is not coming. A rate limit is the other
+        # way round: that one is temporary and worth waiting out.
+        if response.status_code in (400, 403):
+            with contextlib.suppress(Exception):
+                db.execute(f"DELETE FROM share_queue WHERE id IN ({ids})")  # noqa: S608
+            log.debug("shared picks refused: %s", response.status_code)
+            return {"sent": 0, "reason": "refused"}
         response.raise_for_status()
     except Exception as exc:                                  # noqa: BLE001
-        ids = ",".join(str(r["id"]) for r in rows)
         with contextlib.suppress(Exception):
             db.execute(
                 f"UPDATE share_queue SET tries = tries + 1 WHERE id IN ({ids})")  # noqa: S608
         log.debug("shared picks did not go: %s", type(exc).__name__)
         return {"sent": 0, "reason": "unreachable"}
 
-    ids = ",".join(str(r["id"]) for r in rows)
     with contextlib.suppress(Exception):
         db.execute(f"DELETE FROM share_queue WHERE id IN ({ids})")  # noqa: S608
     return {"sent": len(rows), "reason": "ok"}
@@ -280,9 +305,9 @@ def flush(limit: int = BATCH, *, timeout: float = 10.0) -> dict:
 def forget(*, timeout: float = 15.0) -> dict:
     """Ask the server to delete everything it holds for this installation.
 
-    The licence key goes with this one request, and only this one. Without it
-    anybody who learned an id could delete somebody else's record, and an id is
-    not a secret -- it is on the leaderboard.
+    The licence key goes with this request, as it does with a batch of picks.
+    Without it anybody who learned an id could delete somebody else's record,
+    and an id is not a secret -- it is on the leaderboard.
     """
     from . import licensing
 

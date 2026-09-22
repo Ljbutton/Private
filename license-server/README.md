@@ -160,6 +160,18 @@ Customers who turn on **Share my picks with The Edge** send each pick to
 `POST /v1/picks` here as they make it. The Worker stores it, grades it once the
 game is final, and shows a leaderboard at `/v1/dashboard`.
 
+**Pick sharing requires a live subscription.** Every `POST /v1/picks` carries
+the licence key and is checked against Whop before anything is written; an
+invalid or lapsed key is a 403 and stores nothing, and a batch whose `picker`
+is not the id that key hashes to is refused as well, so one valid subscription
+cannot write under somebody else's id or a thousand invented ones. The check is
+cached for ten minutes per key, in memory, so a full slate is one Whop call
+rather than one per pick, and batches are rate-limited per key in the same KV
+the support endpoint uses. When Whop itself is unreachable the batch is
+accepted and the skipped check logged — a customer should not lose a week of
+picks to somebody else's outage. The key is never logged and never written to
+D1: what is stored is the id, as before.
+
 **What arrives.** A picker id, a display name, and one row per pick: the game,
 the kind (winner, spread, total or survivor), the side, and the line, price and
 book probability *as they stood when the pick was made*. Not the closing line —

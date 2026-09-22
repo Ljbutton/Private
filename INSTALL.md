@@ -137,8 +137,9 @@ answered.
 showing when you took them — along with an id: sixteen characters worked out
 from your licence key.
 
-**What is not.** Your name, your email and your licence key. None of the three
-is sent.
+**What is not.** Your name and your email. Your licence key is sent with each
+batch — pick sharing needs a live subscription, and that is how the server
+checks — but it is never stored alongside your picks.
 
 **What it is for.** Picks are graded and pickers ranked, which is what makes
 the model better over a season; The Edge may follow picks from people who turn
