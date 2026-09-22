@@ -236,17 +236,23 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         return {
             "details": support.details(None),
             "keys": list(support.DETAIL_KEYS),
+            "categories": [{"key": key, "label": label}
+                           for key, label in support.CATEGORIES.items()],
+            "images": {"max": support.MAX_IMAGES,
+                       "max_bytes": support.MAX_IMAGE_BYTES},
             "store_url": licensing.store_url(),
             "can_send": bool(licensing.server_url()),
         }
 
     @app.post("/api/support/report")
     def support_report(payload: dict = Body(default={})) -> dict:  # noqa: B008
-        """Take a bug report, redact it, and forward it for emailing.
+        """Take a message for support, redact it, and forward it for emailing.
 
         Open before activation -- see OPEN_PATHS. The description is the only
         required field; everything else is either optional or a box the user
-        can untick, and what is unticked is never gathered.
+        can untick, and what is unticked is never gathered. Images are the one
+        thing that cannot be redacted, so they are only ever the ones the
+        reporter attached by hand.
         """
         from . import support
 
@@ -256,10 +262,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
                                 detail="A description is required.")
         report = support.build(
             description,
+            category=payload.get("category"),
             doing=str(payload.get("doing") or ""),
             email=str(payload.get("email") or ""),
             include=payload.get("include") if isinstance(
                 payload.get("include"), dict) else None,
+            images=payload.get("images") if isinstance(
+                payload.get("images"), list) else None,
         )
         return support.forward(report)
 

@@ -40,19 +40,21 @@ async function api(path, options) {
   return res.json();
 }
 
-/* --------------------------------------------------------- report a bug */
+/* ------------------------------------------------------- contact support */
 
-/* One dialog, opened from Help and from the activation gate.
+/* One dialog for all three kinds of message -- a bug, an idea, a question --
+   opened from Help and from the activation gate.
 
    The gate matters more than it looks: "my key will not activate" is the
-   likeliest report this app will ever receive, and the people making it
-   cannot get past that screen -- so a reporting flow reachable only from
-   inside the app is a reporting flow for everybody except the users who most
-   need it. The endpoint is open for the same reason.
+   likeliest message this app will ever receive, and the people sending it
+   cannot get past that screen -- so a support flow reachable only from inside
+   the app is a support flow for everybody except the users who most need it.
+   The endpoint is open for the same reason.
 
-   Everything the report would carry is shown in full behind a disclosure, one
-   checkbox each, all ticked. Unticking one means it is not gathered at all,
-   which is decided on the Python side: see support.details. */
+   Everything the message would carry is shown in full before it goes: the
+   attachments behind a disclosure, one checkbox each, and the screenshots as
+   thumbnails. Unticking a box means the detail is not gathered at all, which
+   is decided on the Python side: see support.details. */
 
 const REPORT_LABELS = {
   version: "App version, commit and build date",
@@ -61,7 +63,151 @@ const REPORT_LABELS = {
   log: "The last 100 lines of the app's log, with keys removed",
 };
 
+/* What each kind of message asks for. The words change; the shape does not.
+   Every kind takes text, screenshots and an address, because the person who
+   has a screenshot of a bug is the same person who has one of the thing they
+   wish worked differently, and a form that only lets one of them attach it is
+   a form that decides which of them is worth hearing from. */
+const REPORT_KINDS = {
+  bug: {
+    lede: "Something went wrong. Say what you saw and we'll go looking.",
+    what: "What happened?",
+    whatHint: "What went wrong, and what you expected instead.",
+    doing: "What were you doing when it happened?",
+    doingHint: "Which page you were on, what you pressed.",
+    email: "Your email, if you'd like a reply",
+    send: "Send report",
+  },
+  suggestion: {
+    lede: "An idea for the app. The more concrete the better — a fair bit of "
+      + "what's in here started as one of these.",
+    what: "What would you like to see?",
+    whatHint: "What it would do, and what it would save you.",
+    doing: "Where in the app would it go?",
+    doingHint: "Home, Picks, the Assistant — wherever you'd look for it.",
+    email: "Your email, if you'd like a reply",
+    send: "Send suggestion",
+  },
+  general: {
+    lede: "Anything else — buying, installing, or how something is meant to work.",
+    what: "How can we help?",
+    whatHint: "Ask away.",
+    doing: "Anything else that would help? (optional)",
+    doingHint: "When it started, what you've already tried.",
+    email: "Your email, so we can write back",
+    send: "Send message",
+  },
+};
+
+/* Screenshots. The caps are the app's, matched on the Python side and again
+   in the Worker: a public endpoint cannot take the page's word for any of it.
+   The long edge is what makes the difference — a 4K screenshot is six
+   megabytes of pixels nobody will look at at that size. */
+const REPORT_IMAGE_MAX = 3;
+const REPORT_IMAGE_BYTES = 2_000_000;
+const REPORT_IMAGE_EDGE = 1600;
+const REPORT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
 let reportWiring = false;
+let reportImages = [];
+
+const reportKind = () => REPORT_KINDS[$("#report-category")?.value] || REPORT_KINDS.bug;
+
+/* Roughly what the attachment weighs, from the base64 rather than the file:
+   four characters carry three bytes, and the base64 is what actually travels. */
+function imageBytes(image) {
+  const body = String(image.data || "").split(",").pop() || "";
+  return Math.round((body.length * 3) / 4);
+}
+
+/* A screenshot small enough to email, without asking anyone to resize one.
+
+   Anything already small and lossless is left exactly as it is: a cropped PNG
+   of one dialog is the clearest attachment there is, and re-encoding it as
+   JPEG would make it blurrier without making it smaller. Everything else is
+   capped on the long edge and re-encoded, which takes a full-screen 4K grab
+   from six megabytes to a couple of hundred kilobytes. */
+async function shrinkImage(file) {
+  const original = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("could not be read"));
+    reader.readAsDataURL(file);
+  });
+  const picture = await new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = original;
+  });
+  if (!picture) throw new Error("is not an image this app can read");
+
+  const scale = Math.min(1,
+    REPORT_IMAGE_EDGE / Math.max(picture.width, picture.height, 1));
+  if (scale === 1 && file.size <= 400_000) {
+    return { name: file.name, type: file.type, data: original };
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(picture.width * scale));
+  canvas.height = Math.max(1, Math.round(picture.height * scale));
+  canvas.getContext("2d").drawImage(picture, 0, 0, canvas.width, canvas.height);
+  return {
+    name: `${file.name.replace(/\.[^.]*$/, "") || "screenshot"}.jpg`,
+    type: "image/jpeg",
+    data: canvas.toDataURL("image/jpeg", 0.82),
+  };
+}
+
+function paintThumbs() {
+  const wrap = $("#report-thumbs");
+  if (!wrap) return;
+  wrap.innerHTML = reportImages.map((image, i) => `<figure class="report-thumb">
+    <img src="${image.data}" alt="" />
+    <button class="thumb-x" type="button" data-drop-image="${i}"
+      title="Remove ${esc(image.name)}" aria-label="Remove ${esc(image.name)}">×</button>
+    <figcaption>${esc(image.name)} · ${Math.round(imageBytes(image) / 1024)} KB</figcaption>
+  </figure>`).join("");
+  const note = $("#report-image-note");
+  if (note) {
+    note.textContent = reportImages.length
+      ? `(${reportImages.length} of ${REPORT_IMAGE_MAX} attached)`
+      : `(optional, up to ${REPORT_IMAGE_MAX})`;
+  }
+}
+
+/* Added one at a time and shown, rather than counted. Whatever is on screen
+   here is exactly what leaves the machine, which matters more for a picture
+   than for anything else on this form: a screenshot shows whatever was on the
+   screen, including the parts nobody meant to send. */
+async function addImages(files) {
+  const msg = $("#report-msg");
+  const refused = [];
+  for (const file of Array.from(files || [])) {
+    if (reportImages.length >= REPORT_IMAGE_MAX) {
+      refused.push(`${file.name} (only ${REPORT_IMAGE_MAX} fit)`);
+      continue;
+    }
+    if (!REPORT_IMAGE_TYPES.includes(file.type)) {
+      refused.push(`${file.name} (PNG, JPEG, WebP or GIF only)`);
+      continue;
+    }
+    try {
+      const image = await shrinkImage(file);
+      if (imageBytes(image) > REPORT_IMAGE_BYTES) {
+        refused.push(`${file.name} (still too big to send)`);
+        continue;
+      }
+      reportImages.push(image);
+    } catch (err) {
+      refused.push(`${file.name} (${err.message || "could not be read"})`);
+    }
+  }
+  paintThumbs();
+  if (msg && refused.length) {
+    msg.className = "report-msg warn";
+    msg.textContent = `Not attached: ${refused.join(", ")}.`;
+  }
+}
 
 function reportBody() {
   const include = {};
@@ -69,20 +215,28 @@ function reportBody() {
     include[box.dataset.detail] = box.checked;
   });
   return {
+    category: $("#report-category").value,
     description: $("#report-what").value.trim(),
     doing: $("#report-doing").value.trim(),
     email: $("#report-email").value.trim(),
     include,
+    images: reportImages.map((i) => ({ name: i.name, type: i.type, data: i.data })),
   };
 }
 
-/* The report as text, for the clipboard. The fallback when sending fails has
+/* The message as text, for the clipboard. The fallback when sending fails has
    to be something: somebody has just written six paragraphs about a crash and
-   losing them to a network error would be its own bug. */
+   losing them to a network error would be its own bug. Screenshots are named
+   rather than copied -- the clipboard takes one thing at a time. */
 function reportText(body, details) {
-  const lines = [body.description, ""];
-  if (body.doing) lines.push(`What I was doing: ${body.doing}`, "");
+  const kind = REPORT_KINDS[body.category] || REPORT_KINDS.bug;
+  const lines = [`${kind.what} ${body.description}`, ""];
+  if (body.doing) lines.push(`${kind.doing} ${body.doing}`, "");
   if (body.email) lines.push(`Reply to: ${body.email}`, "");
+  if (body.images.length) {
+    lines.push(`Screenshots attached: ${
+      body.images.map((i) => i.name).join(", ")}`, "");
+  }
   for (const key of Object.keys(REPORT_LABELS)) {
     if (!body.include[key]) continue;
     const value = (details || {})[key];
@@ -91,15 +245,40 @@ function reportText(body, details) {
   return lines.join("\n").trim();
 }
 
-async function openReport() {
+/* The dropdown rewrites the form rather than adding a field to it. Three
+   entrances would mean choosing the right one before you can type, and the
+   people least sure which of the three they have are the ones with the most
+   to say. */
+function applyKind() {
+  const kind = reportKind();
+  $("#report-lede").textContent = kind.lede;
+  $("#report-what-label").textContent = kind.what;
+  $("#report-what").placeholder = kind.whatHint;
+  $("#report-doing-label").textContent = kind.doing;
+  $("#report-doing").placeholder = kind.doingHint;
+  $("#report-email-label").innerHTML =
+    `${esc(kind.email)} <span class="muted">(optional)</span>`;
+  $("#report-send").textContent = kind.send;
+  // The log is the thing worth having about a crash and beside the point on
+  // an idea, so it starts ticked for one and unticked for the others. It is a
+  // starting position, not a rule: the box is right there either way.
+  const log = $("#report-detail-list input[data-detail=log]");
+  if (log) log.checked = $("#report-category").value === "bug";
+}
+
+async function openReport(category = "") {
   const dlg = $("#report-dialog");
   const list = $("#report-detail-list");
   const msg = $("#report-msg");
   msg.textContent = "";
   msg.className = "report-msg";
+  if (category && REPORT_KINDS[category]) $("#report-category").value = category;
+  reportImages = [];
+  $("#report-images").value = "";
+  paintThumbs();
 
   /* What would be attached, fetched rather than described. This endpoint is
-     open before activation, same as the report itself. */
+     open before activation, same as the message itself. */
   let info = { keys: Object.keys(REPORT_LABELS), details: {}, can_send: true };
   try {
     const res = await fetch("/api/support/details");
@@ -120,11 +299,12 @@ async function openReport() {
     <span class="report-detail-label">${esc(REPORT_LABELS[key] || key)}</span>
     <pre class="report-detail-value">${esc(String(preview[key] || "").slice(0, 4000))}</pre>
   </label>`).join("");
+  applyKind();
 
   if (info.can_send === false) {
     msg.className = "report-msg warn";
     msg.textContent = "This build has no support server set up, so Send will "
-      + "not work — use Copy report instead.";
+      + "not work — use Copy message instead.";
   }
   if (!dlg.open) dlg.showModal();
   setTimeout(() => $("#report-what").focus(), 50);
@@ -136,16 +316,27 @@ function wireReport() {
   const dlg = $("#report-dialog");
 
   document.addEventListener("click", (ev) => {
-    if (ev.target.closest("[data-open-report], #gate-report")) {
+    const open = ev.target.closest("[data-open-report], #gate-report");
+    if (open) {
       ev.preventDefault();
-      openReport();
+      // The gate is where "my key won't activate" comes from, so it opens on
+      // the kind of message that is, rather than on a dropdown to read first.
+      openReport(open.dataset.openReport || "bug");
       return;
     }
     if (ev.target.closest("[data-close-report]")) dlg.close();
-    if (ev.target.closest("#contact-support")) {
-      const url = state.meta?.license?.store_url || $("#license-store")?.href;
-      if (url) window.open(url, "_blank", "noopener");
+    const drop = ev.target.closest("[data-drop-image]");
+    if (drop) {
+      reportImages.splice(Number(drop.dataset.dropImage), 1);
+      paintThumbs();
     }
+  });
+
+  $("#report-category").addEventListener("change", applyKind);
+  $("#report-images").addEventListener("change", async (ev) => {
+    await addImages(ev.target.files);
+    // Cleared so picking the same file twice still fires a change.
+    ev.target.value = "";
   });
 
   $("#report-copy").addEventListener("click", async () => {
@@ -175,7 +366,8 @@ function wireReport() {
     const body = reportBody();
     if (!body.description) {
       msg.className = "report-msg warn";
-      msg.textContent = "Tell us what happened first.";
+      msg.textContent = body.category === "bug"
+        ? "Tell us what happened first." : "Write your message first.";
       return;
     }
     // Disabled while in flight: a second press would send a second email.
@@ -195,14 +387,16 @@ function wireReport() {
         msg.textContent = `Sent, thanks.${out.ref ? ` Reference ${out.ref}.` : ""}`;
         $("#report-what").value = "";
         $("#report-doing").value = "";
+        reportImages = [];
+        paintThumbs();
       } else {
         msg.className = "report-msg warn";
         msg.textContent = (out.message || "That could not be sent.")
-          + " Press Copy report so nothing you wrote is lost.";
+          + " Press Copy message so nothing you wrote is lost.";
       }
     } catch (err) {
       msg.className = "report-msg warn";
-      msg.textContent = `Could not send (${err.message}). Press Copy report so `
+      msg.textContent = `Could not send (${err.message}). Press Copy message so `
         + "nothing you wrote is lost.";
     } finally {
       send.disabled = false;
@@ -1321,6 +1515,26 @@ function startLiveTicker() {
   });
 }
 
+/* Did the favourite win, or did it not.
+
+   Judged against the book rather than against our own number, because "upset"
+   is a claim about what the world expected and the book is the closest thing
+   to a public answer. A game the market had at a coin flip is neither, so it
+   says so instead of calling a 50.4% favourite losing an upset.
+
+   One function because it is read twice: once per card, for the letter in the
+   corner, and once across the week for the Chaos meter at the top. Two copies
+   of a rule with a threshold in it is two rules waiting to disagree. */
+function gameVerdict(g) {
+  const book = g.market?.home_win_prob;
+  if (book === null || book === undefined) return null;
+  if (Math.abs(Number(book) - 0.5) < 0.02) return null;
+  if (g.status !== "final" || g.home_score === null || g.away_score === null
+      || g.home_score === g.away_score) return null;
+  const winner = g.home_score > g.away_score ? g.home : g.away;
+  return winner === (Number(book) > 0.5 ? g.home : g.away) ? "expected" : "upset";
+}
+
 async function renderHome(ticket) {
   const root = $("#view");
   const data = await api(`/api/games?week=${state.week}&season=${state.season}`);
@@ -1625,14 +1839,6 @@ async function renderHome(ticket) {
         over ? "▲" : "▼"}</span>`;
     };
 
-    /* Did the favourite win. Judged against the book rather than against our
-       own number, because "upset" is a claim about what the world expected --
-       and the book is the closest thing to a public answer. A game the market
-       had at a coin flip is neither, so it says so instead of calling a 50.4%
-       favourite losing an upset. */
-    const favourite = bookHome === null || bookHome === undefined
-      || Math.abs(Number(bookHome) - 0.5) < 0.02
-      ? null : (Number(bookHome) > 0.5 ? g.home : g.away);
     /* One letter in the corner. E for the favourite winning, U for the
        underdog.
 
@@ -1646,12 +1852,12 @@ async function renderHome(ticket) {
        the wrong grain: what you want from a board is how the week went, and
        that is now counted once at the top of the page instead of fifteen
        times down it. */
-    const verdictMark = !actualWinner || !favourite ? "" : (
-      actualWinner === favourite
-        ? `<span class="gmark expected"
-             title="Expected — the book's favourite won">E</span>`
-        : `<span class="gmark upset"
-             title="Upset — the underdog won">U</span>`);
+    const verdict = gameVerdict(g);
+    const verdictMark = !verdict ? "" : (verdict === "expected"
+      ? `<span class="gmark expected"
+           title="Expected — the book's favourite won">E</span>`
+      : `<span class="gmark upset"
+           title="Upset — the underdog won">U</span>`);
 
     return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
       <div class="gcard-top">
@@ -1708,13 +1914,50 @@ async function renderHome(ticket) {
       r.pending ? `, ${r.pending} still to play` : ""}">
       <span class="rec-label">${label}</span>
       <b>${decided ? `${r.won}-${r.lost}${r.tied ? `-${r.tied}` : ""}`
-        : "—"}</b>${r.pending
-        ? `<i class="rec-open" title="${r.pending} still to play">+${
-            r.pending}</i>` : ""}</span>`;
+        : "—"}</b></span>`;
   };
+  /* The Chaos meter: how much of this week went against the book.
+
+     The letters are already in the corner of every finished card -- U for an
+     upset, E for the expected result -- and this is nothing more than the
+     count of them, which is the question anybody reading a board of fifteen
+     cards is adding up in their head anyway. Same letters in the same colours,
+     so the chip is its own legend: you learn what U means by hovering the
+     thing that counts them.
+
+     Games the market had at a coin flip are in neither column, so the share is
+     out of the games that had a favourite rather than out of the slate. A
+     normal NFL week lands somewhere near a third. */
+  const chaosChip = () => {
+    let upsets = 0;
+    let expected = 0;
+    for (const g of games) {
+      const verdict = gameVerdict(g);
+      if (verdict === "upset") upsets += 1;
+      else if (verdict === "expected") expected += 1;
+    }
+    const judged = upsets + expected;
+    if (!judged) return "";
+    const share = Math.round((upsets / judged) * 100);
+    const mood = share >= 50 ? "Nothing went to form"
+      : share >= 33 ? "A messy week"
+        : share > 0 ? "Mostly to form" : "Chalk all the way down";
+    const why = `Chaos — how much of week ${data.week} went against the market. `
+      + `${upsets} of ${judged} finished games ${upsets === 1 ? "was" : "were"} `
+      + `won by the underdog (${share}%), ${expected} by the favourite. ${mood}. `
+      + "Every finished card carries the same letter in its corner: U for an "
+      + "upset, E for the expected result. A game the book had at a coin flip "
+      + "counts as neither.";
+    return `<span class="rec-chip chaos" title="${esc(why)}">
+      <span class="rec-label">Chaos</span>
+      <span class="gmark upset" aria-hidden="true">U</span><b>${upsets}</b>
+      <span class="gmark expected" aria-hidden="true">E</span><b>${expected}</b>
+      <i class="chaos-share">${share}%</i></span>`;
+  };
+
   const myRecord = data.my_record || {};
   const records = `${recordChip("Week", myRecord.week)}${
-    recordChip("Season", myRecord.season)}`;
+    recordChip("Season", myRecord.season)}${chaosChip()}`;
 
   if (!paint(root, `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
@@ -3198,13 +3441,15 @@ async function renderSoon(ticket) {
   if (!paint(root, `<div class="grid-2 desk">
     <div class="panel">
       <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
-      <!-- The two things Help is for that an FAQ cannot do: tell somebody
-           about a bug, and reach a person. Above the questions rather than
-           below them, because anyone who has read the list and not found
-           their problem has already scrolled past this once. -->
+      <!-- The thing Help is for that an FAQ cannot do: reach a person. One
+           button rather than two, because "report a bug" and "contact
+           support" were the same form with different words on it and the
+           choice between them was a decision nobody should have to make
+           before typing. Above the questions rather than below them, because
+           anyone who has read the list and not found their problem has
+           already scrolled past this once. -->
       <div class="help-actions">
-        <button class="btn" type="button" data-open-report>Report a bug</button>
-        <button class="btn" type="button" id="contact-support">Contact support</button>
+        <button class="btn" type="button" data-open-report>Contact support</button>
       </div>
       ${help}
     </div>
@@ -3704,7 +3949,62 @@ async function renderAssistant(ticket, root = $("#view")) {
     if (log) log.scrollTop = log.scrollHeight;
   };
 
-  /* The answer, written into the page as it is written by the model.
+  /* The answer, typed into the page rather than pasted into it.
+
+     Streaming alone did not read as typing. The model emits whole words at a
+     time and a fast stretch lands several of them inside one frame, so what
+     appeared on screen was a paragraph arriving in four jumps -- quicker than
+     before and still not something being written. This puts a metronome
+     between the stream and the page: text goes into a buffer as it arrives
+     and comes out at a steady rate, a few characters every tick, so the words
+     appear letter by letter at about reading speed.
+
+     The rate is a floor, not a limit. When the buffer runs long -- the model
+     surged, or the answer came back whole because streaming was not available
+     and the blocking path answered instead -- each tick takes a sixth of
+     what is left, so a thousand characters drain in well under a second. It
+     still reads as typing; it just types faster than anybody can. */
+  const TYPE_TICK_MS = 25;
+  const TYPE_MIN_CHARS = 3;
+  const TYPE_CATCH_UP = 6;
+
+  const typewriter = (node) => {
+    let full = "";
+    let shown = 0;
+    let timer = null;
+    let drained = null;
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+    const tick = () => {
+      if (shown >= full.length) {
+        stop();
+        if (drained) { const done = drained; drained = null; done(); }
+        return;
+      }
+      shown = Math.min(full.length,
+        shown + Math.max(TYPE_MIN_CHARS,
+          Math.ceil((full.length - shown) / TYPE_CATCH_UP)));
+      // Plain text while it types, markdown once it is whole: a half-written
+      // list or a lone backtick renders as neither.
+      node.textContent = full.slice(0, shown);
+      node.parentElement?.classList.remove("pending");
+      scroll();
+    };
+    const start = () => { if (!timer) timer = setInterval(tick, TYPE_TICK_MS); };
+    return {
+      show(text) { full = text; start(); },
+      /* Let the tail finish rather than snapping to the end. The last few
+         words appearing all at once is exactly the jump this is here to
+         remove, and at the catch-up rate the wait is a few hundred
+         milliseconds at most. */
+      finish() {
+        if (shown >= full.length) { stop(); return Promise.resolve(); }
+        return new Promise((resolve) => { drained = resolve; start(); });
+      },
+      stop,
+    };
+  };
+
+  /* What the wait is made of.
 
      The total wait is generation on this machine and nothing here shortens
      it: three hundred tokens at fifteen a second is twenty seconds whatever
@@ -3730,6 +4030,7 @@ async function renderAssistant(ticket, root = $("#view")) {
 
     const log = $("#chat-log");
     const pending = log && $(".msg.assistant.pending .msg-body", log);
+    const typing = pending ? typewriter(pending) : null;
     let text = "";
     let failed = "";
     try {
@@ -3759,18 +4060,24 @@ async function renderAssistant(ticket, root = $("#view")) {
           try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
           if (event.chat_id) chat.id = event.chat_id;
           if (event.error) { failed = event.error; stop = true; break; }
-          if (event.delta && pending) {
+          if (event.delta) {
             text += event.delta;
-            // Plain text while it streams, markdown once it is whole: a
-            // half-written list or a lone backtick renders as neither.
-            pending.textContent = text;
-            pending.parentElement?.classList.remove("pending");
-            scroll();
+            typing?.show(text);
           }
-          if (event.done) { text = event.reply || text; stop = true; break; }
+          if (event.done) {
+            // The whole answer, which is what the blocking fallback sends
+            // instead of deltas. Handed to the typewriter rather than pasted
+            // in, so that path reads the same as the streaming one.
+            text = event.reply || text;
+            typing?.show(text);
+            stop = true;
+            break;
+          }
         }
       }
       if (failed) throw new Error(failed);
+      // Let the last words finish before the transcript replaces them.
+      await typing?.finish();
       // From the database rather than from what is on screen, so a reload
       // shows the same thing this does.
       if (chat.id) {
@@ -3781,6 +4088,7 @@ async function renderAssistant(ticket, root = $("#view")) {
       chat.messages = [...chat.messages,
         { role: "assistant", content: `Could not answer: ${err.message || err}` }];
     } finally {
+      typing?.stop();
       chat.busy = false;
     }
     await loadChats().catch(() => {});

@@ -87,15 +87,28 @@ node --test license-server/worker.test.mjs
 ```
 
 
-## Bug reports
+## Support messages
 
-Help → Report a bug in the app posts to `POST /v1/support` here, and the Worker
-sends it on as one email through [Resend](https://resend.com). The report
-carries what the user wrote, what they were doing, and whichever of the four
-optional details they left ticked: version and commit, OS, the last four
-characters of their licence key, and the last hundred lines of the app's log.
-The app redacts keys and anything key-shaped out of all of it before it leaves
-the machine.
+Help → Contact support in the app — and the same button on the activation
+screen, which is where "my key will not activate" comes from — posts to
+`POST /v1/support` here, and the Worker sends it on as one email through
+[Resend](https://resend.com). The message carries a category (bug report,
+suggestion or general support, which picks the word in the subject line), what
+the user wrote, what they were doing, up to three screenshots, and whichever of
+the four optional details they left ticked: version and commit, OS, the last
+four characters of their licence key, and the last hundred lines of the app's
+log. The app redacts keys and anything key-shaped out of all the text before it
+leaves the machine.
+
+**Screenshots.** Shrunk in the app to a 1600px long edge and re-encoded, so a
+full-screen grab arrives as a couple of hundred kilobytes rather than six
+megabytes. Three per message, two megabytes each. They are checked against
+their own magic bytes — in the app and again here, because this endpoint needs
+no licence key and the app is not the only thing that can reach it — so what
+gets attached to an email is an image and is named after the type it actually
+is. Pictures are the one thing that cannot be redacted, which is why they are
+only ever the ones somebody attached by hand and are shown as thumbnails before
+the message goes.
 
 Two secrets:
 
@@ -117,8 +130,9 @@ which is exactly where these are going. Sending to customers would need a
 verified domain; replying to them does not, because the reporter's own address
 goes in `Reply-To` and you answer from your mail client.
 
-**Free tier.** Resend's free plan is 100 emails a day and 3,000 a month, which
-is far more headroom than a bug report flow needs. No card required.
+**Free tier.** Resend's free plan is 100 emails a day and 3,000 a month, with
+a 40MB ceiling on one message, which is far more headroom than this needs. No
+card required.
 
 **Rate limiting.** Five reports per IP per hour, counted in KV:
 
@@ -137,4 +151,4 @@ simply does not rate-limit.
 
 With either secret unset the endpoint answers `{ok: false}` with a 502 and says
 only that reporting is not set up — never which secret is missing — and the app
-offers to copy the report to the clipboard so nothing the user wrote is lost.
+offers to copy the message to the clipboard so nothing the user wrote is lost.

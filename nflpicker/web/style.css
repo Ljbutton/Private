@@ -548,10 +548,19 @@ button.btn.primary:hover {
   letter-spacing: .08em; color: var(--text-muted);
 }
 .rec-chip b { font-weight: 700; color: var(--text-primary); }
-/* Still to play. Not part of the record, so it does not read like part of it:
-   a lighter mark after the figures rather than a third number in them. */
-.rec-chip .rec-open {
+
+/* The Chaos meter. Wider than a record chip because it carries two counts and
+   a share, and it borrows the board's own U and E marks rather than inventing
+   a second vocabulary for the same fact -- the chip is the legend for the
+   letters in the cards below it. */
+.rec-chip.chaos { gap: 4px; align-items: center; }
+.rec-chip.chaos .gmark {
+  margin-left: 0; width: 14px; height: 14px; font-size: 8.5px; cursor: inherit;
+}
+.rec-chip.chaos b { margin-right: 2px; }
+.rec-chip.chaos .chaos-share {
   font-style: normal; font-size: 10px; color: var(--text-muted);
+  padding-left: 5px; border-left: 1px solid var(--border);
 }
 .note {
   color: var(--text-secondary); font-size: 12.5px; line-height: 1.6;
@@ -2895,13 +2904,53 @@ dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
 
 #report-dialog { max-width: 620px; }
 #report-form { display: grid; gap: 4px; }
-#report-form textarea, #report-form input[type=email] {
+#report-form textarea, #report-form input[type=email], #report-category {
   width: 100%; font-family: inherit; font-size: 13px;
   padding: 8px 10px; border-radius: var(--radius-sm);
   border: 1px solid var(--border); background: var(--bg-input, var(--bg-panel));
   color: var(--text-primary); margin-bottom: 8px;
 }
 #report-form textarea { resize: vertical; min-height: 56px; }
+/* What the chosen kind of message is for, in one line under the dropdown. It
+   changes with the dropdown, so it is also the proof that the choice did
+   something. */
+.report-lede { font-size: 12px; margin: 0 0 10px; line-height: 1.5; }
+
+/* Screenshots. The file input is left as the browser draws it -- this is the
+   one control on the form where the native one is better known than anything
+   that could be put in its place. */
+.report-pick { margin-bottom: 8px; }
+#report-images {
+  font-family: inherit; font-size: 12px; color: var(--text-secondary);
+  max-width: 100%;
+}
+.report-thumbs {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.report-thumbs:not(:empty) { margin: 2px 0 12px; }
+.report-thumb {
+  position: relative; margin: 0; width: 128px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px; background: var(--surface-sunken);
+}
+.report-thumb img {
+  display: block; width: 100%; height: 72px; object-fit: cover;
+  border-radius: 4px; background: var(--bg-panel);
+}
+.report-thumb figcaption {
+  font-size: 10px; line-height: 1.4; color: var(--text-muted);
+  margin-top: 5px; word-break: break-word;
+}
+/* Removable, because the whole point of showing the thumbnail is that you can
+   change your mind about it once you have seen what is in the corner of it. */
+.thumb-x {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
+  display: grid; place-items: center; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 50%;
+  background: var(--bg-panel); color: var(--text-secondary);
+  font-size: 14px; line-height: 1; padding: 0;
+}
+.thumb-x:hover { color: var(--critical); border-color: var(--critical); }
 
 /* What would be attached, readable before it goes. Closed by default: it is
    reassurance, not the task, and the task is writing the sentence at the top. */

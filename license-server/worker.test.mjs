@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { SUPPORT_MAX, SUPPORT_RATE, support, validate } from "./worker.js";
+import { IMAGE_BYTES_MAX, IMAGE_MAX, SUPPORT_MAX, SUPPORT_RATE, support, validate }
+  from "./worker.js";
 import worker from "./worker.js";
 
 function fakeWhop(membership, { status = 200, patchStatus = 200 } = {}) {
@@ -215,6 +216,73 @@ test("a malformed address is not used as a reply-to", async () => {
   const calls = fakeResend();
   await support({ description: "x", email: "not-an-address" }, supportEnv);
   assert.equal("reply_to" in calls[0].body, false);
+});
+
+test("the category picks the subject line and what the second answer was", async () => {
+  // A mailbox is sorted on the subject, so a suggestion must not arrive
+  // looking like a crash report.
+  const calls = fakeResend();
+  await support({ category: "suggestion", description: "a dark bracket",
+                  doing: "the Playoffs window" }, supportEnv);
+  assert.match(calls[0].body.subject, /^\[The Edge suggestion\] a dark bracket/);
+  assert.match(calls[0].body.text, /Where it would go:\nthe Playoffs window/);
+
+  const general = fakeResend();
+  await support({ category: "general", description: "how do I install it" },
+                supportEnv);
+  assert.match(general[0].body.subject, /^\[The Edge support\]/);
+});
+
+test("an unknown category is filed as a bug rather than refused", async () => {
+  const calls = fakeResend();
+  const out = await support({ category: "nonsense", description: "x" }, supportEnv);
+  assert.equal(out.ok, true);
+  assert.match(calls[0].body.subject, /^\[The Edge bug\]/);
+});
+
+test("screenshots arrive as attachments, named and capped", async () => {
+  const calls = fakeResend();
+  const shot = "aGVsbG8="; // any valid base64; the app checks the pixels
+  const out = await support({
+    description: "look at this",
+    images: [
+      { filename: "one.png", type: "image/png", data: shot },
+      { filename: "two.jpg", type: "image/jpeg", data: shot },
+      { filename: "three.gif", type: "image/gif", data: shot },
+      { filename: "four.png", type: "image/png", data: shot },
+    ],
+  }, supportEnv);
+  assert.equal(out.ok, true);
+  assert.equal(calls[0].body.attachments.length, IMAGE_MAX, "no more than three");
+  assert.deepEqual(calls[0].body.attachments.map((a) => a.filename),
+                   ["one.png", "two.jpg", "three.gif"]);
+  assert.equal(calls[0].body.attachments[0].content, shot);
+  assert.match(calls[0].body.text, /Screenshots: one.png, two.jpg, three.gif/);
+});
+
+test("an attachment that is not an image this endpoint takes is dropped", async () => {
+  // This endpoint is public and needs no key: without these checks it is a
+  // way to mail an arbitrary file to an address nobody here can see.
+  const calls = fakeResend();
+  const out = await support({
+    description: "still worth reading",
+    images: [
+      { filename: "payload.exe", type: "application/x-msdownload", data: "aGk=" },
+      { filename: "escape.png", type: "image/png", data: "not base64!!" },
+      { filename: "huge.png", type: "image/png",
+        data: "A".repeat(Math.ceil((IMAGE_BYTES_MAX / 3) * 4) + 8) },
+    ],
+  }, supportEnv);
+  assert.equal(out.ok, true, "the words still go, with or without the pictures");
+  assert.equal("attachments" in calls[0].body, false);
+});
+
+test("an attachment filename cannot carry a path or a second extension", async () => {
+  const calls = fakeResend();
+  await support({ description: "x", images: [
+    { filename: "../../run.exe", type: "image/png", data: "aGk=" },
+  ] }, supportEnv);
+  assert.deepEqual(calls[0].body.attachments.map((a) => a.filename), ["run.png"]);
 });
 
 test("an oversize body is refused before it is parsed", async () => {

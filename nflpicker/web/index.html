@@ -242,32 +242,57 @@
     <a class="license-store" id="license-store" target="_blank" rel="noopener" hidden>
       Don't have a key? Get a subscription</a>
     <!-- Reachable from the gate on purpose. "My key will not activate" is the
-         likeliest report this app will ever get, and the people making it are
-         by definition stuck on this screen. -->
+         likeliest message this app will ever get, and the people sending it
+         are by definition stuck on this screen. -->
     <button class="link-btn" id="gate-report" type="button">
-      Key not working? Report it</button>
+      Key not working? Contact support</button>
   </form>
 </div>
 
-<!-- Report a bug. One dialog, opened from the Help menu and from the gate. -->
+<!-- Contact support. One dialog for all three kinds of message, opened from
+     the Help menu and from the activation gate. The kind is a dropdown rather
+     than three separate entrances: the difference between a bug, an idea and
+     a question is a word in the subject line, and making somebody choose the
+     right door before they can type loses the ones who are not sure. -->
 <dialog class="dialog" id="report-dialog">
   <div class="dialog-head">
-    <h3 class="dialog-title">Report a bug</h3>
+    <h3 class="dialog-title">Contact support</h3>
     <button class="btn" type="button" data-close-report>Close</button>
   </div>
   <div class="dialog-body">
     <form id="report-form" autocomplete="off">
-      <label class="side-label" for="report-what">What happened?</label>
-      <textarea id="report-what" maxlength="4000" rows="5" required
-        placeholder="What went wrong, and what you expected instead."></textarea>
-      <label class="side-label" for="report-doing">What were you doing when it
-        happened? <span class="muted">(optional)</span></label>
-      <textarea id="report-doing" maxlength="4000" rows="2"
-        placeholder="Which page you were on, what you pressed."></textarea>
-      <label class="side-label" for="report-email">Your email, if you'd like a
-        reply <span class="muted">(optional)</span></label>
+      <label class="side-label" for="report-category">What's this about?</label>
+      <select id="report-category">
+        <option value="bug">Bug report</option>
+        <option value="suggestion">Suggestion</option>
+        <option value="general">General support</option>
+      </select>
+      <p class="report-lede muted" id="report-lede"></p>
+
+      <label class="side-label" for="report-what" id="report-what-label">
+        What happened?</label>
+      <textarea id="report-what" maxlength="4000" rows="5" required></textarea>
+
+      <label class="side-label" for="report-doing" id="report-doing-label">
+        What were you doing? <span class="muted">(optional)</span></label>
+      <textarea id="report-doing" maxlength="4000" rows="2"></textarea>
+
+      <label class="side-label" for="report-email" id="report-email-label">
+        Your email, if you'd like a reply <span class="muted">(optional)</span></label>
       <input id="report-email" type="email" spellcheck="false"
         placeholder="you@example.com" />
+
+      <!-- Screenshots. A picture of the thing that looks wrong settles in one
+           glance what a paragraph describing it cannot, so every kind of
+           message can carry one. Shrunk in the browser before it is sent --
+           see shrinkImage -- because a phone-sized screenshot is megabytes
+           and nothing here needs the pixels. -->
+      <label class="side-label" for="report-images">
+        Screenshots <span class="muted" id="report-image-note">(optional)</span></label>
+      <div class="report-pick">
+        <input id="report-images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple />
+      </div>
+      <div class="report-thumbs" id="report-thumbs"></div>
 
       <!-- Shown in full rather than promised. "We'll include your log" is
            worth nothing next to the log itself, and the log is the one thing
@@ -279,7 +304,7 @@
 
       <div class="report-actions">
         <button class="btn primary" id="report-send" type="submit">Send</button>
-        <button class="btn" id="report-copy" type="button">Copy report</button>
+        <button class="btn" id="report-copy" type="button">Copy message</button>
       </div>
       <div class="report-msg" id="report-msg" role="alert"></div>
     </form>

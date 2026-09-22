@@ -1,4 +1,4 @@
-"""Bug reports: the log, the redaction, and the payload that leaves the machine.
+"""Support messages: the log, the redaction, and what leaves the machine.
 
 Three jobs, in the order they matter.
 
@@ -22,6 +22,7 @@ not merely hidden -- see :func:`details`.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import logging.handlers
@@ -40,6 +41,34 @@ LOG_TAIL_LINES = 100
 
 # What the form will send, and what each line of the box says.
 DETAIL_KEYS = ("version", "os", "key_hint", "log")
+
+# What the message is about. One form with a dropdown rather than three
+# entrances: the difference between a bug, an idea and a question is a word in
+# the subject line, and asking somebody to pick the right door before they can
+# type is a way of losing the ones who are not sure.
+CATEGORIES = {
+    "bug": "Bug report",
+    "suggestion": "Suggestion",
+    "general": "General support",
+}
+DEFAULT_CATEGORY = "bug"
+
+# Screenshots. Three is enough for the page, the dialog and the thing that
+# went wrong; past that a report is a photo album. The per-image cap is
+# generous for a screenshot the page has already shrunk on the way out, and
+# small enough that three of them still fit in one email.
+MAX_IMAGES = 3
+MAX_IMAGE_BYTES = 2_000_000
+MAX_IMAGE_TOTAL = 5_000_000
+
+# Only the four a screenshot is ever saved as, and each one is checked against
+# its own magic bytes below -- the declared type is a claim, not a fact.
+IMAGE_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -214,20 +243,106 @@ def details(include: dict | None = None) -> dict:
     return out
 
 
-def build(description: str, *, doing: str = "", email: str = "",
-          include: dict | None = None) -> dict:
+# ------------------------------------------------------------- attachments
+
+def pick_category(value: object) -> str:
+    """The category, or the one an unrecognised value falls back to."""
+    key = str(value or "").strip().lower()
+    return key if key in CATEGORIES else DEFAULT_CATEGORY
+
+
+def _is_image(kind: str, raw: bytes) -> bool:
+    """Whether the bytes are the kind of image they say they are.
+
+    The type on the attachment is whatever the caller wrote, and this endpoint
+    is open before activation: without this check the support form is a way to
+    mail an arbitrary file to an address nobody here can see.
+    """
+    if kind == "image/png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if kind == "image/jpeg":
+        return raw.startswith(b"\xff\xd8\xff")
+    if kind == "image/gif":
+        return raw.startswith((b"GIF87a", b"GIF89a"))
+    if kind == "image/webp":
+        return raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+    return False
+
+
+def _image_name(name: object, suffix: str, index: int) -> str:
+    """A filename safe to put on an attachment.
+
+    The extension comes from the verified type rather than from the name, so
+    what arrives in a mailbox is called .png because it is a PNG.
+    """
+    stem = Path(str(name or "")).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")[:48]
+    return f"{stem or f'screenshot-{index}'}{suffix}"
+
+
+def attachments(items: object) -> list[dict]:
+    """The images worth sending, from whatever the page offered.
+
+    Anything that fails a check is dropped rather than refused: a report with
+    two of its three screenshots is worth far more than an error page, and the
+    person has already written the hard part.
+    """
+    out: list[dict] = []
+    total = 0
+    for index, item in enumerate(items or [], start=1):
+        if len(out) >= MAX_IMAGES:
+            break
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        data = "".join(str(item.get("data") or "").split())
+        if data.startswith("data:"):
+            head, _, data = data.partition(",")
+            kind = kind or head[5:].split(";")[0].strip().lower()
+        if kind not in IMAGE_TYPES or not data:
+            continue
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except Exception:                                     # noqa: BLE001
+            continue
+        if not raw or len(raw) > MAX_IMAGE_BYTES or not _is_image(kind, raw):
+            continue
+        if total + len(raw) > MAX_IMAGE_TOTAL:
+            break
+        total += len(raw)
+        out.append({
+            "filename": _image_name(item.get("name"), IMAGE_TYPES[kind], index),
+            "type": kind,
+            # Re-encoded from the bytes that were checked, so what leaves is
+            # exactly what passed the check and nothing that rode along in the
+            # string around it.
+            "data": base64.b64encode(raw).decode("ascii"),
+        })
+    return out
+
+
+def build(description: str, *, category: str = DEFAULT_CATEGORY,
+          doing: str = "", email: str = "", include: dict | None = None,
+          images: object = None) -> dict:
     """The report, redacted and ready to go.
 
     The description is scrubbed as thoroughly as the log is. "My key
     ABCD-1234 won't activate" is the likeliest sentence in a report about
     activation, and it would otherwise be the one place a live key travelled
     in clear.
+
+    Images are not scrubbed, because they cannot be: a screenshot of the
+    activation screen shows whatever was on it. That is the reporter's own
+    choice to make, which is why they are attached one at a time and never
+    gathered automatically.
     """
     return {
+        "category": pick_category(category),
         "description": redact(str(description or "").strip())[:MAX_DESCRIPTION],
         "doing": redact(str(doing or "").strip())[:MAX_DESCRIPTION],
         "email": str(email or "").strip()[:200],
         "details": details(include),
+        "images": attachments(images),
     }
 
 
@@ -253,9 +368,9 @@ def forward(report: dict, *, timeout: float = 10.0) -> dict:
     server = licensing.server_url()
     if not server:
         return {"ok": False, "reason": "no_server",
-                "message": "Bug reporting isn't available in this build — "
-                           "it needs the support server, which only the "
-                           "packaged app is set up for."}
+                "message": "Contacting support isn't available in this "
+                           "build — it needs the support server, which only "
+                           "the packaged app is set up for."}
     try:
         import httpx
 

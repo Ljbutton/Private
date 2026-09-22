@@ -6,7 +6,8 @@
 // to this Worker; only this Worker holds the key.
 //
 // Endpoints
-//   POST /v1/support    {description, doing, email, details} -> {ok, ref}
+//   POST /v1/support    {category, description, doing, email, details,
+//                        images[]}                            -> {ok, ref}
 //   POST /v1/validate   {license_key, machine_id}  -> {valid, status, reason, message}
 //   GET  /v1/latest                                 -> {commit, built_at, notes, download_url}
 //   GET  /v1/download?key=...&asset=...             -> 302 to the installer (valid keys only)
@@ -27,11 +28,12 @@
 //   RELEASE_TAG       optional, default "latest".
 //   DOWNLOAD_PAGE     optional. Where "Download update" sends people if the
 //                     direct download is not set up (e.g. your Whop product page).
-//   RESEND_API_KEY    secret. Resend API key, used to send the one email a bug
-//                     report becomes. Never returned in a response.
-//   SUPPORT_EMAIL_TO  secret. Where bug reports are emailed. A secret rather
-//                     than a constant because this repository is public and an
-//                     address in it is an address that gets scraped -- and
+//   RESEND_API_KEY    secret. Resend API key, used to send the one email a
+//                     support message becomes. Never returned in a response.
+//   SUPPORT_EMAIL_TO  secret. Where support messages are emailed. A secret
+//                     rather than a constant because this repository is
+//                     public and an address in it is an address that gets
+//                     scraped -- and
 //                     because the app must not be able to reveal where reports
 //                     go even to someone who unpacks the binary.
 //   SUPPORT_RL        optional KV namespace binding, used to rate-limit reports
@@ -68,7 +70,7 @@ export default {
 
 // ------------------------------------------------------------------- support
 
-// A bug report, turned into one email.
+// A support message, turned into one email.
 //
 // The recipient is a secret on this Worker rather than a constant in the app
 // or in this file, for three reasons: this repository is public, an address in
@@ -81,10 +83,56 @@ export default {
 // gate, so requiring one would exclude exactly the reports worth having. What
 // stands in for it is the size cap and the rate limit below.
 
-// The whole payload, headers and all. A report is a description, a sentence of
-// context and a hundred lines of log; thirty-two kilobytes is generous for
-// that and small enough that this cannot be used to push anything through.
-export const SUPPORT_MAX = 32_000;
+// The whole payload, headers and all. The words in a report are a few
+// kilobytes; what sets this is the screenshots, which arrive base64-encoded
+// and so a third larger than they are on disk. Three images of two megabytes
+// each is the ceiling the app enforces, and this is that with room around it
+// -- large enough for the biggest honest report, small enough that the
+// endpoint cannot be used to push anything through.
+export const SUPPORT_MAX = 8_500_000;
+
+// What the message is about. The category picks the word in the subject line
+// and what the second question was called, so a mailbox can be sorted on it.
+export const SUPPORT_CATEGORIES = {
+  bug: { tag: "bug", context: "What they were doing" },
+  suggestion: { tag: "suggestion", context: "Where it would go" },
+  general: { tag: "support", context: "More detail" },
+};
+
+// Screenshots. The app checks these too, against the magic bytes as well as
+// the declared type -- this is the same ceiling again because this endpoint is
+// public and the app is not the only thing that can reach it.
+export const IMAGE_MAX = 3;
+export const IMAGE_BYTES_MAX = 2_000_000;
+const IMAGE_TYPES = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+
+// The attachments worth sending, from whatever the caller offered. A bad one
+// is dropped rather than refused: somebody has just written six paragraphs
+// about a crash and losing them over a screenshot would be its own bug.
+function attachments(items) {
+  if (!Array.isArray(items)) return [];
+  const out = [];
+  for (const item of items) {
+    if (out.length >= IMAGE_MAX) break;
+    if (!item || typeof item !== "object") continue;
+    const kind = String(item.type || "").toLowerCase();
+    const content = String(item.data || "").replace(/\s+/g, "");
+    if (!IMAGE_TYPES[kind] || !content) continue;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(content)) continue;
+    // Four base64 characters carry three bytes.
+    if ((content.length / 4) * 3 > IMAGE_BYTES_MAX) continue;
+    const name = String(item.filename || "").replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^[-._]+/, "").slice(0, 60);
+    const stem = name.replace(/\.[^.]*$/, "") || `screenshot-${out.length + 1}`;
+    out.push({ filename: `${stem}${IMAGE_TYPES[kind]}`, content });
+  }
+  return out;
+}
 
 // Reports per IP per hour.
 export const SUPPORT_RATE = 5;
@@ -165,13 +213,16 @@ export async function support(body, env) {
   const hint = String(details.key_hint || "").trim();
   const version = details.version || {};
   const environment = details.environment || {};
-  const subject = `[The Edge bug] ${description.slice(0, 60).replace(/\s+/g, " ")}`
-    + ` — ${hint || "no key"}`;
+  const kind = SUPPORT_CATEGORIES[String(body.category || "").toLowerCase()]
+    || SUPPORT_CATEGORIES.bug;
+  const files = attachments(body.images);
+  const subject = `[The Edge ${kind.tag}] `
+    + `${description.slice(0, 60).replace(/\s+/g, " ")} — ${hint || "no key"}`;
 
   const lines = [
     description,
     "",
-    doing ? `What they were doing:\n${doing}` : "What they were doing: (not given)",
+    doing ? `${kind.context}:\n${doing}` : `${kind.context}: (not given)`,
     "",
     `Reference: ${ref}`,
     `Reply to: ${email || "(no address given)"}`,
@@ -187,6 +238,9 @@ export async function support(body, env) {
   if (environment.os) lines.push(`OS: ${environment.os}`);
   if (environment.os_detail) lines.push(`OS detail: ${environment.os_detail}`);
   if (hint) lines.push(`Licence key hint: ${hint}`);
+  if (files.length) {
+    lines.push(`Screenshots: ${files.map((f) => f.filename).join(", ")}`);
+  }
   if (details.log) lines.push("", "--- last lines of the log ---", String(details.log));
 
   const message = {
@@ -195,6 +249,7 @@ export async function support(body, env) {
     subject,
     text: lines.join("\n"),
   };
+  if (files.length) message.attachments = files;
   // Resend's REST field is reply_to. Only set when an address was given: an
   // empty one is rejected by the API.
   if (/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) message.reply_to = [email];

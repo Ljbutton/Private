@@ -1,10 +1,12 @@
-"""Bug reports, and what must not travel in one.
+"""Support messages, and what must not travel in one.
 
 A log is the most useful thing a report can carry and the most dangerous: it
 is exactly where a key ends up when something goes wrong with a key. These
 pin the redaction, and the rule that an unticked box means the detail is never
 gathered rather than merely hidden.
 """
+
+import base64
 
 import pytest
 from fastapi.testclient import TestClient
@@ -118,6 +120,77 @@ def test_the_description_is_redacted_and_capped(temp_env):
     assert report["doing"] == "opening the app"
 
 
+# --------------------------------------------------------- kind and pictures
+
+def test_an_unknown_category_falls_back_rather_than_failing(temp_env):
+    """The category is a label on an email, not a gate. Anything unrecognised
+    lands in the same inbox under the commonest of the three."""
+    assert support.pick_category("suggestion") == "suggestion"
+    assert support.pick_category("Suggestion") == "suggestion"
+    assert support.pick_category("") == "bug"
+    assert support.pick_category("../../etc/passwd") == "bug"
+
+
+def test_the_category_travels_with_the_report(temp_env):
+    report = support.build("the ranking could show last week too",
+                           category="suggestion")
+    assert report["category"] == "suggestion"
+
+
+def _png(size: int = 40) -> str:
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * size).decode()
+
+
+def test_a_screenshot_rides_along_encoded_and_renamed(temp_env):
+    report = support.build("the bracket looks wrong", images=[
+        {"name": "Screen Shot 2026.png", "type": "image/png",
+         "data": f"data:image/png;base64,{_png()}"}])
+    assert len(report["images"]) == 1
+    image = report["images"][0]
+    assert image["filename"] == "Screen-Shot-2026.png"
+    assert image["type"] == "image/png"
+    assert base64.b64decode(image["data"]).startswith(b"\x89PNG")
+
+
+def test_something_that_is_not_an_image_is_not_attached(temp_env):
+    """The type on an attachment is whatever the caller wrote, and this
+    endpoint is open before activation. Without the magic-byte check the
+    support form is a way to mail an arbitrary file to an address nobody
+    here can see."""
+    payload = base64.b64encode(b"MZ\x90\x00" + b"x" * 40).decode()
+    out = support.attachments([{"name": "shot.png", "type": "image/png",
+                                "data": payload}])
+    assert out == []
+
+
+def test_a_dangerous_filename_cannot_survive_the_trip(temp_env):
+    """The extension comes from the verified type, not from the name."""
+    out = support.attachments([{"name": "../../run.exe", "type": "image/png",
+                                "data": _png()}])
+    assert out[0]["filename"] == "run.png"
+    assert "/" not in out[0]["filename"]
+
+
+def test_only_three_pictures_and_only_so_many_bytes(temp_env):
+    four = [{"name": f"{i}.png", "type": "image/png", "data": _png()}
+            for i in range(4)]
+    assert len(support.attachments(four)) == support.MAX_IMAGES
+
+    huge = _png(support.MAX_IMAGE_BYTES + 10)
+    assert support.attachments([{"name": "big.png", "type": "image/png",
+                                 "data": huge}]) == []
+
+
+def test_a_broken_attachment_does_not_lose_the_words(temp_env):
+    """Somebody has just written six paragraphs about a crash; a screenshot
+    that will not decode is not a reason to refuse all of it."""
+    report = support.build("it crashed", images=[
+        {"name": "bad.png", "type": "image/png", "data": "not base64 at all!"},
+        {"name": "good.png", "type": "image/png", "data": _png()}])
+    assert report["description"] == "it crashed"
+    assert [i["filename"] for i in report["images"]] == ["good.png"]
+
+
 # ----------------------------------------------------------------- endpoint
 
 def test_a_report_can_be_sent_before_activation(client, monkeypatch):
@@ -140,6 +213,30 @@ def test_a_report_can_be_sent_before_activation(client, monkeypatch):
     body = response.json()
     assert body["ok"] is True and body["ref"] == "ab12cd"
     assert sent["description"] == "will not activate"
+
+
+def test_the_endpoint_carries_the_kind_and_the_pictures(client, monkeypatch):
+    sent = {}
+    monkeypatch.setattr("nflpicker.support.forward",
+                        lambda report, **kw: sent.update(report) or {"ok": True})
+
+    response = client.post("/api/support/report", json={
+        "category": "suggestion",
+        "description": "a dark mode for the bracket",
+        "images": [{"name": "idea.png", "type": "image/png", "data": _png()}],
+    })
+    assert response.status_code == 200
+    assert sent["category"] == "suggestion"
+    assert [i["filename"] for i in sent["images"]] == ["idea.png"]
+
+
+def test_the_form_is_told_what_it_may_attach(client):
+    """The caps live in one place and the page asks for them, so the number in
+    the hint and the number that is enforced cannot drift apart."""
+    body = client.get("/api/support/details").json()
+    assert [c["key"] for c in body["categories"]] == list(support.CATEGORIES)
+    assert body["images"] == {"max": support.MAX_IMAGES,
+                              "max_bytes": support.MAX_IMAGE_BYTES}
 
 
 def test_an_empty_description_is_refused(client):
