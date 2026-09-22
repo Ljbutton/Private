@@ -532,6 +532,27 @@ button.btn.primary:hover {
 }
 .sub-head { color: var(--series-1); }
 .panel .hint { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+/* Your record, beside the week it belongs to. Two small chips rather than
+   tiles: they sit in a header that already has a heading and a legend in it,
+   and a tile would claim the page's headline for a number that is context. */
+.rec-strip { display: flex; align-items: center; gap: 7px; }
+.rec-chip {
+  display: inline-flex; align-items: baseline; gap: 5px; cursor: help;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+}
+.rec-chip .rec-label {
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-muted);
+}
+.rec-chip b { font-weight: 700; color: var(--text-primary); }
+/* Still to play. Not part of the record, so it does not read like part of it:
+   a lighter mark after the figures rather than a third number in them. */
+.rec-chip .rec-open {
+  font-style: normal; font-size: 10px; color: var(--text-muted);
+}
 .note {
   color: var(--text-secondary); font-size: 12.5px; line-height: 1.6;
   background: var(--surface-sunken);
@@ -2332,29 +2353,22 @@ dialog .dialog-body { padding: 18px 20px 24px; }
 .gteam.won .nick { color: var(--gold); }
 
 /* Whether the result was the one the market expected. Against the book, not
-   against us: "upset" is a claim about what the world thought. */
-.gverdict {
-  font-size: 9.5px; font-weight: 750; text-transform: uppercase;
-  letter-spacing: .09em; padding: 2px 6px; border-radius: var(--radius-pill);
-  border: 1px solid currentColor; line-height: 1.5;
-}
-/* Both grey. Whether the favourite won is a fact about the game, not a
-   verdict on anyone's pick, and on this card green and red are spoken for. */
-.gverdict.upset, .gverdict.expected { color: var(--text-muted); }
+   against us: "upset" is a claim about what the world thought.
 
-/* Your own result, in those two colours, because this one really is a win or
-   a loss. Same pill as the badge beside it, drawn in ink rather than filled:
-   the green is a light mint on the dark theme and a dark green on the light
-   one, so a solid chip would need a different text colour in each -- and a
-   coloured outline already reads ahead of a grey one without needing to. */
-.gresult {
-  font-size: 9.5px; font-weight: 750; text-transform: uppercase;
-  letter-spacing: .09em; padding: 2px 6px; border-radius: var(--radius-pill);
-  border: 1px solid currentColor; line-height: 1.5; white-space: nowrap;
-  background: color-mix(in srgb, currentColor 12%, transparent);
+   One letter, in the card's top-right corner. Whether the favourite won is a
+   fact about the game, not a verdict on anyone's pick, so it stays neutral --
+   green and red are spoken for on this card. A circle rather than a pill:
+   at one character a pill is mostly padding, and the round mark reads as a
+   stamp in the corner instead of a label competing with the kickoff time. */
+.gmark {
+  margin-left: auto; flex: none;
+  width: 15px; height: 15px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 800; letter-spacing: 0; cursor: help;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
-.gresult.win  { color: var(--good); }
-.gresult.loss { color: var(--critical); }
 
 /* ------------------------------------------------------------ coming soon */
 /* A page for work that is real but unfinished. The alternative was leaving
@@ -2828,3 +2842,60 @@ dialog.detail.wide .chat-shell { border: 0; border-radius: 0; }
    counterfactual. Right-aligned and quiet: it is an aside to the table above
    it, not a second verdict. */
 .track-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+
+/* ------------------------------------------------------- report a bug */
+/* The two things Help is for that a list of questions cannot do. */
+.help-actions {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px;
+}
+/* A button that reads as a link, for the activation screen, where a second
+   solid button would compete with Activate. */
+.link-btn {
+  background: none; border: 0; padding: 4px 0; cursor: pointer;
+  color: var(--text-muted); font-size: 12px; font-family: inherit;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.link-btn:hover { color: var(--text-primary); }
+
+#report-dialog { max-width: 620px; }
+#report-form { display: grid; gap: 4px; }
+#report-form textarea, #report-form input[type=email] {
+  width: 100%; font-family: inherit; font-size: 13px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary); margin-bottom: 8px;
+}
+#report-form textarea { resize: vertical; min-height: 56px; }
+
+/* What would be attached, readable before it goes. Closed by default: it is
+   reassurance, not the task, and the task is writing the sentence at the top. */
+.report-details {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 10px; margin: 4px 0 12px;
+}
+.report-details > summary {
+  cursor: pointer; font-size: 12px; font-weight: 650;
+  color: var(--text-secondary);
+}
+.report-detail-list { display: grid; gap: 10px; margin-top: 10px; }
+.report-detail {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 8px;
+  align-items: baseline; font-size: 12px;
+}
+.report-detail input { margin: 0; }
+.report-detail-label { color: var(--text-primary); }
+/* The value itself, in a box that scrolls: the log is a hundred lines and the
+   point is that it can be read, not that it fills the dialog. */
+.report-detail-value {
+  grid-column: 2; margin: 0; max-height: 120px; overflow: auto;
+  font-size: 10.5px; line-height: 1.5; white-space: pre-wrap;
+  word-break: break-word; color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  border-radius: 4px; padding: 6px 8px;
+}
+.report-detail-value:empty { display: none; }
+
+.report-actions { display: flex; gap: 8px; margin-top: 2px; }
+.report-msg { font-size: 12px; margin-top: 8px; min-height: 1em; }
+.report-msg.ok { color: var(--good); }
+.report-msg.warn { color: var(--warning); }

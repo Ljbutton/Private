@@ -34,6 +34,11 @@ def _fmt(value) -> str:
 def cmd_serve(args) -> int:
     import uvicorn
 
+    from . import support
+
+    # The same log the desktop host writes, so a report from someone running
+    # the server directly carries one too.
+    support.install_logging()
     cfg = get_config()
     host = args.host or cfg.host
     port = args.port or cfg.port

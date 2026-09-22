@@ -241,8 +241,50 @@
     <button class="btn primary" id="license-submit" type="submit">Activate</button>
     <a class="license-store" id="license-store" target="_blank" rel="noopener" hidden>
       Don't have a key? Get a subscription</a>
+    <!-- Reachable from the gate on purpose. "My key will not activate" is the
+         likeliest report this app will ever get, and the people making it are
+         by definition stuck on this screen. -->
+    <button class="link-btn" id="gate-report" type="button">
+      Key not working? Report it</button>
   </form>
 </div>
+
+<!-- Report a bug. One dialog, opened from the Help menu and from the gate. -->
+<dialog class="dialog" id="report-dialog">
+  <div class="dialog-head">
+    <h3 class="dialog-title">Report a bug</h3>
+    <button class="btn" type="button" data-close-report>Close</button>
+  </div>
+  <div class="dialog-body">
+    <form id="report-form" autocomplete="off">
+      <label class="side-label" for="report-what">What happened?</label>
+      <textarea id="report-what" maxlength="4000" rows="5" required
+        placeholder="What went wrong, and what you expected instead."></textarea>
+      <label class="side-label" for="report-doing">What were you doing when it
+        happened? <span class="muted">(optional)</span></label>
+      <textarea id="report-doing" maxlength="4000" rows="2"
+        placeholder="Which page you were on, what you pressed."></textarea>
+      <label class="side-label" for="report-email">Your email, if you'd like a
+        reply <span class="muted">(optional)</span></label>
+      <input id="report-email" type="email" spellcheck="false"
+        placeholder="you@example.com" />
+
+      <!-- Shown in full rather than promised. "We'll include your log" is
+           worth nothing next to the log itself, and the log is the one thing
+           somebody wants to read before mailing it to a stranger. -->
+      <details class="report-details" id="report-details">
+        <summary>Details we'll include</summary>
+        <div class="report-detail-list" id="report-detail-list"></div>
+      </details>
+
+      <div class="report-actions">
+        <button class="btn primary" id="report-send" type="submit">Send</button>
+        <button class="btn" id="report-copy" type="button">Copy report</button>
+      </div>
+      <div class="report-msg" id="report-msg" role="alert"></div>
+    </form>
+  </div>
+</dialog>
 
 <dialog class="detail" id="detail">
   <div class="dialog-head">

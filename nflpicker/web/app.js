@@ -40,6 +40,177 @@ async function api(path, options) {
   return res.json();
 }
 
+/* --------------------------------------------------------- report a bug */
+
+/* One dialog, opened from Help and from the activation gate.
+
+   The gate matters more than it looks: "my key will not activate" is the
+   likeliest report this app will ever receive, and the people making it
+   cannot get past that screen -- so a reporting flow reachable only from
+   inside the app is a reporting flow for everybody except the users who most
+   need it. The endpoint is open for the same reason.
+
+   Everything the report would carry is shown in full behind a disclosure, one
+   checkbox each, all ticked. Unticking one means it is not gathered at all,
+   which is decided on the Python side: see support.details. */
+
+const REPORT_LABELS = {
+  version: "App version, commit and build date",
+  os: "Your operating system and version",
+  key_hint: "The last four characters of your licence key (never the key)",
+  log: "The last 100 lines of the app's log, with keys removed",
+};
+
+let reportWiring = false;
+
+function reportBody() {
+  const include = {};
+  $$("#report-detail-list input[type=checkbox]").forEach((box) => {
+    include[box.dataset.detail] = box.checked;
+  });
+  return {
+    description: $("#report-what").value.trim(),
+    doing: $("#report-doing").value.trim(),
+    email: $("#report-email").value.trim(),
+    include,
+  };
+}
+
+/* The report as text, for the clipboard. The fallback when sending fails has
+   to be something: somebody has just written six paragraphs about a crash and
+   losing them to a network error would be its own bug. */
+function reportText(body, details) {
+  const lines = [body.description, ""];
+  if (body.doing) lines.push(`What I was doing: ${body.doing}`, "");
+  if (body.email) lines.push(`Reply to: ${body.email}`, "");
+  for (const key of Object.keys(REPORT_LABELS)) {
+    if (!body.include[key]) continue;
+    const value = (details || {})[key];
+    if (value) lines.push(`${REPORT_LABELS[key]}:`, String(value), "");
+  }
+  return lines.join("\n").trim();
+}
+
+async function openReport() {
+  const dlg = $("#report-dialog");
+  const list = $("#report-detail-list");
+  const msg = $("#report-msg");
+  msg.textContent = "";
+  msg.className = "report-msg";
+
+  /* What would be attached, fetched rather than described. This endpoint is
+     open before activation, same as the report itself. */
+  let info = { keys: Object.keys(REPORT_LABELS), details: {}, can_send: true };
+  try {
+    const res = await fetch("/api/support/details");
+    if (res.ok) info = { ...info, ...(await res.json()) };
+  } catch { /* the form still works; the boxes just have nothing to preview */ }
+
+  const shown = info.details || {};
+  const preview = {
+    version: shown.version
+      ? [shown.version.version, shown.version.commit, shown.version.built_at]
+        .filter(Boolean).join(" · ") : "",
+    os: shown.environment ? shown.environment.os_detail || shown.environment.os : "",
+    key_hint: shown.key_hint || "(no key saved)",
+    log: shown.log || "(no log yet)",
+  };
+  list.innerHTML = (info.keys || []).map((key) => `<label class="report-detail">
+    <input type="checkbox" data-detail="${esc(key)}" checked />
+    <span class="report-detail-label">${esc(REPORT_LABELS[key] || key)}</span>
+    <pre class="report-detail-value">${esc(String(preview[key] || "").slice(0, 4000))}</pre>
+  </label>`).join("");
+
+  if (info.can_send === false) {
+    msg.className = "report-msg warn";
+    msg.textContent = "This build has no support server set up, so Send will "
+      + "not work — use Copy report instead.";
+  }
+  if (!dlg.open) dlg.showModal();
+  setTimeout(() => $("#report-what").focus(), 50);
+}
+
+function wireReport() {
+  if (reportWiring) return;
+  reportWiring = true;
+  const dlg = $("#report-dialog");
+
+  document.addEventListener("click", (ev) => {
+    if (ev.target.closest("[data-open-report], #gate-report")) {
+      ev.preventDefault();
+      openReport();
+      return;
+    }
+    if (ev.target.closest("[data-close-report]")) dlg.close();
+    if (ev.target.closest("#contact-support")) {
+      const url = state.meta?.license?.store_url || $("#license-store")?.href;
+      if (url) window.open(url, "_blank", "noopener");
+    }
+  });
+
+  $("#report-copy").addEventListener("click", async () => {
+    const body = reportBody();
+    const details = (await fetch("/api/support/details")
+      .then((r) => (r.ok ? r.json() : {})).catch(() => ({}))).details || {};
+    const text = reportText(body, {
+      version: details.version ? JSON.stringify(details.version) : "",
+      os: details.environment ? details.environment.os_detail : "",
+      key_hint: details.key_hint, log: details.log,
+    });
+    const msg = $("#report-msg");
+    try {
+      await navigator.clipboard.writeText(text);
+      msg.className = "report-msg ok";
+      msg.textContent = "Copied. Paste it wherever you like.";
+    } catch {
+      msg.className = "report-msg warn";
+      msg.textContent = "Could not reach the clipboard. Select the text and copy it.";
+    }
+  });
+
+  $("#report-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const send = $("#report-send");
+    const msg = $("#report-msg");
+    const body = reportBody();
+    if (!body.description) {
+      msg.className = "report-msg warn";
+      msg.textContent = "Tell us what happened first.";
+      return;
+    }
+    // Disabled while in flight: a second press would send a second email.
+    send.disabled = true;
+    const label = send.textContent;
+    send.textContent = "Sending…";
+    msg.className = "report-msg";
+    msg.textContent = "";
+    try {
+      const res = await fetch("/api/support/report", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (res.ok && out.ok) {
+        msg.className = "report-msg ok";
+        msg.textContent = `Sent, thanks.${out.ref ? ` Reference ${out.ref}.` : ""}`;
+        $("#report-what").value = "";
+        $("#report-doing").value = "";
+      } else {
+        msg.className = "report-msg warn";
+        msg.textContent = (out.message || "That could not be sent.")
+          + " Press Copy report so nothing you wrote is lost.";
+      }
+    } catch (err) {
+      msg.className = "report-msg warn";
+      msg.textContent = `Could not send (${err.message}). Press Copy report so `
+        + "nothing you wrote is lost.";
+    } finally {
+      send.disabled = false;
+      send.textContent = label;
+    }
+  });
+}
+
 /* ------------------------------------------------------------- licensing */
 
 let gatePromise = null;
@@ -1462,35 +1633,32 @@ async function renderHome(ticket) {
     const favourite = bookHome === null || bookHome === undefined
       || Math.abs(Number(bookHome) - 0.5) < 0.02
       ? null : (Number(bookHome) > 0.5 ? g.home : g.away);
-    const verdictBadge = !actualWinner || !favourite ? "" : (
+    /* One letter in the corner. E for the favourite winning, U for the
+       underdog.
+
+       It was the word, then the word in grey, and on a board of fifteen cards
+       it was still the widest thing in the strip -- spelling out "Expected"
+       fifteen times to say the unremarkable thing happened. The letter reads
+       as a mark rather than as a label, which is what it is; the tooltip
+       carries the sentence for anyone who has not met it before.
+
+       Your own result has gone from here entirely. It was per-card, which is
+       the wrong grain: what you want from a board is how the week went, and
+       that is now counted once at the top of the page instead of fifteen
+       times down it. */
+    const verdictMark = !actualWinner || !favourite ? "" : (
       actualWinner === favourite
-        ? `<span class="gverdict expected" title="The book's favourite won">Expected</span>`
-        : `<span class="gverdict upset" title="The underdog won">Upset</span>`);
-
-    /* Did *your* pick win. The one plain result on a card otherwise made of
-       probabilities, so it is said in a word and in the two colours the rest
-       of the card already grades with.
-
-       Upset and Expected are neutral now for the same reason. They are facts
-       about the game -- the favourite won, or did not -- and neither is good
-       news or bad news until you know who someone was on. Colouring them
-       green and red put a verdict on the market's opinion and, on a card
-       where green and red mean "right" and "wrong" everywhere else, read as
-       one. Grey says what happened and leaves the scoring to this mark. */
-    const yourResult = !actualWinner || !yourPick ? "" : (
-      yourPick === actualWinner
-        ? `<span class="gresult win" title="You picked ${
-            esc(yourPick)} and they won">Win</span>`
-        : `<span class="gresult loss" title="You picked ${
-            esc(yourPick)}; ${esc(actualWinner)} won">Loss</span>`);
+        ? `<span class="gmark expected"
+             title="Expected — the book's favourite won">E</span>`
+        : `<span class="gmark upset"
+             title="Upset — the underdog won">U</span>`);
 
     return `<article class="gcard" data-game="${esc(g.game_id)}" tabindex="0">
       <div class="gcard-top">
         <span class="gstate">${gameStamp(g)}</span>
-        ${yourResult}
         ${movedBadge}
-        ${verdictBadge}
         <span class="gopen" title="Open this game">&rsaquo;</span>
+        ${verdictMark}
       </div>
       <div class="gcard-grid">
         <div class="ghead you">You</div>
@@ -1523,8 +1691,34 @@ async function renderHome(ticket) {
      takes the height it is given and the grid of cards scrolls within it, the
      same contract Picks and Performance are already on. */
   fitsOneScreen(root);
+  /* Your own record, for the week on screen and for the season.
+
+     This used to be a Win or Loss chip on every finished card, which is the
+     wrong grain twice over: it answered the same question fifteen times down
+     one page, and never answered the question actually being asked, which is
+     how the week went. Counted once, at the top, where the week is already
+     named. A pick on a game still to be played is in neither column -- it is
+     shown as still out, so the record does not move at kickoff. */
+  const recordChip = (label, r) => {
+    if (!r || !(r.won || r.lost || r.tied || r.pending)) return "";
+    const decided = r.won + r.lost + r.tied;
+    return `<span class="rec-chip" title="Your straight-up picks ${
+      label === "Week" ? `in week ${data.week}` : `across ${data.season}`}: ${
+      r.won} right, ${r.lost} wrong${r.tied ? `, ${r.tied} tied` : ""}${
+      r.pending ? `, ${r.pending} still to play` : ""}">
+      <span class="rec-label">${label}</span>
+      <b>${decided ? `${r.won}-${r.lost}${r.tied ? `-${r.tied}` : ""}`
+        : "—"}</b>${r.pending
+        ? `<i class="rec-open" title="${r.pending} still to play">+${
+            r.pending}</i>` : ""}</span>`;
+  };
+  const myRecord = data.my_record || {};
+  const records = `${recordChip("Week", myRecord.week)}${
+    recordChip("Season", myRecord.season)}`;
+
   if (!paint(root, `<div class="panel board">
     <header><h2>${data.season} · Week ${data.week} — the whole slate</h2>
+      ${records ? `<div class="rec-strip">${records}</div>` : ""}
       <span class="hint">Home team listed second · Blind = before the line ·
         Blend = what we claim · Book = sportsbook ·
         a tick marks each source's pick</span></header>
@@ -2997,6 +3191,14 @@ async function renderSoon(ticket) {
   if (!paint(root, `<div class="grid-2 desk">
     <div class="panel">
       <header><h2>Help</h2><span class="hint">the questions that come up</span></header>
+      <!-- The two things Help is for that an FAQ cannot do: tell somebody
+           about a bug, and reach a person. Above the questions rather than
+           below them, because anyone who has read the list and not found
+           their problem has already scrolled past this once. -->
+      <div class="help-actions">
+        <button class="btn" type="button" data-open-report>Report a bug</button>
+        <button class="btn" type="button" id="contact-support">Contact support</button>
+      </div>
       ${help}
     </div>
     <div class="panel">
@@ -4060,6 +4262,10 @@ function initFullscreen() {
 async function main() {
   initTheme();
   initFullscreen();
+  // Before anything that can block. The activation gate carries a Report a
+  // bug button, and a button wired after the gate appears is a button that
+  // does nothing for exactly the people stuck behind it.
+  wireReport();
   initRouting();
   // Open on the page the address names, so a reload or a saved link lands
   // where it says it will.

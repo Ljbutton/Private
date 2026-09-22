@@ -489,3 +489,68 @@ def test_movement_still_needs_two_live_cuts(client, four_weeks):
     paired = client.get("/api/power/history?season=2025&week=4").json()
     assert paired["compared_to"] == 3
     assert any(t["move"] is not None for t in paired["teams"])
+
+
+# ------------------------------------------- cuts the app was closed through
+
+def test_a_missed_cut_is_taken_the_next_time_the_app_runs(four_weeks):
+    """The app is not a service, and a week's cut is due at a fixed moment.
+
+    Close it after week one's Monday night game and open it again in week
+    three, and week two's cut had never been taken -- the backfill wrote a
+    stand-in instead, which has no simulation behind it, so the week showed
+    nothing at all. Every due week is taken now, oldest first, rather than
+    only the one the season happens to be on.
+    """
+    games = db.query("SELECT * FROM games WHERE season = 2025 ORDER BY week")
+    completed = [g for g in games if g["week"] <= 2]
+
+    written = four_weeks.catch_up_power_cuts(
+        2025, 3, completed=completed, games=games, margins={})
+
+    assert written == [2, 3], "both the missed week and the current one"
+    sources = {
+        r["week"]: r["source"] for r in db.query(
+            "SELECT DISTINCT week, source FROM power_snapshots WHERE season = 2025")
+    }
+    assert sources.get(2) == "live", "a late cut is still a cut, not a stand-in"
+    assert sources.get(3) == "live"
+
+
+def test_a_late_cut_sees_only_what_had_finished_before_its_week(four_weeks):
+    """Taking it late must not mean taking it with more evidence.
+
+    This is the whole reason a late cut is allowed to count: the table is a
+    function of the games before its week, so the one produced now is the one
+    Tuesday would have produced. If it leaked later results it would be a
+    different table wearing the same name.
+    """
+    games = db.query("SELECT * FROM games WHERE season = 2025 ORDER BY week")
+    four_weeks.catch_up_power_cuts(
+        2025, 3, completed=games, games=games, margins={})
+
+    rows = {
+        r["week"]: (r["wins"], r["losses"]) for r in db.query(
+            "SELECT week, wins, losses FROM power_snapshots "
+            "WHERE season = 2025 AND team = 'KC'")
+    }
+    assert rows[2] == (1, 0), "one game played going into week two"
+    assert rows[3] == (2, 0), "two going into week three"
+
+
+def test_a_week_already_cut_is_left_alone(four_weeks):
+    """A cut is written once. Catching up must not rewrite an older one on
+    every launch, or the frozen table would quietly restate itself."""
+    db.execute(
+        "INSERT INTO power_snapshots(season, week, team, rank, power, elo,"
+        " pythagorean, wins, losses, ties, source, captured_at) "
+        "VALUES(2025, 2, 'KC', 99, 0, 1500, 0.5, 0, 0, 0, 'live', 'then')")
+    games = db.query("SELECT * FROM games WHERE season = 2025 ORDER BY week")
+
+    written = four_weeks.catch_up_power_cuts(
+        2025, 3, completed=games, games=games, margins={})
+
+    assert 2 not in written, "week two is already held"
+    row = db.query_one("SELECT rank, captured_at FROM power_snapshots "
+                       "WHERE season = 2025 AND week = 2 AND team = 'KC'")
+    assert row["rank"] == 99 and row["captured_at"] == "then"

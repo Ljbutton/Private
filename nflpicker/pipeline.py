@@ -1620,13 +1620,25 @@ class Pipeline:
         with contextlib.suppress(Exception):
             self.repair_power_cuts(season)
 
-        if self.ranking_cut_due(season, week):
-            with contextlib.suppress(Exception):
-                before = [g for g in completed
-                          if int(g["season"]) < int(season) or int(g["week"]) < week]
-                as_of = self.power_from(before, run_elo(before), season, week=week)
-                self.store_power_snapshot(season, week, as_of, before,
-                                          projections=_projection_rows(sim))
+        # This week's cut, and any the app was closed for.
+        #
+        # The cut used to be taken for the current week only, which is right
+        # while the app is open on the Tuesday and wrong the moment it is not.
+        # Close it after week seven's Monday night game, open it in week nine,
+        # and week eight's ranking was never taken: the backfill wrote it as a
+        # stand-in instead, and a stand-in has no simulation behind it, so the
+        # week showed nothing at all.
+        #
+        # Taking it late costs nothing in correctness. A cut is a function of
+        # the games that had finished before its week, not of the hour it was
+        # written -- so the table produced now is the table Tuesday would have
+        # produced. What it costs is one season simulation per missed week,
+        # which is why the current week reuses the pass that has just run and
+        # only genuinely missed weeks pay for their own.
+        with contextlib.suppress(Exception):
+            self.catch_up_power_cuts(
+                season, week, completed=completed, games=games,
+                margins=margins, current_sim=sim)
 
         # And the weeks before this one, which an install made mid-season has
         # never seen. Reconstructed from the games that had finished before
@@ -1967,6 +1979,68 @@ class Pipeline:
         if held:
             return False
         return self.week_is_complete(season, week - 1)
+
+    def catch_up_power_cuts(self, season: int, week: int, *,
+                            completed: list[dict], games: list[dict],
+                            margins: dict, current_sim=None) -> list[int]:
+        """Take every cut that is due and has not been taken, oldest first.
+
+        Due means the week before it has finished and no live cut exists --
+        the same test as ever, asked of every week rather than only of the one
+        the season is on. A week the app was not running for is not a
+        different case; it is the same case, noticed later.
+
+        Each week is ranked from the games that had finished before it and
+        from a simulation of the season as it stood at that point, which is
+        what makes the result a cut rather than a reconstruction. The current
+        week reuses the simulation the recompute has just run; an older one
+        gets its own, with the weeks from that point on put back to unplayed
+        so the replay starts where it would have started.
+        """
+        written: list[int] = []
+        for wk in range(2, int(week) + 1):
+            if not self.ranking_cut_due(season, wk):
+                continue
+            before = [g for g in completed
+                      if int(g["season"]) < int(season) or int(g["week"]) < wk]
+            # Nothing of this season had been played, so there is nothing to
+            # rank on. Week two onwards always has something.
+            if not any(int(g["season"]) == int(season) for g in before):
+                continue
+            as_of = self.power_from(before, run_elo(before), season, week=wk)
+            if wk == int(week) and current_sim is not None:
+                sim_for_week = current_sim
+            else:
+                sim_for_week = self._simulate_as_of(season, wk, games, as_of, margins)
+            self.store_power_snapshot(
+                season, wk, as_of, before,
+                projections=_projection_rows(sim_for_week) if sim_for_week else None)
+            written.append(wk)
+        return written
+
+    def _simulate_as_of(self, season: int, week: int, games: list[dict],
+                        power, margins: dict):
+        """The season simulation as it stood going into `week`.
+
+        The simulation reads a game as played when its status is final, so
+        putting the weeks from here on back to scheduled is the whole of what
+        "as of" means. Two passes, same as the live one: a cheap scout to see
+        where the ratings land each team, the ratings pulled part of the way
+        toward the market's posted win totals, then the real run.
+        """
+        as_of_games = [
+            g if (int(g.get("season") or 0) < int(season)
+                  or int(g.get("week") or 0) < int(week))
+            else {**g, "status": "scheduled", "home_score": None, "away_score": None}
+            for g in games
+        ]
+        win_totals = db.get_meta("season_win_totals", {}) or {}
+        scout = simulate_season(season, as_of_games, power,
+                                game_margins=margins, n_sims=2000)
+        anchored = anchor_to_market(
+            power, {t: v.exp_wins for t, v in scout.teams.items()}, win_totals)
+        return simulate_season(season, as_of_games, anchored,
+                               game_margins=margins, n_sims=20000)
 
     @staticmethod
     def repair_power_cuts(season: int) -> list[int]:

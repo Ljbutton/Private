@@ -563,3 +563,59 @@ def test_the_whole_conversation_is_sent(monkeypatch, temp_env):
 
     second = [m["content"] for m in seen[-1]["messages"] if m["role"] != "system"]
     assert second == ["who plays thursday?", "ok", "and the total?"]
+
+
+# --------------------------------------------------------------- latency caps
+
+def test_the_answer_ceiling_matches_the_length_asked_for():
+    """A ceiling nothing reaches is not a ceiling.
+
+    Generation is the slow half of the wait on a model running on the user's
+    own machine, so the cap on the answer is also the cap on how long it can
+    take. It was seven hundred tokens against a prompt asking for "under 150
+    words" -- about two hundred tokens -- so five hundred of it were pure
+    worst case that only ever showed up as the answer arriving late.
+    """
+    from nflpicker import assistant
+
+    assert "under 150 words" in assistant.SYSTEM_PROMPT.lower()
+    assert assistant.MAX_TOKENS <= 400, "the cap tracks the length asked for"
+    assert assistant.MAX_TOKENS >= 250, "and still fits a ranked list"
+
+
+def test_the_model_is_asked_to_stay_loaded(monkeypatch):
+    """Ollama unloads after five minutes by default, which is almost exactly
+    the wrong number: you ask, read, think, ask again -- and the second
+    question pays a full model load for no reason anyone watching could
+    infer."""
+    from nflpicker import assistant
+
+    sent = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"message": {"content": "KC by 3."}, "model": "m"}
+
+    def fake_post(url, json=None, timeout=None):
+        sent.update(json or {})
+        return _Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    out = assistant._ask_ollama(
+        "http://127.0.0.1:11434",
+        {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+        10.0)
+
+    assert out["reply"] == "KC by 3."
+    assert sent.get("keep_alive") == assistant.KEEP_ALIVE
+    assert sent["options"]["num_predict"] == assistant.MAX_TOKENS
+    assert sent["options"]["num_ctx"] == assistant.CONTEXT_TOKENS

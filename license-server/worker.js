@@ -6,7 +6,7 @@
 // to this Worker; only this Worker holds the key.
 //
 // Endpoints
-//   POST /v1/report     {license_key, report}       -> {sent}
+//   POST /v1/support    {description, doing, email, details} -> {ok, ref}
 //   POST /v1/validate   {license_key, machine_id}  -> {valid, status, reason, message}
 //   GET  /v1/latest                                 -> {commit, built_at, notes, download_url}
 //   GET  /v1/download?key=...&asset=...             -> 302 to the installer (valid keys only)
@@ -27,13 +27,17 @@
 //   RELEASE_TAG       optional, default "latest".
 //   DOWNLOAD_PAGE     optional. Where "Download update" sends people if the
 //                     direct download is not set up (e.g. your Whop product page).
-//   REPORT_WEBHOOK    secret, optional. Where a bug report is forwarded -- an
-//                     email API, a Slack or Discord webhook, whatever you read.
-//                     It is a secret so the destination never ships inside the
-//                     app: the app posts to this Worker and does not know, and
-//                     cannot be made to reveal, where the report ends up. With
-//                     it unset the endpoint answers "not configured" and the
-//                     app falls back to putting the report on the clipboard.
+//   RESEND_API_KEY    secret. Resend API key, used to send the one email a bug
+//                     report becomes. Never returned in a response.
+//   SUPPORT_EMAIL_TO  secret. Where bug reports are emailed. A secret rather
+//                     than a constant because this repository is public and an
+//                     address in it is an address that gets scraped -- and
+//                     because the app must not be able to reveal where reports
+//                     go even to someone who unpacks the binary.
+//   SUPPORT_RL        optional KV namespace binding, used to rate-limit reports
+//                     by IP. See supportRoute for why KV and not something
+//                     cleverer. Without it the endpoint still works and simply
+//                     does not rate-limit.
 
 const WHOP = "https://api.whop.com/api/v1";
 
@@ -43,8 +47,8 @@ export default {
     try {
       if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
       if (url.pathname === "/" ) return cors(new Response("ok"));
-      if (url.pathname === "/v1/report" && request.method === "POST") {
-        return json(await report(await request.json().catch(() => ({})), env));
+      if (url.pathname === "/v1/support" && request.method === "POST") {
+        return await supportRoute(request, env);
       }
       if (url.pathname === "/v1/validate" && request.method === "POST") {
         return json(await validate(await request.json().catch(() => ({})), env));
@@ -62,59 +66,162 @@ export default {
   },
 };
 
-// -------------------------------------------------------------------- report
+// ------------------------------------------------------------------- support
 
-// A bug report, forwarded to wherever the owner reads them.
+// A bug report, turned into one email.
 //
-// The destination is a secret on this Worker rather than a URL in the app, for
-// two reasons. It keeps a support address out of a binary that anybody can
-// unpack, and it means the app can be told where reports go by changing one
-// setting here rather than by shipping a new build to everyone.
+// The recipient is a secret on this Worker rather than a constant in the app
+// or in this file, for three reasons: this repository is public, an address in
+// public gets scraped, and the app should not be able to reveal where reports
+// go even to somebody who unpacks the binary. The app posts here and does not
+// know the destination.
 //
-// A licence key is required -- not to check that it is *valid*, which would
-// make reporting a bug impossible for exactly the people most likely to have
-// one, but so this is not an open relay that anyone on the internet can post
-// through. The size cap is the other half of that.
-export const REPORT_MAX = 16_000;
+// No licence key is required. "My key will not activate" is the likeliest
+// report this will ever receive and the people making it cannot get past the
+// gate, so requiring one would exclude exactly the reports worth having. What
+// stands in for it is the size cap and the rate limit below.
 
-export async function report(body, env) {
-  const key = String(body.license_key || "").trim();
-  const text = String(body.report || "").trim();
-  if (!/^[A-Za-z0-9_-]{4,100}$/.test(key)) {
-    return { sent: false, reason: "no_key",
-             message: "A licence key is needed to send a report." };
+// The whole payload, headers and all. A report is a description, a sentence of
+// context and a hundred lines of log; thirty-two kilobytes is generous for
+// that and small enough that this cannot be used to push anything through.
+export const SUPPORT_MAX = 32_000;
+
+// Reports per IP per hour.
+export const SUPPORT_RATE = 5;
+
+// Why KV. Durable Objects would give an exact counter and are the usual answer
+// to rate limiting, but the free plan is the constraint here and KV is what it
+// includes. The cost of KV being eventually consistent is that somebody on two
+// networks at once might get a couple of extra reports through, which is not
+// the failure mode worth engineering against -- the point is to stop a script,
+// not to be exact about a human. One key per IP per hour, expiring on its own,
+// so nothing accumulates and nothing has to be cleaned up. With no namespace
+// bound the endpoint still works and simply does not limit.
+async function overRateLimit(env, ip) {
+  if (!env.SUPPORT_RL || !ip) return false;
+  const bucket = `rl:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
+  try {
+    const seen = Number(await env.SUPPORT_RL.get(bucket)) || 0;
+    if (seen >= SUPPORT_RATE) return true;
+    // Two hours, so a bucket written at :59 is not read back as missing.
+    await env.SUPPORT_RL.put(bucket, String(seen + 1), { expirationTtl: 7200 });
+  } catch (err) {
+    // A rate limiter that is down must not take reporting down with it.
+    console.log("support: rate limit unavailable", String(err && err.message || err));
+    return false;
   }
-  if (!text) {
-    return { sent: false, reason: "empty", message: "The report was empty." };
+  return false;
+}
+
+async function supportRoute(request, env) {
+  // Read the body with the cap applied first, so an oversize one is refused
+  // rather than parsed.
+  const raw = await request.text().catch(() => "");
+  if (raw.length > SUPPORT_MAX) {
+    return json({ ok: false, reason: "too_large",
+                  message: "That report is too big to send." }, 400);
   }
-  if (!env.REPORT_WEBHOOK) {
-    return { sent: false, reason: "not_configured",
-             message: "Sending is not set up. Copy the report instead." };
+  let body = {};
+  try { body = JSON.parse(raw || "{}"); } catch { body = {}; }
+
+  const description = String(body.description || "").trim();
+  if (!description) {
+    return json({ ok: false, reason: "empty",
+                  message: "A description is required." }, 400);
   }
 
-  const payload = {
-    // Four characters of the key: enough to tell two reporters apart and to
-    // find the subscription, and not the key itself. A support channel is not
-    // a place to keep someone's licence.
-    from: `…${key.slice(-4)}`,
-    at: new Date().toISOString(),
-    text: text.slice(0, REPORT_MAX),
+  const ip = request.headers.get("cf-connecting-ip") || "";
+  if (await overRateLimit(env, ip)) {
+    return json({ ok: false, reason: "rate_limited",
+                  message: "A few reports have come from here in the last "
+                           + "hour. Try again later." }, 429);
+  }
+
+  const result = await support(body, env);
+  // A send that failed is a bad gateway, not a successful request reporting
+  // failure in its body: the app retries and the caller's own logs should
+  // show it. Nothing about why leaves here -- see support().
+  const status = result.ok ? 200 : 502;
+  return json(result, status);
+}
+
+export async function support(body, env) {
+  const description = String(body.description || "").trim();
+  const doing = String(body.doing || "").trim();
+  const email = String(body.email || "").trim();
+  const details = (body.details && typeof body.details === "object") ? body.details : {};
+
+  // Six characters of base32-ish: enough to quote back in a reply and match
+  // against an inbox, short enough to read out.
+  const ref = Math.random().toString(36).slice(2, 8);
+
+  if (!env.RESEND_API_KEY || !env.SUPPORT_EMAIL_TO) {
+    // Never say which of the two is missing, and never name the recipient.
+    console.log("support: not configured");
+    return { ok: false, reason: "not_configured",
+             message: "Reporting is not set up on the server yet." };
+  }
+
+  const hint = String(details.key_hint || "").trim();
+  const version = details.version || {};
+  const environment = details.environment || {};
+  const subject = `[The Edge bug] ${description.slice(0, 60).replace(/\s+/g, " ")}`
+    + ` — ${hint || "no key"}`;
+
+  const lines = [
+    description,
+    "",
+    doing ? `What they were doing:\n${doing}` : "What they were doing: (not given)",
+    "",
+    `Reference: ${ref}`,
+    `Reply to: ${email || "(no address given)"}`,
+    "",
+    "--- included by the reporter ---",
+    `Included: ${(details.included || []).join(", ") || "(nothing)"}`,
+  ];
+  if (version.version) {
+    lines.push(`Version: ${version.version}`
+      + (version.commit ? ` (${version.commit})` : "")
+      + (version.built_at ? ` built ${version.built_at}` : ""));
+  }
+  if (environment.os) lines.push(`OS: ${environment.os}`);
+  if (environment.os_detail) lines.push(`OS detail: ${environment.os_detail}`);
+  if (hint) lines.push(`Licence key hint: ${hint}`);
+  if (details.log) lines.push("", "--- last lines of the log ---", String(details.log));
+
+  const message = {
+    from: "The Edge Support <onboarding@resend.dev>",
+    to: [env.SUPPORT_EMAIL_TO],
+    subject,
+    text: lines.join("\n"),
   };
-  const response = await fetch(env.REPORT_WEBHOOK, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    // Both shapes in one body: `content` is what Slack and Discord read,
-    // `text` and `from` are there for anything that expects fields.
-    body: JSON.stringify({
-      ...payload,
-      content: `**The Edge — bug report** (${payload.from})\n\n${payload.text}`,
-    }),
-  });
-  if (!response.ok) {
-    return { sent: false, reason: "upstream",
-             message: `The report could not be delivered (${response.status}).` };
+  // Resend's REST field is reply_to. Only set when an address was given: an
+  // empty one is rejected by the API.
+  if (/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) message.reply_to = [email];
+
+  let response;
+  try {
+    response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(message),
+    });
+  } catch (err) {
+    // Log the reason, return none of it: an upstream error can quote back the
+    // request, and the request carries the key in a header.
+    console.log("support: send failed", String(err && err.message || err));
+    return { ok: false, reason: "upstream",
+             message: "The report could not be delivered just now." };
   }
-  return { sent: true, message: "Report sent. Thank you." };
+  if (!response.ok) {
+    console.log("support: resend rejected", response.status);
+    return { ok: false, reason: "upstream", status: response.status,
+             message: "The report could not be delivered just now." };
+  }
+  return { ok: true, ref };
 }
 
 // ------------------------------------------------------------------ validate

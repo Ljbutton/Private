@@ -137,26 +137,22 @@ def picks_for(season: int, week: int | None = None) -> dict[str, dict[str, str]]
     # before it is shown the line and `home_win_prob` is built from the blend
     # afterwards, so scoring them separately is the only way to see whether the
     # blend is adding anything or whether the market is carrying it.
+    #
+    # Separately scored, but read together. This was two queries with the same
+    # subquery in both -- the same group-by over the same rows of the same
+    # table, twice, to take two columns off the row it finds. They are both on
+    # the prediction row; one pass gets them.
     for row in db.query(
-        f"SELECT p.game_id, p.margin_home FROM predictions p JOIN "
-        f"(SELECT game_id, MAX(captured_at) m FROM predictions "
+        f"SELECT p.game_id, p.margin_home, p.home_win_prob FROM predictions p "  # noqa: S608
+        f"JOIN (SELECT game_id, MAX(captured_at) m FROM predictions "
         f" WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
         f"ON x.game_id = p.game_id AND x.m = p.captured_at", ids,
     ):
+        game = games[row["game_id"]]
         margin = row["margin_home"]
-        if margin is None or abs(float(margin)) < 1e-9:
-            continue
-        game = games[row["game_id"]]
-        out.setdefault(row["game_id"], {})[BLIND] = (
-            game["home"] if float(margin) > 0 else game["away"])
-
-    for row in db.query(
-        f"SELECT p.game_id, p.home_win_prob FROM predictions p JOIN "
-        f"(SELECT game_id, MAX(captured_at) m FROM predictions "
-        f" WHERE game_id IN ({placeholders}) GROUP BY game_id) x "
-        f"ON x.game_id = p.game_id AND x.m = p.captured_at", ids,
-    ):
-        game = games[row["game_id"]]
+        if margin is not None and abs(float(margin)) > 1e-9:
+            out.setdefault(row["game_id"], {})[BLIND] = (
+                game["home"] if float(margin) > 0 else game["away"])
         pick = _favourite(row["home_win_prob"], game["home"], game["away"])
         if pick:
             out.setdefault(row["game_id"], {})[MODEL] = pick

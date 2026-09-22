@@ -148,40 +148,6 @@ def _hint(key: str) -> str:
     return f"…{key[-4:]}" if len(key) >= 4 else ""
 
 
-def send_report(text: str, *, timeout: float = 10.0) -> dict:
-    """Hand a bug report to the licence server, which forwards it on.
-
-    The app does not know where reports end up and cannot be made to say: the
-    destination is a secret on the server, so it is not in a binary anyone can
-    unpack, and it can be changed without shipping a new build.
-
-    Everything here can fail for ordinary reasons -- no licence, no network, no
-    destination configured -- and none of them should cost someone the report
-    they just wrote. Every failure comes back as a reason the page can show
-    next to the copy button, which always works.
-    """
-    text = (text or "").strip()
-    if not text:
-        return {"sent": False, "reason": "empty", "message": "Nothing to send."}
-    server = server_url()
-    if not server:
-        return {"sent": False, "reason": "no_server",
-                "message": "This copy has no support server set up."}
-    key = saved_key()
-    if not key:
-        return {"sent": False, "reason": "no_key",
-                "message": "Add your licence key in Settings to send a report."}
-    try:
-        with _http(timeout) as client:
-            response = client.post(f"{server}/v1/report",
-                                   json={"license_key": key, "report": text})
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:                                  # noqa: BLE001
-        return {"sent": False, "reason": "unreachable",
-                "message": f"Could not reach the support server ({type(exc).__name__})."}
-
-
 # --------------------------------------------------------------------- check
 
 def _http(timeout: float = TIMEOUT) -> httpx.Client:

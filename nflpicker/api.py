@@ -60,7 +60,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
     # Everything under /api needs a licensed copy, except the calls that get
     # it licensed and the update check. The page itself and its scripts are
     # always served, so the activation screen can load.
-    OPEN_PATHS = ("/api/license", "/api/update")
+    #
+    # Support is open for the same reason activation is. "My key will not
+    # activate" is the likeliest report this app will ever receive, and the
+    # people making it are by definition the ones stuck behind this gate --
+    # a reporting flow they cannot reach is a reporting flow for everybody
+    # except the users who most need it.
+    OPEN_PATHS = ("/api/license", "/api/update", "/api/support")
 
     @app.middleware("http")
     async def require_license(request: Request, call_next):
@@ -206,16 +212,46 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         wanted = [s.strip() for s in stages.split(",")] if stages else None
         return await scheduler.refresh_now(wanted, full=full)
 
-    @app.post("/api/report")
-    def send_report(payload: dict = Body(default={})) -> dict:  # noqa: B008
-        """Send a bug report, without the page knowing where it goes.
+    @app.get("/api/support/details")
+    def support_details() -> dict:
+        """What the form would attach, so it can be read before it is sent.
 
-        The report is assembled in the browser, shown in full before it moves,
-        and posted only when someone presses send. This endpoint exists so the
-        destination stays on the licence server rather than in the page, where
-        anyone could read it out of the source.
+        The page shows this in full behind a disclosure rather than promising
+        it: "we'll include your log" is worth nothing next to the log itself,
+        and the one thing a person wants to check before mailing a stranger
+        their log is what is in it.
         """
-        return licensing.send_report(str(payload.get("report") or ""))
+        from . import support
+
+        return {
+            "details": support.details(None),
+            "keys": list(support.DETAIL_KEYS),
+            "store_url": licensing.store_url(),
+            "can_send": bool(licensing.server_url()),
+        }
+
+    @app.post("/api/support/report")
+    def support_report(payload: dict = Body(default={})) -> dict:  # noqa: B008
+        """Take a bug report, redact it, and forward it for emailing.
+
+        Open before activation -- see OPEN_PATHS. The description is the only
+        required field; everything else is either optional or a box the user
+        can untick, and what is unticked is never gathered.
+        """
+        from . import support
+
+        description = str(payload.get("description") or "").strip()
+        if not description:
+            raise HTTPException(status_code=400,
+                                detail="A description is required.")
+        report = support.build(
+            description,
+            doing=str(payload.get("doing") or ""),
+            email=str(payload.get("email") or ""),
+            include=payload.get("include") if isinstance(
+                payload.get("include"), dict) else None,
+        )
+        return support.forward(report)
 
     @app.get("/api/updates")
     def updates_check(force: bool = Query(default=False)) -> dict:
@@ -246,6 +282,37 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
         return {**result, "usage": usage}
 
     # ------------------------------------------------------------ games
+    def straight_record(season: int, week: int | None = None) -> dict:
+        """Your own straight-up record: won, lost, and how many are still out.
+
+        One query over two indexed columns, rather than the grading pass
+        Performance runs. That pass scores four pickers against each other and
+        is the right tool for the question "is the blend adding anything"; this
+        answers "how am I doing", which is a count.
+
+        A pick on a game that has not finished is neither a win nor a loss and
+        is reported separately -- folding it into either would mean the record
+        moved every time a game kicked off.
+        """
+        where = "p.season = ?" + (" AND p.week = ?" if week else "")
+        params = (season, week) if week else (season,)
+        row = db.query_one(
+            "SELECT "
+            " SUM(g.status = 'final' AND ("
+            "   (g.home_score > g.away_score AND p.selection = g.home) OR"
+            "   (g.away_score > g.home_score AND p.selection = g.away))) won,"
+            " SUM(g.status = 'final' AND ("
+            "   (g.home_score > g.away_score AND p.selection = g.away) OR"
+            "   (g.away_score > g.home_score AND p.selection = g.home))) lost,"
+            " SUM(g.status = 'final' AND g.home_score = g.away_score) tied,"
+            " SUM(g.status != 'final') pending "
+            "FROM user_picks p JOIN games g ON g.game_id = p.game_id "
+            f"WHERE {where} AND p.contest = 'straight'",  # noqa: S608
+            params,
+        ) or {}
+        return {key: int(row.get(key) or 0)
+                for key in ("won", "lost", "tied", "pending")}
+
     @app.get("/api/games")
     def games(week: int | None = None, season: int | None = None) -> dict:
         season = season or pipeline.season()
@@ -306,6 +373,13 @@ def create_app(*, start_scheduler: bool = True, bootstrap: bool = True) -> FastA
             "survivor_used_weeks": {
                 team: wk for wk, team in survivor_picks(season).items()
                 if int(wk) != int(week)
+            },
+            # How your own picks are going, for the week on screen and for the
+            # season. It rides along with the board because the board is what
+            # the question is asked in front of.
+            "my_record": {
+                "week": straight_record(season, week),
+                "season": straight_record(season),
             },
         }
 

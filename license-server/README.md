@@ -89,23 +89,52 @@ node --test license-server/worker.test.mjs
 
 ## Bug reports
 
-The app's Desk page writes a report -- build, platform, which page, feed health
-and any errors the page threw -- and posts it to `POST /v1/report` here. The
-Worker forwards it to `REPORT_WEBHOOK`.
+Help → Report a bug in the app posts to `POST /v1/support` here, and the Worker
+sends it on as one email through [Resend](https://resend.com). The report
+carries what the user wrote, what they were doing, and whichever of the four
+optional details they left ticked: version and commit, OS, the last four
+characters of their licence key, and the last hundred lines of the app's log.
+The app redacts keys and anything key-shaped out of all of it before it leaves
+the machine.
+
+Two secrets:
 
 ```
-npx wrangler secret put REPORT_WEBHOOK
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put SUPPORT_EMAIL_TO
 ```
 
-Anything that accepts a JSON POST works: a Discord or Slack incoming webhook
-reads the `content` field, an email API reads `text` and `from`. It is a
-secret rather than a setting in the app for two reasons -- a support address
-does not belong in a binary anyone can unpack, and changing where reports go
-is then one setting here rather than a new build for everybody.
+`SUPPORT_EMAIL_TO` is a secret rather than a constant in the source for three
+reasons: this repository is public and an address in public gets scraped, a
+support address does not belong in a binary anyone can unpack, and changing
+where reports go is then one setting here rather than a new build for
+everybody. It is never echoed in a response — there is a test for that.
 
-With it unset the endpoint answers `not_configured` and the app falls back to
-putting the report on the clipboard, which is what it did before this existed.
+**The sender.** `The Edge Support <onboarding@resend.dev>`, which is Resend's
+shared sandbox sender and needs no DNS. Its one restriction is the one that
+matters here: it can only deliver to the address that owns the Resend account,
+which is exactly where these are going. Sending to customers would need a
+verified domain; replying to them does not, because the reporter's own address
+goes in `Reply-To` and you answer from your mail client.
 
-What travels: the report text, truncated to 16,000 characters, and the last
-four characters of the licence key so two reporters can be told apart. Not the
-key itself -- a support channel is not a place to keep someone's licence.
+**Free tier.** Resend's free plan is 100 emails a day and 3,000 a month, which
+is far more headroom than a bug report flow needs. No card required.
+
+**Rate limiting.** Five reports per IP per hour, counted in KV:
+
+```
+npx wrangler kv namespace create SUPPORT_RL
+# then add the returned id to wrangler.toml as the SUPPORT_RL binding
+```
+
+KV rather than a Durable Object because the free plan is the constraint and KV
+is what it includes. KV is eventually consistent, so somebody on two networks
+at once might squeeze an extra report through — that is not the failure worth
+engineering against, since the point is to stop a script rather than to be
+exact about a person. Each key expires on its own, so nothing accumulates and
+nothing needs cleaning up. With no namespace bound the endpoint still works and
+simply does not rate-limit.
+
+With either secret unset the endpoint answers `{ok: false}` with a 502 and says
+only that reporting is not set up — never which secret is missing — and the app
+offers to copy the report to the clipboard so nothing the user wrote is lost.

@@ -84,7 +84,25 @@ NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}, "think": Fals
 
 # Enough for a ranked list with a line of reasoning each, and not enough for an
 # essay. A cap is also a latency ceiling, which is the point.
-MAX_TOKENS = 700
+#
+# Seven hundred was three and a half times the length the prompt actually asks
+# for -- "under 150 words", which is about two hundred tokens -- and on a model
+# running on the user's own CPU generation is the slow half of the wait, at
+# something like ten to twenty tokens a second. A ceiling nothing reaches is
+# not a ceiling; it is five hundred tokens of worst case that only ever shows
+# up as the answer taking half a minute longer than it needed to. Three
+# hundred and fifty leaves a compliant answer plenty of room and halves the
+# worst case.
+MAX_TOKENS = 350
+
+# How long Ollama keeps the weights in memory after answering.
+#
+# Its default is five minutes, which is almost exactly the wrong number for
+# this tab: you ask something, read the answer, think, and ask again -- and the
+# second question pays a full model load, several seconds of it, for no reason
+# anybody watching could infer. Half an hour covers a session of questions.
+# Ignored by servers that do not know it.
+KEEP_ALIVE = "30m"
 
 # How many completed games to hand over. The season's results are what lets it
 # answer anything beyond this Sunday; all of them by January is ten kilobytes
@@ -470,6 +488,7 @@ def _ask_ollama(base: str, payload: dict, timeout: float) -> dict | None:
         "messages": payload["messages"],
         "stream": False,
         "think": False,
+        "keep_alive": KEEP_ALIVE,
         "options": {"temperature": 0.2, "num_predict": MAX_TOKENS,
                     "num_ctx": CONTEXT_TOKENS},
     }

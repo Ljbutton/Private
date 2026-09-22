@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { REPORT_MAX, report, validate } from "./worker.js";
+import { SUPPORT_MAX, SUPPORT_RATE, support, validate } from "./worker.js";
+import worker from "./worker.js";
 
 function fakeWhop(membership, { status = 200, patchStatus = 200 } = {}) {
   const calls = [];
@@ -138,84 +139,153 @@ test("the membership lookup uses the key and the bearer token", async () => {
 
 // ------------------------------------------------------------------- report
 
-test("a report is forwarded to the configured destination", async () => {
-  const sent = [];
+// ------------------------------------------------------------------ support
+//
+// The one thing these have to prove beyond "it sends an email" is that nothing
+// about the destination or the API key can be read out of a response. The
+// address is a secret precisely because this repository is public.
+
+const TO = "owner@example.invalid";
+const supportEnv = { RESEND_API_KEY: "re_test_key", SUPPORT_EMAIL_TO: TO };
+
+function fakeResend({ status = 200 } = {}) {
+  const calls = [];
   globalThis.fetch = async (url, init = {}) => {
-    sent.push({ url: String(url), body: JSON.parse(init.body) });
-    return new Response("{}", { status: 200 });
+    calls.push({
+      url: String(url),
+      headers: init.headers || {},
+      body: JSON.parse(init.body || "{}"),
+    });
+    return new Response(JSON.stringify({ id: "email_1" }), { status });
   };
-  const out = await report(
-    { license_key: "ABC-123", report: "the bracket showed the wrong seed" },
-    { REPORT_WEBHOOK: "https://hooks.example/abc" },
-  );
-  assert.equal(out.sent, true);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].url, "https://hooks.example/abc");
-  assert.match(sent[0].body.text, /wrong seed/);
-});
+  return calls;
+}
 
-test("only the last four characters of the key travel with it", async () => {
-  // A support channel is not a place to keep someone's licence, and four
-  // characters are enough to tell two reporters apart.
-  const sent = [];
-  globalThis.fetch = async (url, init = {}) => {
-    sent.push(JSON.parse(init.body));
-    return new Response("{}", { status: 200 });
+function post(body, { ip = "1.2.3.4" } = {}) {
+  return new Request("https://edge.example/v1/support", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+// A KV namespace, in the twelve lines of it these tests need.
+function fakeKv() {
+  const store = new Map();
+  return {
+    async get(key) { return store.has(key) ? store.get(key) : null; },
+    async put(key, value) { store.set(key, value); },
   };
-  await report({ license_key: "SECRET-KEY-9Z4Q", report: "hello" },
-               { REPORT_WEBHOOK: "https://hooks.example/abc" });
-  const body = JSON.stringify(sent[0]);
-  assert.match(sent[0].from, /9Z4Q$/);
-  assert.ok(!body.includes("SECRET-KEY-9Z4Q"), "the key itself must not be sent");
+}
+
+test("a report sends exactly one email, to the configured address", async () => {
+  const calls = fakeResend();
+  const out = await support({
+    description: "The bracket shows the wrong seed",
+    doing: "opening the Playoffs window",
+    email: "reporter@example.com",
+    details: { included: ["version", "os"], key_hint: "…4F2A",
+               version: { version: "1.0.0", commit: "abc1234" },
+               environment: { os: "Windows 11" } },
+  }, supportEnv);
+
+  assert.equal(out.ok, true);
+  assert.match(out.ref, /^[a-z0-9]{4,8}$/);
+  assert.equal(calls.length, 1, "one email, not one per detail");
+  assert.equal(calls[0].url, "https://api.resend.com/emails");
+  assert.equal(calls[0].headers.authorization, "Bearer re_test_key");
+  assert.deepEqual(calls[0].body.to, [TO]);
+  assert.deepEqual(calls[0].body.reply_to, ["reporter@example.com"]);
+  assert.match(calls[0].body.subject, /^\[The Edge bug\] The bracket shows the wrong seed — …4F2A$/);
+  assert.match(calls[0].body.text, /The bracket shows the wrong seed/);
+  assert.match(calls[0].body.text, /opening the Playoffs window/);
+  assert.match(calls[0].body.text, new RegExp(out.ref));
 });
 
-test("with no destination configured it says so and sends nothing", async () => {
-  let called = false;
-  globalThis.fetch = async () => { called = true; return new Response("{}"); };
-  const out = await report({ license_key: "ABC-123", report: "hi" }, {});
-  assert.equal(out.sent, false);
-  assert.equal(out.reason, "not_configured");
-  assert.equal(called, false);
+test("no address given means no reply-to header", async () => {
+  // Resend rejects an empty reply_to, so it has to be absent rather than "".
+  const calls = fakeResend();
+  const out = await support({ description: "it crashed" }, supportEnv);
+  assert.equal(out.ok, true);
+  assert.equal("reply_to" in calls[0].body, false);
+  assert.match(calls[0].body.subject, /— no key$/);
 });
 
-test("it is not an open relay", async () => {
-  let called = false;
-  globalThis.fetch = async () => { called = true; return new Response("{}"); };
-  const env2 = { REPORT_WEBHOOK: "https://hooks.example/abc" };
-  assert.equal((await report({ report: "hi" }, env2)).reason, "no_key");
-  assert.equal((await report({ license_key: "no spaces allowed", report: "hi" }, env2)).reason,
-               "no_key");
-  assert.equal(called, false, "nothing is forwarded without a key");
+test("a malformed address is not used as a reply-to", async () => {
+  const calls = fakeResend();
+  await support({ description: "x", email: "not-an-address" }, supportEnv);
+  assert.equal("reply_to" in calls[0].body, false);
 });
 
-test("an empty report is not sent", async () => {
-  let called = false;
-  globalThis.fetch = async () => { called = true; return new Response("{}"); };
-  const out = await report({ license_key: "ABC-123", report: "   " },
-                           { REPORT_WEBHOOK: "https://hooks.example/abc" });
-  assert.equal(out.reason, "empty");
-  assert.equal(called, false);
+test("an oversize body is refused before it is parsed", async () => {
+  fakeResend();
+  const response = await worker.fetch(post("x".repeat(SUPPORT_MAX + 1)), supportEnv);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).reason, "too_large");
 });
 
-test("a very long report is truncated rather than refused", async () => {
-  // Someone with a real problem should not lose the report for writing too
-  // much, and the destination should not be handed a megabyte either.
-  const sent = [];
-  globalThis.fetch = async (url, init = {}) => {
-    sent.push(JSON.parse(init.body));
-    return new Response("{}", { status: 200 });
+test("an empty description is refused", async () => {
+  fakeResend();
+  const response = await worker.fetch(post({ description: "   " }), supportEnv);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).reason, "empty");
+});
+
+test("the sixth report in an hour from one address is refused", async () => {
+  fakeResend();
+  const env2 = { ...supportEnv, SUPPORT_RL: fakeKv() };
+  for (let i = 0; i < SUPPORT_RATE; i += 1) {
+    const ok = await worker.fetch(post({ description: `report ${i}` }), env2);
+    assert.equal(ok.status, 200, `report ${i} should go through`);
+  }
+  const blocked = await worker.fetch(post({ description: "one too many" }), env2);
+  assert.equal(blocked.status, 429);
+  assert.equal((await blocked.json()).reason, "rate_limited");
+
+  // And the limit is per address, not global.
+  const other = await worker.fetch(
+    post({ description: "from somewhere else" }, { ip: "9.9.9.9" }), env2);
+  assert.equal(other.status, 200);
+});
+
+test("Resend failing is a 502 and not a throw", async () => {
+  fakeResend({ status: 500 });
+  const response = await worker.fetch(post({ description: "it broke" }), supportEnv);
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, "upstream");
+});
+
+test("missing secrets is a 502 that does not say which", async () => {
+  fakeResend();
+  const response = await worker.fetch(post({ description: "hello" }), {});
+  assert.equal(response.status, 502);
+  const text = JSON.stringify(await response.json());
+  assert.equal(text.includes("RESEND"), false);
+  assert.equal(text.includes("SUPPORT_EMAIL_TO"), false);
+});
+
+test("no response ever carries the API key or the recipient", async () => {
+  for (const [body, env2] of [
+    [{ description: "fine" }, supportEnv],
+    [{ description: "" }, supportEnv],
+    [{ description: "hello" }, {}],
+  ]) {
+    fakeResend();
+    const response = await worker.fetch(post(body), env2);
+    const text = await response.text();
+    assert.equal(text.includes(TO), false, "the recipient must never come back");
+    assert.equal(text.includes("re_test_key"), false, "nor the API key");
+  }
+});
+
+test("a rate limiter that is down does not take reporting down with it", async () => {
+  fakeResend();
+  const broken = {
+    ...supportEnv,
+    SUPPORT_RL: { async get() { throw new Error("kv down"); }, async put() {} },
   };
-  const out = await report({ license_key: "ABC-123", report: "x".repeat(50_000) },
-                           { REPORT_WEBHOOK: "https://hooks.example/abc" });
-  assert.equal(out.sent, true);
-  assert.equal(sent[0].text.length, REPORT_MAX);
-});
-
-test("a destination that refuses is reported, not swallowed", async () => {
-  globalThis.fetch = async () => new Response("nope", { status: 500 });
-  const out = await report({ license_key: "ABC-123", report: "hi" },
-                           { REPORT_WEBHOOK: "https://hooks.example/abc" });
-  assert.equal(out.sent, false);
-  assert.equal(out.reason, "upstream");
-  assert.match(out.message, /500/);
+  const response = await worker.fetch(post({ description: "still works" }), broken);
+  assert.equal(response.status, 200);
 });

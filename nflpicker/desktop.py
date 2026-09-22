@@ -48,7 +48,9 @@ WINDOW_TOO_FAST = 2.0
 
 
 def log_path() -> Path:
-    return Path(get_config().data_dir) / "logs" / "desktop.log"
+    from . import support
+
+    return support.log_path()
 
 
 def _start_logging() -> Path | None:
@@ -59,18 +61,15 @@ def _start_logging() -> Path | None:
     on the way to the window goes nowhere at all: a failure to start looked
     exactly like double-clicking the icon and nothing happening, with no record
     anywhere of what went wrong.
+
+    The handler itself lives in `support` now, and rotates. It was a plain
+    file handler, which on a machine the app runs on every Sunday grows
+    without limit -- and the thing that reads it is a bug report, which wants
+    the last hundred lines rather than the year.
     """
-    try:
-        path = log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(path, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-        root = logging.getLogger()
-        root.setLevel(logging.INFO)
-        root.addHandler(handler)
-        return path
-    except Exception:                                     # noqa: BLE001
-        return None
+    from . import support
+
+    return support.install_logging()
 
 
 def _alert(title: str, message: str) -> None:
