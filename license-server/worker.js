@@ -84,14 +84,19 @@ export default {
         console.log("picks: capture failed", String(err && err.message || err));
       }
 
-      for (const w of [week, week - 1]) {
-        if (w < 1) continue;
+      for (const { season: s, week: w } of await weeksToGrade(env, season, week)) {
         try {
-          const out = await gradeWeek(env, season, w);
+          const out = await gradeWeek(env, s, w);
+          if (!out.ok) {
+            // Said its piece already, with the status and the body. The week
+            // keeps its ungraded picks, so the next run comes back to it.
+            console.log("picks: week not graded, will retry", JSON.stringify(out));
+            continue;
+          }
           console.log("picks: graded", JSON.stringify(out));
           // The crowd's own record, which is a separate thing from any
           // individual pick and does not change how one is graded.
-          const crowd = await gradeCrowd(env, season, w);
+          const crowd = await gradeCrowd(env, s, w);
           if (crowd.graded) console.log("picks: graded the crowd", JSON.stringify(crowd));
         } catch (err) {
           console.log("picks: grading failed", String(err && err.message || err));
@@ -627,10 +632,58 @@ export function nflWeek(now = new Date()) {
 // who won.
 const ESPN = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
 
-export async function fetchResults(season, week, fetcher = fetch) {
+// Workers `fetch` sends no User-Agent at all unless one is set, and an
+// unidentified request is the kind ESPN turns away -- which is what the
+// production log's `espn 403` was.
+//
+// This string is the desktop app's, verbatim: `user_agent` in
+// nflpicker/config.py. The app has been asking this same endpoint for months
+// without being refused, so it is the one identity known to work here, and
+// one convention beats two -- if ESPN ever decides what it will answer, it
+// should decide it once for both. Change either and change the other.
+//
+// SCOREBOARD_USER_AGENT in wrangler.toml overrides it, so a different string
+// can be tried against a live 403 without a code change.
+const USER_AGENT = "nflpicker/0.1 (+https://github.com/Ljbutton/ESPNpicem)";
+
+// No Referer or Origin. They would claim this request came from a page on
+// espn.com, which is not true of a cron running in a datacentre, and a header
+// that lies is a bad thing to have to reason about later.
+export function scoreboardHeaders(env = {}) {
+  return {
+    "User-Agent": (env && env.SCOREBOARD_USER_AGENT) || USER_AGENT,
+    Accept: "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+  };
+}
+
+// How much of a refusal's body to keep. Enough to carry ESPN's own wording or
+// the first line of a block page; short enough that a log line stays a line.
+const BODY_PEEK = 300;
+
+async function peek(res) {
+  try {
+    return String(await res.text()).replace(/\s+/g, " ").trim().slice(0, BODY_PEEK);
+  } catch {
+    return "";
+  }
+}
+
+export async function fetchResults(season, week, fetcher = fetch, env = {}) {
   const url = `${ESPN}?dates=${season}&seasontype=2&week=${week}`;
-  const res = await fetcher(url);
-  if (!res.ok) throw new Error(`espn ${res.status}`);
+  const res = await fetcher(url, { headers: scoreboardHeaders(env) });
+  if (!res.ok) {
+    // The status alone says a request was refused and nothing about why. Two
+    // identical `espn 403` lines is all the last outage left behind; ESPN says
+    // more than that in the body, so keep the front of it.
+    const body = await peek(res);
+    console.log("picks: scoreboard refused",
+                JSON.stringify({ status: res.status, season, week, body }));
+    const err = new Error(`espn ${res.status}`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
   const body = await res.json();
   const out = [];
   for (const event of body.events || []) {
@@ -686,8 +739,60 @@ export function gradePick(pick, result) {
   return null;
 }
 
+// At most this many weeks in one run. A backlog that grows without a ceiling
+// is a cron that eventually runs longer than the hour between runs.
+export const WEEKS_MAX = 6;
+
+// Which weeks this run should grade.
+//
+// The current week and the one before it always, because a Monday night game
+// is graded after the week has rolled over. Then any earlier week that still
+// holds an ungraded pick -- which is how a week whose run failed comes back
+// instead of falling out of that two-week window and staying ungraded for the
+// rest of the season. No table of failures to keep in step with reality: the
+// ungraded picks *are* the backlog, so anything missed for any reason is
+// picked up, and a week leaves the list by being graded.
+//
+// Weeks ahead of the current one are left out. A pick can be made a fortnight
+// early and is ungraded for good reason; fetching its week now would spend a
+// request on a game nobody has played.
+export async function weeksToGrade(env, season, week, limit = WEEKS_MAX) {
+  const weeks = [];
+  const add = (s, w) => {
+    if (!(w >= 1) || weeks.some((x) => x.season === s && x.week === w)) return;
+    weeks.push({ season: s, week: w });
+  };
+  add(season, week);
+  add(season, week - 1);
+  try {
+    const rows = await env.PICKS_DB.prepare(
+      "SELECT DISTINCT season, week FROM picks WHERE result IS NULL"
+      + " AND (season < ? OR (season = ? AND week <= ?))"
+      + " ORDER BY season DESC, week DESC LIMIT ?",
+    ).bind(season, season, week, limit).all();
+    for (const r of rows.results || []) add(Number(r.season), Number(r.week));
+  } catch (err) {
+    // The two weeks above still get graded; only the catching-up is lost.
+    console.log("picks: could not read the backlog",
+                String((err && err.message) || err));
+  }
+  return weeks.slice(0, limit);
+}
+
 export async function gradeWeek(env, season, week, fetcher = fetch) {
-  const results = await fetchResults(season, week, fetcher);
+  let results;
+  try {
+    results = await fetchResults(season, week, fetcher, env);
+  } catch (err) {
+    // A week that could not be fetched is not a week that failed to grade:
+    // nothing was read, so nothing is written, and every pick in it stays
+    // ungraded -- which is exactly what brings the week back on the next run.
+    // Returning rather than throwing keeps one bad week from ending the run
+    // and taking the other weeks with it.
+    return { ok: false, season, week, games: 0, graded: 0, late: 0,
+             status: (err && err.status) || null,
+             error: String((err && err.message) || err) };
+  }
   const now = new Date().toISOString();
   const writes = [];
   const byGame = new Map();
@@ -732,7 +837,7 @@ export async function gradeWeek(env, season, week, fetcher = fetch) {
     ).bind(verdict, now, pick.picker, pick.game_id, pick.kind));
   }
   if (writes.length) await env.PICKS_DB.batch(writes);
-  return { season, week, games: results.length, graded, late };
+  return { ok: true, season, week, games: results.length, graded, late };
 }
 
 // ------------------------------------------------- what the crowd said, frozen

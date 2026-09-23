@@ -4,7 +4,8 @@ import { test } from "node:test";
 
 import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
   captureConsensus, captureFirst, crowdClv, ensureSchema, gradeCrowd,
-  gradePick, gradeWeek, health, leaderboard, nflWeek, support, validate }
+  gradePick, gradeWeek, health, leaderboard, nflWeek, scoreboardHeaders,
+  support, validate, weeksToGrade }
   from "./worker.js";
 import worker from "./worker.js";
 
@@ -392,6 +393,9 @@ function fakeD1() {
         bind(...args) { stmt.args = args; calls.push({ sql, args }); return stmt; },
         async run() { return { meta: { changes: 7 } }; },
         async all() {
+          if (/DISTINCT season, week FROM picks/.test(sql)) {
+            return { results: rows.backlog || [] };
+          }
           if (/FROM picks/.test(sql)) return { results: rows.picks };
           return { results: [] };
         },
@@ -1749,4 +1753,191 @@ test("health is not readable without the dashboard token", async () => {
   const ok = await worker.fetch(new Request("https://x/v1/health?token=tok"), e);
   assert.equal(ok.status, 200);
   assert.equal((await ok.json()).ok, true);
+});
+
+
+// ------------------------------------------------- the scoreboard's refusals
+
+// console.log, captured. The Worker says what went wrong by logging it, so
+// the log line is the behaviour under test, not a side effect of it.
+async function capturingLogs(fn) {
+  const lines = [];
+  const real = console.log;
+  console.log = (...args) => lines.push(args.map(String).join(" "));
+  try {
+    return { value: await fn(), lines };
+  } finally {
+    console.log = real;
+  }
+}
+
+const A_403 = () => new Response(
+  "<html><head><title>Access Denied</title></head><body>You don't have "
+  + "permission to access this resource on this server.</body></html>",
+  { status: 403, headers: { "content-type": "text/html" } });
+
+test("the scoreboard request carries the headers the app sends", async () => {
+  let seen = null;
+  const espn = async (url, init) => {
+    seen = { url: String(url), init };
+    return new Response(JSON.stringify({ events: [] }), { status: 200 });
+  };
+  await gradeWeek({ PICKS_DB: fakeD1() }, 2026, 5, espn);
+
+  assert.ok(seen, "the fetcher was called");
+  const headers = seen.init.headers;
+  // Verbatim from nflpicker/config.py -- the same identity, not a second one.
+  assert.equal(headers["User-Agent"],
+               "nflpicker/0.1 (+https://github.com/Ljbutton/ESPNpicem)");
+  assert.equal(headers.Accept, "application/json");
+  assert.equal(headers["Accept-Language"], "en-US,en;q=0.9");
+  assert.ok(!("Referer" in headers), "no header that claims to be a browser");
+});
+
+test("a different User-Agent can be set without a code change", () => {
+  const headers = scoreboardHeaders({ SCOREBOARD_USER_AGENT: "Mozilla/5.0 (test)" });
+  assert.equal(headers["User-Agent"], "Mozilla/5.0 (test)");
+  assert.equal(headers.Accept, "application/json", "the rest is unchanged");
+});
+
+test("a 403 logs the status and the body, and does not throw", async () => {
+  const { value: out, lines } = await capturingLogs(
+    () => gradeWeek({ PICKS_DB: fakeD1() }, 2026, 5, A_403));
+
+  assert.equal(out.ok, false, "the week reports that it did not run");
+  assert.equal(out.status, 403);
+  assert.equal(out.graded, 0);
+
+  const refusal = lines.find((l) => l.includes("scoreboard refused"));
+  assert.ok(refusal, `no refusal logged; got ${JSON.stringify(lines)}`);
+  assert.match(refusal, /"status":403/);
+  assert.match(refusal, /"season":2026/);
+  assert.match(refusal, /"week":5/);
+  // The part the old `espn 403` never carried: what ESPN actually said.
+  assert.match(refusal, /Access Denied/);
+  assert.match(refusal, /permission to access this resource/);
+});
+
+test("a refusal with an unreadable body still logs the status", async () => {
+  const broken = async () => ({
+    ok: false, status: 429,
+    text: async () => { throw new Error("stream already consumed"); },
+  });
+  const { value: out, lines } = await capturingLogs(
+    () => gradeWeek({ PICKS_DB: fakeD1() }, 2026, 5, broken));
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 429);
+  assert.match(lines.find((l) => l.includes("scoreboard refused")), /"status":429/);
+});
+
+test("a long body is cut down rather than logged whole", async () => {
+  const huge = async () => new Response("x".repeat(5000), { status: 403 });
+  const { lines } = await capturingLogs(
+    () => gradeWeek({ PICKS_DB: fakeD1() }, 2026, 5, huge));
+  const body = JSON.parse(lines.find((l) => l.includes("scoreboard refused"))
+    .replace("picks: scoreboard refused ", "")).body;
+  assert.equal(body.length, 300);
+});
+
+// --------------------------------------------------- coming back to a week
+
+test("grading resumes on the next run after a failure", async () => {
+  // Week 5 failed two runs ago; the season has moved on to week 8, so the
+  // old [week, week - 1] pair would never look at it again.
+  const db = fakeD1();
+  db.rows.backlog = [{ season: 2026, week: 5 }];
+  const weeks = await weeksToGrade({ PICKS_DB: db }, 2026, 8);
+
+  assert.deepEqual(weeks, [
+    { season: 2026, week: 8 },
+    { season: 2026, week: 7 },
+    { season: 2026, week: 5 },
+  ]);
+});
+
+test("a week that graded cleanly is not queued again", async () => {
+  const db = fakeD1();
+  db.rows.backlog = [];                       // nothing left ungraded
+  assert.deepEqual(await weeksToGrade({ PICKS_DB: db }, 2026, 8),
+                   [{ season: 2026, week: 8 }, { season: 2026, week: 7 }]);
+});
+
+test("the backlog asks only for weeks that have been played", async () => {
+  const db = fakeD1();
+  await weeksToGrade({ PICKS_DB: db }, 2026, 8);
+  const q = db.calls.find((c) => /DISTINCT season, week FROM picks/.test(c.sql));
+  assert.ok(q, "the backlog was read");
+  assert.match(q.sql, /result IS NULL/);
+  // A pick made a fortnight early is ungraded for a good reason, and its week
+  // is not worth a request yet.
+  assert.match(q.sql, /week <= \?/);
+  assert.deepEqual(q.args, [2026, 2026, 8, 6]);
+});
+
+test("the backlog cannot make one run unbounded", async () => {
+  const db = fakeD1();
+  db.rows.backlog = Array.from({ length: 30 }, (_, i) => ({ season: 2026, week: i + 1 }));
+  const weeks = await weeksToGrade({ PICKS_DB: db }, 2026, 18);
+  assert.equal(weeks.length, 6);
+  assert.deepEqual(weeks[0], { season: 2026, week: 18 }, "this week is never crowded out");
+});
+
+test("a database that will not answer still grades this week and last", async () => {
+  const db = fakeD1();
+  db.prepare = () => { throw new Error("D1 unavailable"); };
+  const { value: weeks } = await capturingLogs(
+    () => weeksToGrade({ PICKS_DB: db }, 2026, 8));
+  assert.deepEqual(weeks, [{ season: 2026, week: 8 }, { season: 2026, week: 7 }]);
+});
+
+test("week 1 has no week 0 behind it", async () => {
+  const db = fakeD1();
+  assert.deepEqual(await weeksToGrade({ PICKS_DB: db }, 2026, 1),
+                   [{ season: 2026, week: 1 }]);
+});
+
+test("one refused week does not take the other weeks down with it", async () => {
+  // The run must still grade what it can: a 403 on one week is not a reason
+  // to leave the rest of the season alone.
+  const db = fakeD1();
+  db.rows.backlog = [{ season: 2026, week: 5 }];
+  const asked = [];
+  const espn = async (url) => {
+    const week = Number(new URL(url).searchParams.get("week"));
+    asked.push(week);
+    if (week === 8) return A_403();
+    return new Response(JSON.stringify({ events: [] }), { status: 200 });
+  };
+
+  const { lines } = await capturingLogs(async () => {
+    for (const { season, week } of await weeksToGrade({ PICKS_DB: db }, 2026, 8)) {
+      const out = await gradeWeek({ PICKS_DB: db }, season, week, espn);
+      if (!out.ok) console.log("picks: week not graded, will retry", JSON.stringify(out));
+      else console.log("picks: graded", JSON.stringify(out));
+    }
+  });
+
+  assert.deepEqual(asked, [8, 7, 5], "every week was attempted");
+  assert.equal(lines.filter((l) => l.includes("will retry")).length, 1);
+  assert.equal(lines.filter((l) => l.includes("picks: graded")).length, 2);
+});
+
+test("the scheduled run survives a scoreboard that refuses everything", async () => {
+  const db = fakeD1();
+  db.rows.backlog = [{ season: 2026, week: 5 }];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = A_403;
+  try {
+    const waits = [];
+    const { lines } = await capturingLogs(async () => {
+      await worker.scheduled({}, { PICKS_DB: db }, { waitUntil: (p) => waits.push(p) });
+      await Promise.all(waits);               // rejects here if the run threw
+    });
+    assert.ok(lines.some((l) => l.includes("scoreboard refused")),
+              "the run said why, not just that it failed");
+    assert.ok(lines.some((l) => l.includes("will retry")),
+              "and that the week is coming back");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

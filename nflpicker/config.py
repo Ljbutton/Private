@@ -177,6 +177,9 @@ class Config:
     demo_week: int = field(default_factory=lambda: _int("NFLPICKER_DEMO_WEEK", 0))
 
     http_timeout: float = 20.0
+    # Also hard-coded as USER_AGENT in license-server/worker.js: the Worker's
+    # grader asks ESPN for the same scoreboard this app does, and one identity
+    # across both is the point. Change this and change that.
     user_agent: str = "nflpicker/0.1 (+https://github.com/Ljbutton/ESPNpicem)"
 
     @property

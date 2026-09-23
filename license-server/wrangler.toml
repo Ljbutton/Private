@@ -10,6 +10,10 @@ MAX_MACHINES = "2"
 # season pass is -- it means paid in full, not lapsed.
 ALLOWED_STATUSES = "active,trialing,canceling,completed"
 GITHUB_REPO = "Ljbutton/Private"
+# The grader identifies itself to ESPN as the desktop app does. Uncomment to
+# try a different string against a live refusal without touching the code;
+# leave it off and worker.js keeps the two in step.
+# SCOREBOARD_USER_AGENT = ""
 RELEASE_TAG = "latest"
 DOWNLOAD_PAGE = "https://whop.com/the-edge-ab78/the-edge-fd-e121"
 

@@ -127,6 +127,26 @@ server not answering reads "Can't reach the license server", while a server
 that answered but could not reach Whop says so, and quotes what Whop said.
 Either way a key that checked out in the last 7 days keeps working.
 
+## When nothing is being graded
+
+The hourly run logs `picks: scoreboard refused` with the status and the first
+300 characters of ESPN's reply, so `npx wrangler tail` says what happened
+rather than only that something did. A refused week is not lost: every pick in
+it stays ungraded, and ungraded picks *are* the backlog the next run reads, so
+the week comes back until it succeeds — up to six weeks in one run.
+
+The grader sends the desktop app's `User-Agent` (`user_agent` in
+`nflpicker/config.py`) because Workers send none by default and an
+unidentified request is what ESPN turns away. To try a different string
+against a live refusal, uncomment `SCOREBOARD_USER_AGENT` in `wrangler.toml`
+and redeploy — no code change.
+
+If ESPN refuses whatever headers are sent, it is blocking the datacentre
+rather than the request, and headers cannot fix that. The fallback then is for
+the app to POST the results it has already fetched from a home connection,
+with the Worker accepting a result only when enough independent subscriptions
+report the same score.
+
 ## Test
 
 ```bash
