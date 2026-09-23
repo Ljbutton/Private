@@ -116,6 +116,9 @@ export default {
       if (url.pathname === "/v1/picks" && request.method === "POST") {
         return await picksRoute(request, env);
       }
+      if (url.pathname === "/v1/results" && request.method === "POST") {
+        return await resultsRoute(request, env);
+      }
       if (url.pathname === "/v1/picks" && request.method === "DELETE") {
         return await picksDeleteRoute(request, env);
       }
@@ -390,6 +393,26 @@ const PICK_KINDS = new Set(["winner", "spread", "total", "survivor"]);
 // tight enough that a leaked key cannot be used to fill the table.
 export const PICKS_RATE = 60;
 
+// ------------------------------------------------ results, reported by the app
+//
+// ESPN answers the desktop app from a customer's home connection and refuses
+// this Worker from a datacentre. The app has the scores already, so it sends
+// them -- but a subscriber is not a source of truth, and a leaderboard graded
+// on one customer's word is a leaderboard that customer can write.
+//
+// So a report is not a result. Reports are stored one per picker per game, and
+// a score is only promoted to the results table when RESULTS_QUORUM pickers
+// independently report *the same* score and kickoff. Games are objective and
+// public, so honest clients agree exactly and a liar has to find two other
+// live subscriptions willing to send the same wrong number for the same game.
+//
+// It degrades rather than fails: a game only one person watched stays
+// ungraded until enough people have seen it, which is the right way round.
+// And it never overwrites what the grader got from ESPN itself.
+export const RESULTS_QUORUM = 3;
+export const RESULTS_MAX = 64;                 // a week's slate, with room
+export const RESULTS_RATE = 30;                // batches per key per hour
+
 // How long a licence check is trusted. Without it, a customer clicking through
 // a full slate makes one Whop call per pick.
 export const LICENCE_TTL_MS = 10 * 60 * 1000;
@@ -421,13 +444,13 @@ function rememberLicence(picker, valid) {
 // Per key per hour, in the same KV the support endpoint uses. The bucket name
 // carries the picker id rather than the key, so nothing secret is in KV
 // either.
-async function overPicksLimit(env, picker) {
+async function overLimit(env, picker, prefix, rate) {
   const store = env.PICKS_RL || env.SUPPORT_RL;
   if (!store) return false;
-  const bucket = `pk:${picker}:${Math.floor(Date.now() / 3_600_000)}`;
+  const bucket = `${prefix}:${picker}:${Math.floor(Date.now() / 3_600_000)}`;
   try {
     const seen = Number(await store.get(bucket)) || 0;
-    if (seen >= PICKS_RATE) return true;
+    if (seen >= rate) return true;
     await store.put(bucket, String(seen + 1), { expirationTtl: 7200 });
   } catch (err) {
     // A rate limiter that is down must not take pick sharing down with it.
@@ -436,6 +459,11 @@ async function overPicksLimit(env, picker) {
   }
   return false;
 }
+
+// Separate buckets, because reporting scores and sharing picks run on the same
+// cadence and one must not be able to starve the other.
+const overPicksLimit = (env, picker) => overLimit(env, picker, "pk", PICKS_RATE);
+const overResultsLimit = (env, picker) => overLimit(env, picker, "rs", RESULTS_RATE);
 
 async function pickerFor(key) {
   const bytes = new TextEncoder().encode(`${PICK_SALT}:${key}`);
@@ -462,8 +490,80 @@ function cleanPick(raw) {
     price: raw.price === null || raw.price === undefined ? null : Math.trunc(Number(raw.price)),
     total_line: num(raw.total_line),
     book_prob: num(raw.book_prob),
+    // What the app's own model said about this game, for the dashboard column
+    // that puts the crowd beside the model. Normalised like `side`, because it
+    // is compared against one.
+    model_side: String(raw.model_side || "").toUpperCase().slice(0, 8) || null,
     picked_at: String(raw.picked_at || "").slice(0, 40) || null,
   };
+}
+
+// The gate on every write endpoint. /v1/picks shipped without one, on the
+// support endpoint's reasoning -- that endpoint takes no key because "my key
+// will not activate" is exactly the message that cannot produce one. A write
+// is the opposite case: only a paying customer has anything worth storing, and
+// an open write endpoint means anybody who finds the URL can fill the tables
+// the leaderboard is built from.
+//
+// One function rather than one per endpoint, so a second way in cannot be a
+// weaker way in.
+async function licensedPicker(body, env, limiter, needsSub) {
+  const picker = String(body.picker || "").toLowerCase();
+  if (!/^[0-9a-f]{16}$/.test(picker)) {
+    return { error: json({ ok: false, reason: "bad_picker" }, 400) };
+  }
+
+  const key = String(body.license_key || "").trim();
+  if (!key) {
+    return { error: json({ ok: false, reason: "unlicensed", message: needsSub }, 403) };
+  }
+
+  // The id has to be the one this key produces. Without this, one valid
+  // subscription could write under any id it liked -- somebody else's, or a
+  // thousand invented ones -- and the leaderboard would be whatever its
+  // busiest customer decided it was. For reported scores it does more: the
+  // quorum counts distinct pickers, so an id nobody can mint is the whole
+  // reason counting them means anything.
+  if (await pickerFor(key) !== picker) {
+    return { error: json({ ok: false, reason: "picker_mismatch",
+                           message: "That picker id does not belong to that key." },
+                         403) };
+  }
+
+  // Before the Whop call, so a flood cannot be turned into a flood of those.
+  if (await limiter(env, picker)) {
+    return { error: json({ ok: false, reason: "rate_limited",
+                           message: "Too many batches from this key in the last hour." },
+                         429) };
+  }
+
+  const cached = cachedLicence(picker);
+  if (cached) {
+    if (!cached.valid) {
+      return { error: json({ ok: false, reason: "unlicensed", message: needsSub }, 403) };
+    }
+    return { picker, degraded: false };
+  }
+  // No machine id: this is not an activation, and registering a computer as a
+  // side effect of sharing a pick would spend one of the customer's two slots
+  // without them doing anything.
+  const check = await validate({ license_key: key }, env);
+  if (check.valid === true) {
+    rememberLicence(picker, true);
+    return { picker, degraded: false };
+  }
+  if (check.valid === null) {
+    // Whop is having a bad day. Taking the batch is the right call: the
+    // alternative is losing a customer's picks over somebody else's outage,
+    // and the id still had to match a well-formed key to get this far. Not
+    // cached, so the next batch tries Whop again.
+    console.log("picks: accepted without a licence check, Whop unreachable",
+                String(check.message || check.reason || ""));
+    return { picker, degraded: true };
+  }
+  rememberLicence(picker, false);
+  return { error: json({ ok: false, reason: "unlicensed",
+                         message: check.message || needsSub }, 403) };
 }
 
 async function picksRoute(request, env) {
@@ -480,68 +580,10 @@ async function picksRoute(request, env) {
   let body = {};
   try { body = JSON.parse(raw || "{}"); } catch { body = {}; }
 
-  const picker = String(body.picker || "").toLowerCase();
-  if (!/^[0-9a-f]{16}$/.test(picker)) {
-    return json({ ok: false, reason: "bad_picker" }, 400);
-  }
-
-  // Everything below is the gate. This endpoint shipped without one, on the
-  // support endpoint's reasoning -- that endpoint takes no key because "my key
-  // will not activate" is exactly the message that cannot produce one. Picks
-  // are the opposite case: only a paying customer has picks worth grading, and
-  // an open write endpoint means anybody who finds the URL can fill the table
-  // the leaderboard is built from.
-  const key = String(body.license_key || "").trim();
-  if (!key) {
-    return json({ ok: false, reason: "unlicensed",
-                  message: "Pick sharing needs a live subscription." }, 403);
-  }
-
-  // The id has to be the one this key produces. Without this, one valid
-  // subscription could write under any id it liked -- somebody else's, or a
-  // thousand invented ones -- and the leaderboard would be whatever its
-  // busiest customer decided it was.
-  if (await pickerFor(key) !== picker) {
-    return json({ ok: false, reason: "picker_mismatch",
-                  message: "That picker id does not belong to that key." }, 403);
-  }
-
-  // Before the Whop call, so a flood cannot be turned into a flood of those.
-  if (await overPicksLimit(env, picker)) {
-    return json({ ok: false, reason: "rate_limited",
-                  message: "Too many batches from this key in the last hour." },
-                429);
-  }
-
-  let degraded = false;
-  const cached = cachedLicence(picker);
-  if (cached) {
-    if (!cached.valid) {
-      return json({ ok: false, reason: "unlicensed",
-                    message: "Pick sharing needs a live subscription." }, 403);
-    }
-  } else {
-    // No machine id: this is not an activation, and registering a computer as
-    // a side effect of sharing a pick would spend one of the customer's two
-    // slots without them doing anything.
-    const check = await validate({ license_key: key }, env);
-    if (check.valid === true) {
-      rememberLicence(picker, true);
-    } else if (check.valid === null) {
-      // Whop is having a bad day. Taking the batch is the right call: the
-      // alternative is losing a customer's picks over somebody else's outage,
-      // and the id still had to match a well-formed key to get this far. Not
-      // cached, so the next batch tries Whop again.
-      degraded = true;
-      console.log("picks: accepted without a licence check, Whop unreachable",
-                  String(check.message || check.reason || ""));
-    } else {
-      rememberLicence(picker, false);
-      return json({ ok: false, reason: "unlicensed",
-                    message: check.message
-                      || "Pick sharing needs a live subscription." }, 403);
-    }
-  }
+  const gate = await licensedPicker(body, env, overPicksLimit,
+                                    "Pick sharing needs a live subscription.");
+  if (gate.error) return gate.error;
+  const { picker, degraded } = gate;
 
   const picks = (Array.isArray(body.picks) ? body.picks : [])
     .slice(0, PICKS_MAX).map(cleanPick).filter(Boolean);
@@ -559,11 +601,12 @@ async function picksRoute(request, env) {
   for (const p of picks) {
     statements.push(env.PICKS_DB.prepare(
       "INSERT INTO picks(picker, game_id, kind, season, week, side, line, price,"
-      + " total_line, book_prob, picked_at, received_at)"
-      + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+      + " total_line, book_prob, model_side, picked_at, received_at)"
+      + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
       + " ON CONFLICT(picker, game_id, kind) DO UPDATE SET"
       + " side = excluded.side, line = excluded.line, price = excluded.price,"
       + " total_line = excluded.total_line, book_prob = excluded.book_prob,"
+      + " model_side = excluded.model_side,"
       + " picked_at = excluded.picked_at, received_at = excluded.received_at,"
       // A changed pick is ungraded again: it is a different bet now.
       + " result = NULL, graded_at = NULL"
@@ -571,7 +614,7 @@ async function picksRoute(request, env) {
       // file, the pick that was in before kickoff is the one that counts.
       + " WHERE picks.result IS NULL",
     ).bind(picker, p.game_id, p.kind, p.season, p.week, p.side, p.line, p.price,
-           p.total_line, p.book_prob, p.picked_at, now));
+           p.total_line, p.book_prob, p.model_side, p.picked_at, now));
   }
   try {
     await env.PICKS_DB.batch(statements);
@@ -582,6 +625,139 @@ async function picksRoute(request, env) {
   return json(degraded
     ? { ok: true, stored: picks.length, unchecked: true }
     : { ok: true, stored: picks.length });
+}
+
+// One reported score, checked into a shape the database can hold.
+//
+// Everything here is a client's word, so everything is bounded. A score is a
+// small non-negative integer or the report is dropped; a game that has not
+// finished has no score to report; and a kickoff in the future belongs to a
+// game that cannot be final, which is the one check that costs nothing and
+// stops a report from voiding honest picks as "late".
+export function cleanResult(raw, now = Date.now()) {
+  if (!raw || typeof raw !== "object") return null;
+  const gameId = String(raw.game_id || "").slice(0, 64);
+  if (!/^[A-Za-z0-9._-]+$/.test(gameId)) return null;
+  const home = String(raw.home || "").toUpperCase().slice(0, 8);
+  const away = String(raw.away || "").toUpperCase().slice(0, 8);
+  if (!/^[A-Z]{2,8}$/.test(home) || !/^[A-Z]{2,8}$/.test(away) || home === away) {
+    return null;
+  }
+  const score = (v) => {
+    // The empty cases first, and explicitly: Number(null) and Number("") are
+    // both 0, so a game with no score on it would otherwise be reported as a
+    // finished nil-all draw and graded as one.
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 && n <= 200 ? n : null;
+  };
+  const hs = score(raw.home_score);
+  const as = score(raw.away_score);
+  if (hs === null || as === null) return null;          // not final, not news
+  const season = Number(raw.season);
+  const week = Number(raw.week);
+  if (!Number.isInteger(season) || season < 2000 || season > 2100) return null;
+  if (!Number.isInteger(week) || week < 1 || week > 22) return null;
+
+  let kickoff = raw.kickoff ? String(raw.kickoff).slice(0, 40) : null;
+  const at = kickoff ? Date.parse(kickoff) : NaN;
+  // Unparseable or still to come: drop the kickoff rather than the report. A
+  // missing kickoff only means the late-pick check is skipped for this game,
+  // which is the safe way to be wrong -- grading a late pick beats voiding an
+  // honest one on a timestamp a stranger chose.
+  if (!Number.isFinite(at) || at > now) kickoff = null;
+  return { game_id: gameId, season, week, kickoff, home, away,
+           home_score: hs, away_score: as };
+}
+
+// Scores the app already fetched, from a connection ESPN will answer.
+//
+// The report is recorded against the picker who sent it and goes no further on
+// its own. Promotion to the results table happens below, and only on agreement.
+async function resultsRoute(request, env) {
+  if (!env.PICKS_DB) {
+    return json({ ok: false, reason: "not_configured",
+                  message: "Result reporting is not set up on the server." }, 200);
+  }
+  const raw = await request.text().catch(() => "");
+  if (raw.length > 200_000) return json({ ok: false, reason: "too_large" }, 400);
+  let body = {};
+  try { body = JSON.parse(raw || "{}"); } catch { body = {}; }
+
+  const gate = await licensedPicker(body, env, overResultsLimit,
+                                    "Reporting results needs a live subscription.");
+  if (gate.error) return gate.error;
+  const { picker, degraded } = gate;
+
+  const now = Date.now();
+  const reports = (Array.isArray(body.results) ? body.results : [])
+    .slice(0, RESULTS_MAX).map((r) => cleanResult(r, now)).filter(Boolean);
+  if (!reports.length) return json({ ok: false, reason: "empty" }, 400);
+
+  const stamp = new Date(now).toISOString();
+  const writes = reports.map((r) => env.PICKS_DB.prepare(
+    "INSERT INTO result_reports(game_id, picker, season, week, kickoff, home,"
+    + " away, home_score, away_score, reported_at) VALUES(?,?,?,?,?,?,?,?,?,?)"
+    // A picker who reports the same game twice replaces their own row. One
+    // row per picker per game is what makes counting them a count of people.
+    + " ON CONFLICT(game_id, picker) DO UPDATE SET"
+    + " home_score = excluded.home_score, away_score = excluded.away_score,"
+    + " kickoff = excluded.kickoff, reported_at = excluded.reported_at",
+  ).bind(r.game_id, picker, r.season, r.week, r.kickoff, r.home, r.away,
+         r.home_score, r.away_score, stamp));
+  try {
+    await env.PICKS_DB.batch(writes);
+  } catch (err) {
+    console.log("results: store failed", String(err && err.message || err));
+    return json({ ok: false, reason: "store_failed" }, 502);
+  }
+
+  const agreed = await promoteResults(env, reports.map((r) => r.game_id), stamp);
+  return json(degraded
+    ? { ok: true, reported: reports.length, agreed, unchecked: true }
+    : { ok: true, reported: reports.length, agreed });
+}
+
+// Reports that enough people agree on, written where grading will find them.
+//
+// The GROUP BY is the whole mechanism: rows only count together when the
+// score *and* the kickoff match exactly, so two people saying 27-20 and two
+// saying 28-20 is four reports and no quorum. Honest clients read the same
+// public scoreboard and agree to the character.
+export async function promoteResults(env, gameIds, stamp, quorum = RESULTS_QUORUM) {
+  const ids = [...new Set(gameIds)].filter(Boolean);
+  if (!ids.length) return 0;
+  const holes = ids.map(() => "?").join(",");
+  let rows;
+  try {
+    rows = await env.PICKS_DB.prepare(
+      "SELECT game_id, season, week, kickoff, home, away, home_score, away_score,"
+      + " COUNT(*) AS reporters FROM result_reports"
+      + ` WHERE game_id IN (${holes})`                            // eslint-disable-line
+      + " GROUP BY game_id, kickoff, home, away, home_score, away_score"
+      + " HAVING reporters >= ?",
+    ).bind(...ids, quorum).all();
+  } catch (err) {
+    console.log("results: could not count reports", String(err && err.message || err));
+    return 0;
+  }
+  const agreed = rows.results || [];
+  if (!agreed.length) return 0;
+
+  await env.PICKS_DB.batch(agreed.map((r) => env.PICKS_DB.prepare(
+    "INSERT INTO results(game_id, season, week, kickoff, home, away, home_score,"
+    + " away_score, fetched_at, source) VALUES(?,?,?,?,?,?,?,?,?,'crowd')"
+    // Only ever fills a gap. A score the grader got from ESPN itself is the
+    // better fact and is never replaced by a vote, however large the vote.
+    + " ON CONFLICT(game_id) DO UPDATE SET home_score = excluded.home_score,"
+    + " away_score = excluded.away_score, kickoff = excluded.kickoff,"
+    + " fetched_at = excluded.fetched_at, source = 'crowd'"
+    + " WHERE results.home_score IS NULL",
+  ).bind(r.game_id, r.season, r.week, r.kickoff, r.home, r.away,
+         r.home_score, r.away_score, stamp)));
+  console.log("results: agreed", JSON.stringify(
+    { games: agreed.length, quorum }));
+  return agreed.length;
 }
 
 async function picksDeleteRoute(request, env) {
@@ -780,30 +956,47 @@ export async function weeksToGrade(env, season, week, limit = WEEKS_MAX) {
 }
 
 export async function gradeWeek(env, season, week, fetcher = fetch) {
-  let results;
+  let results = [];
+  let refused = null;
   try {
     results = await fetchResults(season, week, fetcher, env);
   } catch (err) {
-    // A week that could not be fetched is not a week that failed to grade:
-    // nothing was read, so nothing is written, and every pick in it stays
-    // ungraded -- which is exactly what brings the week back on the next run.
-    // Returning rather than throwing keeps one bad week from ending the run
-    // and taking the other weeks with it.
-    return { ok: false, season, week, games: 0, graded: 0, late: 0,
-             status: (err && err.status) || null,
-             error: String((err && err.message) || err) };
+    // Not a reason to stop. Grading carries on against whatever scores are
+    // already on file -- which, when ESPN is refusing this Worker outright, is
+    // what customers reported and agreed on. Anything still ungraded keeps the
+    // week in the backlog, so the next run comes back to it either way.
+    refused = { status: (err && err.status) || null,
+                error: String((err && err.message) || err) };
   }
   const now = new Date().toISOString();
   const writes = [];
   const byGame = new Map();
+
+  // What is already on file, first. Mostly this is what previous runs wrote,
+  // and it changes nothing -- but when ESPN has refused and `results` is empty,
+  // these are the scores customers reported and agreed on, and they are the
+  // only reason the week can be graded at all.
+  try {
+    const stored = await env.PICKS_DB.prepare(
+      "SELECT game_id, season, week, kickoff, home, away, home_score, away_score"
+      + " FROM results WHERE season = ? AND week = ?",
+    ).bind(season, week).all();
+    for (const r of stored.results || []) byGame.set(r.game_id, r);
+  } catch (err) {
+    console.log("picks: could not read stored results",
+                String(err && err.message || err));
+  }
+
+  // Then the fetch, which wins where it has an answer: ESPN is the better
+  // fact, and a score it just gave us replaces one a vote put there.
   for (const r of results) {
     byGame.set(r.game_id, r);
     writes.push(env.PICKS_DB.prepare(
       "INSERT INTO results(game_id, season, week, kickoff, home, away, home_score,"
-      + " away_score, fetched_at) VALUES(?,?,?,?,?,?,?,?,?)"
+      + " away_score, fetched_at, source) VALUES(?,?,?,?,?,?,?,?,?,'espn')"
       + " ON CONFLICT(game_id) DO UPDATE SET home_score = excluded.home_score,"
       + " away_score = excluded.away_score, kickoff = excluded.kickoff,"
-      + " fetched_at = excluded.fetched_at",
+      + " fetched_at = excluded.fetched_at, source = 'espn'",
     ).bind(r.game_id, r.season, r.week, r.kickoff, r.home, r.away,
            r.home_score, r.away_score, now));
   }
@@ -837,7 +1030,11 @@ export async function gradeWeek(env, season, week, fetcher = fetch) {
     ).bind(verdict, now, pick.picker, pick.game_id, pick.kind));
   }
   if (writes.length) await env.PICKS_DB.batch(writes);
-  return { ok: true, season, week, games: results.length, graded, late };
+  // `ok` is about the fetch, not about the grading: a refused week that graded
+  // from reported scores still says so, because the refusal is the thing worth
+  // knowing in the log.
+  return { ok: !refused, season, week, games: results.length,
+           known: byGame.size, graded, late, ...(refused || {}) };
 }
 
 // ------------------------------------------------- what the crowd said, frozen
@@ -873,6 +1070,16 @@ export const CONSENSUS_DDL =
   + "close_line REAL, clv REAL, proven_clv REAL, graded_at TEXT, "
   + "PRIMARY KEY (game_id, phase))";
 
+// One row per picker per game: a score somebody says they saw. Kept after
+// promotion, because the count is the evidence -- and because a second report
+// arriving later is how a game that missed quorum reaches it.
+export const REPORTS_DDL =
+  "CREATE TABLE IF NOT EXISTS result_reports (game_id TEXT NOT NULL, "
+  + "picker TEXT NOT NULL, season INTEGER NOT NULL, week INTEGER NOT NULL, "
+  + "kickoff TEXT, home TEXT NOT NULL, away TEXT NOT NULL, "
+  + "home_score INTEGER NOT NULL, away_score INTEGER NOT NULL, "
+  + "reported_at TEXT NOT NULL, PRIMARY KEY (game_id, picker))";
+
 export async function ensureSchema(env) {
   if (!env.PICKS_DB) return false;
   try {
@@ -883,9 +1090,25 @@ export async function ensureSchema(env) {
     return false;
   }
   try {
+    await env.PICKS_DB.exec(REPORTS_DDL);
+  } catch (err) {
+    console.log("results: could not ensure the reports table",
+                String(err && err.message || err));
+    return false;
+  }
+  // Both are ALTERs a fresh database gets from schema.sql and an existing one
+  // needs adding. They throw when the column is already there, which is the
+  // usual case and not worth saying anything about.
+  try {
     await env.PICKS_DB.exec("ALTER TABLE picks ADD COLUMN model_side TEXT");
   } catch {
     // Already there, which is the usual case.
+  }
+  try {
+    await env.PICKS_DB.exec("ALTER TABLE results ADD COLUMN source TEXT");
+  } catch {
+    // Likewise. Where it says 'crowd' the score came from agreeing customers
+    // rather than from ESPN, which is worth being able to tell apart later.
   }
 
   // The one thing this cannot do for itself. CREATE TABLE IF NOT EXISTS is a

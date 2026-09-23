@@ -73,6 +73,24 @@ BATCH = 50
 FLUSH_SECONDS = 60.0
 MAX_TRIES = 8
 
+# ----------------------------------------------------------- reported results
+#
+# ESPN answers this app from a home connection and refuses the licence server
+# from a datacentre, so the grader there had no scores at all and a whole week
+# went ungraded. The app has them already: it fetched them to draw the board.
+#
+# So it passes them on. Not as truth -- the server takes a score only when
+# several subscriptions independently report the same one -- which is why this
+# sends what was seen and claims nothing. It rides the pick-sharing switch: a
+# game score is nobody's personal data, but somebody who turned sharing off
+# turned off talking to that server, and that answer is not ours to reinterpret.
+RESULTS_MAX = 64
+REPORTED_KEY = "share_reported_games"
+# Ids of games already reported, so the usual wake sends nothing and costs no
+# request at all. Bounded because a season is a few hundred games and this is
+# a memo, not a record.
+REPORTED_KEEP = 400
+
 
 # ------------------------------------------------------------------ identity
 
@@ -367,6 +385,89 @@ def state() -> dict:
     }
 
 
+# --------------------------------------------------------- reporting results
+
+def _reported() -> list[str]:
+    from . import db
+
+    seen = db.get_meta(REPORTED_KEY, []) or []
+    return [str(x) for x in seen] if isinstance(seen, list) else []
+
+
+def unreported_finals(limit: int = RESULTS_MAX) -> list[dict]:
+    """Finished games this copy has not passed on yet.
+
+    Driven by what is left to do rather than by a queue with a try count, so
+    a week offline costs nothing: the games are still finished and still
+    unreported when the network comes back.
+    """
+    from . import db
+
+    done = set(_reported())
+    try:
+        rows = db.query(
+            "SELECT game_id, season, week, kickoff, home, away, home_score,"
+            " away_score FROM games WHERE status = 'final'"
+            " AND home_score IS NOT NULL AND away_score IS NOT NULL"
+            " ORDER BY kickoff DESC LIMIT ?", (limit * 4,))
+    except Exception:                                         # noqa: BLE001
+        return []
+    return [dict(r) for r in rows if r["game_id"] not in done][:limit]
+
+
+def _mark_reported(game_ids: list[str]) -> None:
+    from . import db
+
+    with contextlib.suppress(Exception):
+        kept = (_reported() + list(game_ids))[-REPORTED_KEEP:]
+        db.set_meta(REPORTED_KEY, kept)
+
+
+def report_results(*, timeout: float = 10.0) -> dict:
+    """Pass on the final scores this copy has seen. Never raises.
+
+    Nothing is marked as reported until the server has taken it, so a failure
+    is retried on the next wake for as long as it takes -- there is no attempt
+    budget to run out of, because the thing being sent is a fact about a game
+    and not a pick that goes stale.
+    """
+    from . import licensing
+
+    if not may_send():
+        return {"sent": 0, "reason": "off"}
+    server = licensing.server_url()
+    if not server:
+        return {"sent": 0, "reason": "no_server"}
+    rows = unreported_finals()
+    if not rows:
+        return {"sent": 0, "reason": "empty"}
+
+    payload = {
+        "picker": picker_id(),
+        "license_key": licensing.saved_key(),
+        "results": rows,
+    }
+    try:
+        import httpx
+
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(f"{server}/v1/results", json=payload)
+        # A refusal is an answer: a lapsed subscription will not start working
+        # because the app asked again. Marked as reported so it stops asking,
+        # the same call flush() makes about a refused batch.
+        if response.status_code in (400, 403):
+            _mark_reported([r["game_id"] for r in rows])
+            log.debug("results refused: %s", response.status_code)
+            return {"sent": 0, "reason": "refused"}
+        response.raise_for_status()
+    except Exception as exc:                                  # noqa: BLE001
+        log.debug("results did not go: %s", type(exc).__name__)
+        return {"sent": 0, "reason": "unreachable"}
+
+    _mark_reported([r["game_id"] for r in rows])
+    return {"sent": len(rows), "reason": "ok"}
+
+
 # ------------------------------------------------------------- the sender
 
 class Sender:
@@ -396,6 +497,11 @@ class Sender:
         while not self._stop.wait(self.interval):
             with contextlib.suppress(Exception):
                 flush()
+            # Usually a no-op that touches nothing: once a game has been
+            # reported it is never reported again, so a wake with no new final
+            # score makes no request at all.
+            with contextlib.suppress(Exception):
+                report_results()
 
 
 def _flush_quietly() -> None:

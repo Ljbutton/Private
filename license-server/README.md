@@ -16,6 +16,7 @@ It does three things:
 | `POST /v1/validate` | Is this key active? Registers the computer (up to `MAX_MACHINES`). |
 | `GET /v1/latest` | Newest build, read from `version.json` on the GitHub release. Drives the update notice. |
 | `GET /v1/download?key=…&asset=…` | Sends a paying customer straight to the installer. |
+| `POST /v1/results` | Final scores the app fetched. Graded only on agreement — see below. |
 | `GET /v1/health?token=…` | What this deployment is missing. Same token as the dashboard. |
 
 Cloudflare's free plan (100k requests/day) is far more than this needs.
@@ -142,10 +143,37 @@ against a live refusal, uncomment `SCOREBOARD_USER_AGENT` in `wrangler.toml`
 and redeploy — no code change.
 
 If ESPN refuses whatever headers are sent, it is blocking the datacentre
-rather than the request, and headers cannot fix that. The fallback then is for
-the app to POST the results it has already fetched from a home connection,
-with the Worker accepting a result only when enough independent subscriptions
-report the same score.
+rather than the request, and headers cannot fix that. The fallback below is
+what keeps the season graded anyway.
+
+### Scores the customers report
+
+ESPN answers the desktop app from a home connection. The app has fetched the
+scores already — it drew the board with them — so it sends them on, and a week
+the Worker could not fetch is still graded.
+
+A subscriber is not a source of truth, so a report is not a result:
+
+- A report is stored against the picker who sent it, one row per picker per
+  game. The picker id is a hash of a licence key the server checks, so the
+  count is a count of live subscriptions, not of requests.
+- A score reaches the `results` table only when **`RESULTS_QUORUM` pickers
+  independently report the same score and the same kickoff** (3 by default).
+  The grouping is per score, so two people saying 27-20 and two saying 28-20
+  is four reports and no quorum.
+- A score the grader got from ESPN itself is never replaced by a vote, however
+  large. `results.source` says which one a row came from.
+- A kickoff in the future is dropped and the report kept: a missing kickoff
+  only skips the late-pick check, and grading a late pick beats voiding an
+  honest one on a timestamp a stranger chose.
+
+It degrades rather than fails. A game only one or two people had open stays
+ungraded until enough have seen it — which is the right way round, and worth
+knowing in the first weeks of a season or on a quiet Thursday.
+
+Reporting rides the pick-sharing switch. A game score is nobody's personal
+data, but somebody who turned sharing off turned off talking to this server,
+and that answer is not ours to reinterpret.
 
 ## Test
 
@@ -318,7 +346,34 @@ tells you which ids exist.
 **Grading.** A cron trigger (hourly, `17 * * * *`) grades the current week and
 the one before it — a Monday night game is graded after the week has rolled
 over. Results come from ESPN's public scoreboard, the same source the app uses,
-so the two cannot disagree about who won.
+so the two cannot disagree about who won. When ESPN refuses the Worker, the
+week is graded from scores the apps reported and agreed on instead — see
+[Scores the customers report](#scores-the-customers-report).
+
+### Adding the reports table to an existing database
+
+`ensureSchema` creates `result_reports` and adds `results.source` on the next
+scheduled run, so a deploy needs nothing by hand. To do it immediately:
+
+```sql
+CREATE TABLE IF NOT EXISTS result_reports (
+    game_id     TEXT NOT NULL,
+    picker      TEXT NOT NULL,
+    season      INTEGER NOT NULL,
+    week        INTEGER NOT NULL,
+    kickoff     TEXT,
+    home        TEXT NOT NULL,
+    away        TEXT NOT NULL,
+    home_score  INTEGER NOT NULL,
+    away_score  INTEGER NOT NULL,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (game_id, picker)
+);
+CREATE INDEX IF NOT EXISTS idx_result_reports_game ON result_reports(game_id);
+ALTER TABLE results ADD COLUMN source TEXT;
+```
+
+The `ALTER` errors harmlessly if the column is already there.
 
 ### Migrating the consensus table
 

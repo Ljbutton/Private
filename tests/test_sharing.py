@@ -430,3 +430,127 @@ def test_a_refusal_drops_the_batch_rather_than_retrying_for_ever(keyed, monkeypa
     monkeypatch.setattr("httpx.Client", answer(429))
     assert sharing.flush()["reason"] == "unreachable"
     assert len(sharing.pending()) == 1, "a rate limit is worth waiting out"
+
+
+# ------------------------------------------------------ reporting results
+#
+# ESPN answers this app and refuses the licence server, so the app passes on
+# the scores it already has. The server decides what to believe; this side is
+# only responsible for sending what it saw, once.
+
+def _final(game_id="demo-1", home_score=27, away_score=20, status="final"):
+    db.execute(
+        "INSERT OR REPLACE INTO games(game_id, season, week, season_type,"
+        " kickoff, home, away, home_score, away_score, status, updated_at)"
+        " VALUES(?,2026,5,'REG','2026-10-11T17:00:00Z','KC','DEN',?,?,?,"
+        "'2026-10-12T00:00:00Z')",
+        (game_id, home_score, away_score, status))
+    return game_id
+
+
+class _Posted:
+    """A licence server that takes everything and remembers what it got."""
+
+    def __init__(self, status=200):
+        self.status, self.calls = status, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, url, json=None):
+        self.calls.append((url, json))
+        outer = self
+
+        class R:
+            status_code = outer.status
+
+            def raise_for_status(self):
+                if outer.status >= 400:
+                    raise RuntimeError(f"http {outer.status}")
+
+        return R()
+
+
+def test_only_finished_games_are_reported(client, keyed):
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    _final("done-1")
+    _final("playing", status="in_progress")
+    _final("nil", home_score=None, away_score=None)
+
+    ids = [r["game_id"] for r in sharing.unreported_finals()]
+    assert ids == ["done-1"]
+
+
+def test_results_go_once_and_are_not_sent_again(client, keyed, monkeypatch):
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    _final("done-1")
+    posted = _Posted()
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: posted)
+
+    out = sharing.report_results()
+    assert out == {"sent": 1, "reason": "ok"}
+    url, body = posted.calls[0]
+    assert url.endswith("/v1/results")
+    assert body["picker"] == keyed
+    assert body["license_key"] == "EDGE-TEST-KEY-0001"
+    assert body["results"][0]["home_score"] == 27
+
+    # The second wake has nothing new, so it makes no request at all.
+    assert sharing.report_results() == {"sent": 0, "reason": "empty"}
+    assert len(posted.calls) == 1
+
+
+def test_a_report_that_did_not_go_is_tried_again(client, keyed, monkeypatch):
+    # No attempt budget to run out of: the game is still finished and still
+    # unreported, so it is still owed however long the network is down.
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    _final("done-1")
+
+    class Dead(_Posted):
+        def post(self, url, json=None):
+            raise OSError("no network")
+
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: Dead())
+    for _ in range(12):
+        assert sharing.report_results() == {"sent": 0, "reason": "unreachable"}
+    assert [r["game_id"] for r in sharing.unreported_finals()] == ["done-1"]
+
+    ok = _Posted()
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: ok)
+    assert sharing.report_results()["sent"] == 1
+
+
+def test_a_refused_report_stops_asking(client, keyed, monkeypatch):
+    sharing.mark_notice_seen()
+    sharing.set_enabled(True)
+    _final("done-1")
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: _Posted(status=403))
+    assert sharing.report_results() == {"sent": 0, "reason": "refused"}
+    assert sharing.unreported_finals() == []
+
+
+def test_sharing_turned_off_reports_nothing(client, keyed, monkeypatch):
+    # A game score is nobody's personal data, but somebody who turned sharing
+    # off turned off talking to that server, and that is not ours to reread.
+    sharing.mark_notice_seen()
+    sharing.set_enabled(False)
+    _final("done-1")
+    posted = _Posted()
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: posted)
+    assert sharing.report_results() == {"sent": 0, "reason": "off"}
+    assert posted.calls == []
+
+
+def test_nothing_is_reported_before_the_notice_is_answered(client, keyed, monkeypatch):
+    sharing.set_enabled(True)                  # but the notice is unanswered
+    _final("done-1")
+    posted = _Posted()
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: posted)
+    assert sharing.report_results()["reason"] == "off"
+    assert posted.calls == []

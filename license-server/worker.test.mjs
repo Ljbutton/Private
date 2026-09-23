@@ -4,8 +4,8 @@ import { test } from "node:test";
 
 import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
   captureConsensus, captureFirst, crowdClv, ensureSchema, gradeCrowd,
-  gradePick, gradeWeek, health, leaderboard, nflWeek, scoreboardHeaders,
-  support, validate, weeksToGrade }
+  RESULTS_QUORUM, cleanResult, gradePick, gradeWeek, health, leaderboard,
+  nflWeek, promoteResults, scoreboardHeaders, support, validate, weeksToGrade }
   from "./worker.js";
 import worker from "./worker.js";
 
@@ -396,6 +396,8 @@ function fakeD1() {
           if (/DISTINCT season, week FROM picks/.test(sql)) {
             return { results: rows.backlog || [] };
           }
+          if (/FROM result_reports/.test(sql)) return { results: rows.agreed || [] };
+          if (/FROM results/.test(sql)) return { results: rows.results };
           if (/FROM picks/.test(sql)) return { results: rows.picks };
           return { results: [] };
         },
@@ -473,9 +475,27 @@ test("the server stamps its own received_at and ignores the client's clock", asy
               picked_at: "1999-01-01T00:00:00Z" }],
   }), picksEnv(PICKS_DB));
   const args = PICKS_DB.calls[1].args;
-  assert.equal(args[10], "1999-01-01T00:00:00Z", "kept, for the record");
-  assert.match(args[11], /^20\d\d-/, "but received_at is ours");
-  assert.notEqual(args[11], args[10]);
+  assert.equal(args[11], "1999-01-01T00:00:00Z", "kept, for the record");
+  assert.match(args[12], /^20\d\d-/, "but received_at is ours");
+  assert.notEqual(args[12], args[11]);
+});
+
+test("the model's own side is actually stored, not just read", async () => {
+  // It was not. The column, the dashboard column that reads it and the
+  // capture that averages it all shipped; the INSERT never carried it, so
+  // every row had NULL there and the page had a permanently blank column.
+  const PICKS_DB = fakeD1();
+  const key = "KEY-MODELSIDE-01";
+  fakeWhop({ ...live });
+  await worker.fetch(picksPost({
+    picker: await pickerIdFor(key),
+    license_key: key,
+    picks: [{ game_id: "g1", kind: "winner", side: "KC", season: 2026, week: 5,
+              model_side: "DEN" }],
+  }), picksEnv(PICKS_DB));
+  const insert = PICKS_DB.calls.find((c) => /INSERT INTO picks/.test(c.sql));
+  assert.match(insert.sql, /model_side/);
+  assert.equal(insert.args[10], "DEN");
 });
 
 test("a picker id that is not sixteen hex characters is refused", async () => {
@@ -1940,4 +1960,210 @@ test("the scheduled run survives a scoreboard that refuses everything", async ()
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+
+// -------------------------------------------------- results, reported by the app
+
+const FINAL = {
+  game_id: "401", season: 2026, week: 5, kickoff: "2026-10-11T17:00:00Z",
+  home: "KC", away: "DEN", home_score: 27, away_score: 20,
+};
+
+function resultsPost(body) {
+  return new Request("https://edge.example/v1/results", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+test("a reported score needs a live subscription, like a pick", async () => {
+  const db = fakeD1();
+  const key = "KEY-RESULTS-0001";
+  // No key at all.
+  const bare = await worker.fetch(resultsPost({
+    picker: await pickerIdFor(key), results: [FINAL],
+  }), picksEnv(db));
+  assert.equal(bare.status, 403);
+  assert.equal((await bare.json()).reason, "unlicensed");
+
+  // A key, but an id that is not the one it hashes to -- which is what stops
+  // one subscription reaching a quorum by itself.
+  fakeWhop({ ...live });
+  const wrong = await worker.fetch(resultsPost({
+    picker: "aaaaaaaaaaaaaaaa", license_key: key, results: [FINAL],
+  }), picksEnv(db));
+  assert.equal(wrong.status, 403);
+  assert.equal((await wrong.json()).reason, "picker_mismatch");
+  assert.equal(db.calls.length, 0, "nothing was written");
+});
+
+test("a lapsed subscription cannot report", async () => {
+  const key = "KEY-RESULTS-0002";
+  fakeWhop({ ...base, status: "canceled" });
+  const res = await worker.fetch(resultsPost({
+    picker: await pickerIdFor(key), license_key: key, results: [FINAL],
+  }), picksEnv(fakeD1()));
+  assert.equal(res.status, 403);
+});
+
+test("a report is stored against the picker who sent it", async () => {
+  const db = fakeD1();
+  const key = "KEY-RESULTS-0003";
+  const picker = await pickerIdFor(key);
+  fakeWhop({ ...live });
+  const res = await worker.fetch(resultsPost({
+    picker, license_key: key, results: [FINAL],
+  }), picksEnv(db));
+
+  assert.equal(res.status, 200);
+  const out = await res.json();
+  assert.equal(out.ok, true);
+  assert.equal(out.reported, 1);
+  const insert = db.calls.find((c) => /INSERT INTO result_reports/.test(c.sql));
+  assert.ok(insert, "the report was written");
+  assert.equal(insert.args[0], "401");
+  assert.equal(insert.args[1], picker, "under their own id, not one they chose");
+  // One row per picker per game: reporting twice replaces, never adds.
+  assert.match(insert.sql, /ON CONFLICT\(game_id, picker\) DO UPDATE/);
+});
+
+test("nothing becomes a result until enough pickers agree", async () => {
+  const db = fakeD1();
+  db.rows.agreed = [];                        // the HAVING found no quorum
+  const written = await promoteResults(db.prepare ? { PICKS_DB: db } : null,
+                                       ["401"], "2026-10-11T22:00:00Z");
+  assert.equal(written, 0);
+  assert.ok(!db.calls.some((c) => /INSERT INTO results/.test(c.sql)),
+            "no score was promoted on one person's word");
+});
+
+test("a quorum is counted per score, so disagreement is not agreement", async () => {
+  const db = fakeD1();
+  await promoteResults({ PICKS_DB: db }, ["401"], "2026-10-11T22:00:00Z");
+  const q = db.calls.find((c) => /FROM result_reports/.test(c.sql));
+  // Grouping by the score is what makes two people saying 27-20 and two
+  // saying 28-20 four reports and no quorum.
+  assert.match(q.sql, /GROUP BY game_id, kickoff, home, away, home_score, away_score/);
+  assert.match(q.sql, /HAVING reporters >= \?/);
+  assert.equal(q.args[q.args.length - 1], RESULTS_QUORUM);
+});
+
+test("an agreed score is written, and never over one ESPN gave us", async () => {
+  const db = fakeD1();
+  db.rows.agreed = [{ ...FINAL, reporters: 3 }];
+  const written = await promoteResults({ PICKS_DB: db }, ["401"],
+                                       "2026-10-11T22:00:00Z");
+  assert.equal(written, 1);
+  const insert = db.calls.find((c) => /INSERT INTO results/.test(c.sql));
+  assert.match(insert.sql, /'crowd'/);
+  // The clause that keeps a vote from overwriting a fact.
+  assert.match(insert.sql, /WHERE results\.home_score IS NULL/);
+});
+
+test("a refused week still grades from scores that were reported", async () => {
+  // The whole point of the fallback: ESPN says no, and the week grades anyway.
+  const db = fakeD1();
+  db.rows.results = [FINAL];                  // promoted from agreeing reports
+  db.rows.picks = [
+    { picker: A_PICKER, game_id: "401", kind: "winner", side: "KC",
+      received_at: "2026-10-11T12:00:00Z" },
+  ];
+  const { value: out } = await capturingLogs(
+    () => gradeWeek({ PICKS_DB: db }, 2026, 5, A_403));
+
+  assert.equal(out.ok, false, "the refusal is still reported");
+  assert.equal(out.status, 403);
+  assert.equal(out.known, 1, "but a score was known anyway");
+  assert.equal(out.graded, 1, "and the pick was graded");
+  const update = db.calls.find((c) => /UPDATE picks SET result/.test(c.sql));
+  assert.equal(update.args[0], "win", "KC won 27-20");
+});
+
+test("a refused week with nothing reported grades nothing and says so", async () => {
+  const db = fakeD1();
+  db.rows.picks = [
+    { picker: A_PICKER, game_id: "401", kind: "winner", side: "KC",
+      received_at: "2026-10-11T12:00:00Z" },
+  ];
+  const { value: out } = await capturingLogs(
+    () => gradeWeek({ PICKS_DB: db }, 2026, 5, A_403));
+  assert.equal(out.ok, false);
+  assert.equal(out.known, 0);
+  assert.equal(out.graded, 0);
+});
+
+test("ESPN wins where it has an answer", async () => {
+  const db = fakeD1();
+  db.rows.results = [{ ...FINAL, home_score: 3, away_score: 0 }];   // a bad vote
+  db.rows.picks = [
+    { picker: A_PICKER, game_id: "401", kind: "winner", side: "DEN",
+      received_at: "2026-10-11T12:00:00Z" },
+  ];
+  const espn = async () => new Response(JSON.stringify({
+    events: [{
+      id: "401", date: "2026-10-11T17:00:00Z",
+      competitions: [{
+        status: { type: { completed: true } },
+        competitors: [
+          { homeAway: "home", score: "20", team: { abbreviation: "KC" } },
+          { homeAway: "away", score: "27", team: { abbreviation: "DEN" } },
+        ],
+      }],
+    }],
+  }), { status: 200 });
+
+  const out = await gradeWeek({ PICKS_DB: db }, 2026, 5, espn);
+  assert.equal(out.ok, true);
+  const update = db.calls.find((c) => /UPDATE picks SET result/.test(c.sql));
+  assert.equal(update.args[0], "win", "DEN won 27-20 by ESPN, whatever the vote said");
+  const insert = db.calls.find((c) => /INSERT INTO results/.test(c.sql));
+  assert.match(insert.sql, /'espn'/);
+});
+
+// ------------------------------------------------- what a report may contain
+
+test("a report that is not a finished game is dropped", () => {
+  assert.equal(cleanResult({ ...FINAL, home_score: null }), null, "no score");
+  assert.equal(cleanResult({ ...FINAL, home_score: "" }), null);
+  assert.equal(cleanResult({ ...FINAL, home_score: -1 }), null);
+  assert.equal(cleanResult({ ...FINAL, home_score: 1e9 }), null);
+  assert.equal(cleanResult({ ...FINAL, home_score: 20.5 }), null);
+  assert.equal(cleanResult({ ...FINAL, home: "KC", away: "KC" }), null);
+  assert.equal(cleanResult({ ...FINAL, home: "" }), null);
+  assert.equal(cleanResult({ ...FINAL, game_id: "../../etc" }), null);
+  assert.equal(cleanResult({ ...FINAL, week: 99 }), null);
+  assert.equal(cleanResult({ ...FINAL, season: 1900 }), null);
+  assert.equal(cleanResult(null), null);
+});
+
+test("a kickoff in the future is dropped, and the report is kept", () => {
+  // A game cannot be final before it starts. Dropping the kickoff rather than
+  // the whole report is deliberate: a missing kickoff only skips the late-pick
+  // check, and grading a late pick beats voiding an honest one on a timestamp
+  // a stranger chose.
+  const ahead = cleanResult({ ...FINAL, kickoff: "2099-01-01T00:00:00Z" });
+  assert.equal(ahead.kickoff, null);
+  assert.equal(ahead.home_score, 27, "the score is still there");
+  assert.equal(cleanResult({ ...FINAL, kickoff: "not a date" }).kickoff, null);
+  assert.equal(cleanResult(FINAL, Date.parse("2026-10-12T00:00:00Z")).kickoff,
+               "2026-10-11T17:00:00Z", "a kickoff in the past is kept");
+});
+
+test("a batch is capped and an empty one is refused", async () => {
+  const db = fakeD1();
+  const key = "KEY-RESULTS-0004";
+  fakeWhop({ ...live });
+  const empty = await worker.fetch(resultsPost({
+    picker: await pickerIdFor(key), license_key: key, results: [],
+  }), picksEnv(db));
+  assert.equal(empty.status, 400);
+  assert.equal((await empty.json()).reason, "empty");
+
+  const many = Array.from({ length: 500 }, (_, i) => ({ ...FINAL, game_id: `g${i}` }));
+  const res = await worker.fetch(resultsPost({
+    picker: await pickerIdFor(key), license_key: key, results: many,
+  }), picksEnv(db));
+  assert.equal((await res.json()).reported, 64);
 });

@@ -53,8 +53,41 @@ CREATE TABLE IF NOT EXISTS results (
     away       TEXT NOT NULL,
     home_score INTEGER,
     away_score INTEGER,
-    fetched_at TEXT NOT NULL
+    fetched_at TEXT NOT NULL,
+    source     TEXT                    -- espn|crowd, see result_reports
 );
+
+-- Scores customers reported, one row per picker per game.
+--
+-- ESPN answers the desktop app from a home connection and refuses this Worker
+-- from a datacentre, which left the grader with nothing to grade against. The
+-- app has the scores already, so it sends them -- but a subscriber is not a
+-- source of truth, and a leaderboard graded on one customer's word is a
+-- leaderboard that customer can write.
+--
+-- So a report is not a result. A score reaches the results table above only
+-- when RESULTS_QUORUM pickers independently report the same score *and* the
+-- same kickoff, which honest clients reading the same public scoreboard do to
+-- the character. A row there is never overwritten by a vote once ESPN itself
+-- has answered: `source` says which happened.
+--
+-- The primary key is what makes the count mean anything: one row per picker,
+-- and a picker id is a hash of a licence key the server checks, so the count
+-- is a count of live subscriptions rather than of requests.
+CREATE TABLE IF NOT EXISTS result_reports (
+    game_id     TEXT NOT NULL,
+    picker      TEXT NOT NULL,
+    season      INTEGER NOT NULL,
+    week        INTEGER NOT NULL,
+    kickoff     TEXT,                  -- the client's, and only used on quorum
+    home        TEXT NOT NULL,
+    away        TEXT NOT NULL,
+    home_score  INTEGER NOT NULL,
+    away_score  INTEGER NOT NULL,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (game_id, picker)
+);
+CREATE INDEX IF NOT EXISTS idx_result_reports_game ON result_reports(game_id);
 
 -- What the crowd said, frozen, twice per game.
 --
