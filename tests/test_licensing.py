@@ -126,6 +126,8 @@ def test_the_banner_is_told_which_kind_of_silence_it_is(licensed, monkeypatch):
 
     server["answer"] = {"valid": None, "reason": "upstream",
                         "message": "Whop answered 401."}
+    licensing.recheck(force=True)
+    clock[0] += 2 * 3600                        # long enough to be worth saying
     st = licensing.recheck(force=True)
     assert st["offline"] is True
     assert st["offline_reason"] == "upstream"
@@ -136,12 +138,81 @@ def test_the_banner_is_told_which_kind_of_silence_it_is(licensed, monkeypatch):
     assert st["offline_reason"] == "offline"
 
 
+def test_one_blip_is_retried_soon_and_says_nothing(licensed, monkeypatch):
+    # The bug: a failed check refreshed last_attempt, and last_attempt is what
+    # the next check is scheduled from -- so one dropped request bought twelve
+    # hours of "Can't reach the license server" with no attempt to find out
+    # otherwise, for somebody whose connection came back a minute later.
+    licensing, server = licensed
+    licensing.activate("ABC-123")
+    clock = [licensing._now()]
+    monkeypatch.setattr(licensing, "_now", lambda: clock[0])
+
+    clock[0] += licensing.RECHECK_HOURS * 3600 + 1
+    server["down"] = True
+    st = licensing.recheck()
+    assert st["offline"] is False, "one miss is a blip, not an announcement"
+
+    server["down"] = False                      # the connection is back
+    asked = len(server["calls"])
+    clock[0] += licensing.RETRY_MINUTES * 60 + 1
+    st = licensing.recheck()
+    assert len(server["calls"]) > asked, "it must try again within the minute-scale retry"
+    assert st["offline"] is False
+    assert st["valid"] is True
+
+
+def test_a_silence_that_lasts_is_reported(licensed, monkeypatch):
+    # The other half: suppressing a blip must not suppress a real outage.
+    licensing, server = licensed
+    licensing.activate("ABC-123")
+    clock = [licensing._now()]
+    monkeypatch.setattr(licensing, "_now", lambda: clock[0])
+
+    clock[0] += licensing.RECHECK_HOURS * 3600 + 1
+    server["down"] = True
+    licensing.recheck()
+    assert licensing.status()["offline"] is False
+
+    for _ in range(5):                          # keep failing for over an hour
+        clock[0] += licensing.RETRY_MINUTES * 60 + 1
+        licensing.recheck()
+    st = licensing.status()
+    assert st["offline"] is True
+    assert st["valid"] is True                  # still inside the 7-day grace
+
+
+def test_a_fresh_answer_clears_the_silence(licensed, monkeypatch):
+    licensing, server = licensed
+    licensing.activate("ABC-123")
+    clock = [licensing._now()]
+    monkeypatch.setattr(licensing, "_now", lambda: clock[0])
+    clock[0] += licensing.RECHECK_HOURS * 3600 + 1
+    server["down"] = True
+    licensing.recheck()
+    licensing.recheck(force=True)
+
+    server["down"] = False
+    licensing.recheck(force=True)
+    data = json.loads(licensing._path().read_text())
+    assert "offline_since" not in data
+    assert "offline_reason" not in data
+    assert "offline_message" not in data
+    # ...and the app is back on the slow clock, not the retry clock.
+    asked = len(server["calls"])
+    clock[0] += licensing.RETRY_MINUTES * 60 + 1
+    licensing.recheck()
+    assert len(server["calls"]) == asked
+
+
 def test_offline_within_grace_keeps_working(licensed, monkeypatch):
     licensing, server = licensed
     licensing.activate("ABC-123")
     server["down"] = True
     clock = [licensing._now() + 3 * 86400]
     monkeypatch.setattr(licensing, "_now", lambda: clock[0])
+    licensing.recheck(force=True)
+    clock[0] += 2 * 3600                        # the silence outlasts a blip
     st = licensing.recheck(force=True)
     assert st["valid"] is True
     assert st["offline"] is True
@@ -192,7 +263,7 @@ def test_license_file_holds_no_more_than_it_needs(licensed):
     data = json.loads(licensing._path().read_text())
     assert set(data) <= {"key", "valid", "last_ok", "last_attempt", "reason",
                          "message", "status", "offline_message",
-                         "offline_reason"}
+                         "offline_reason", "offline_since"}
 
 
 # ------------------------------------------------------------------ updates

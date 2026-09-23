@@ -16,6 +16,12 @@ Offline
     the server cannot be reached -- a flaky connection on a Sunday must not lock
     a paying customer out. A server that *answers* "no" ends access at once.
 
+    A check that comes back with no answer puts the app on a short retry, and
+    is not mentioned to anybody until the silence has outlasted several of
+    those retries. Both matter on a Sunday: the recheck interval is twelve
+    hours, so scheduling the next attempt from a failure would turn one
+    dropped request into half a day of being told the server is unreachable.
+
 This is a deterrent, not DRM: a determined person can patch a Python app. It
 exists so that sharing a download is not the same as sharing a subscription.
 """
@@ -39,6 +45,19 @@ import httpx
 
 GRACE_DAYS = 7
 RECHECK_HOURS = 12
+# A check that produced no answer is retried on its own, much shorter clock.
+# The 12-hour interval is for a *settled* subscription; applying it to a
+# failure means one dropped request costs half a day, because the failed
+# attempt is itself what the next attempt is scheduled from.
+RETRY_MINUTES = 15
+# ...and nothing is said about it until the silence has outlasted several of
+# those retries. One blip is not news; it is a blip, and the banner it used to
+# raise told a customer with a working connection that their week was running
+# out. Measured from the first failure of the current run, not from the last
+# success: with a 12-hour interval the last success is always hours old, so
+# measuring from it would flag every single miss, which is the thing being
+# fixed.
+OFFLINE_AFTER_SECONDS = 3600
 TIMEOUT = 10.0
 
 _lock = threading.Lock()
@@ -177,6 +196,13 @@ def _apply(key: str, verdict: dict) -> dict:
     data = _load() if saved_key() == key else {}
     data["key"] = key
     data["last_attempt"] = _now()
+    if verdict["valid"] is not None:
+        # A fresh answer, of either kind. Whatever the last failure was, it is
+        # over: leaving the marker behind would keep the app on the short retry
+        # clock for ever and leave a stale reason lying in the file.
+        data.pop("offline_message", None)
+        data.pop("offline_reason", None)
+        data.pop("offline_since", None)
     if verdict["valid"] is True:
         data.update(valid=True, last_ok=_now(), reason="ok",
                     message=verdict.get("message", ""), status=verdict.get("status"))
@@ -191,6 +217,8 @@ def _apply(key: str, verdict: dict) -> dict:
         # could not get a word out of Whop, and those want opposite advice.
         data["offline_message"] = verdict.get("message", "")
         data["offline_reason"] = verdict.get("reason", "") or "offline"
+        # setdefault: when this run of failures started, not the latest one.
+        data.setdefault("offline_since", _now())
     _save(data)
     return data
 
@@ -231,13 +259,17 @@ def activate(key: str) -> dict:
     return status()
 
 
+def _due(data: dict) -> bool:
+    """Is another check owed? Sooner when the last one came back empty."""
+    gap = RETRY_MINUTES * 60 if data.get("offline_reason") else RECHECK_HOURS * 3600
+    return _now() - float(data.get("last_attempt") or 0) > gap
+
+
 def recheck(force: bool = False) -> dict:
     key = saved_key()
     if not key:
         return status()
-    data = _load()
-    stale = _now() - float(data.get("last_attempt") or 0) > RECHECK_HOURS * 3600
-    if force or stale:
+    if force or _due(_load()):
         _apply(key, _ask_server(key))
     return status()
 
@@ -246,8 +278,7 @@ def recheck_in_background() -> None:
     """Recheck if it is due, without holding up a request."""
     if not required() or not saved_key() or _checking.is_set():
         return
-    data = _load()
-    if _now() - float(data.get("last_attempt") or 0) <= RECHECK_HOURS * 3600:
+    if not _due(_load()):
         return
 
     def run() -> None:
@@ -286,8 +317,11 @@ def status() -> dict:
     offline = False
     if required() and ok and last_ok:
         grace_left = max(0.0, GRACE_DAYS - (_now() - last_ok) / 86400)
-        # Offline means the last attempt did not produce a fresh answer.
-        offline = float(data.get("last_attempt") or 0) - last_ok > 60
+        # Offline means the app has been without an answer long enough for
+        # the silence to be worth mentioning -- not merely that the most
+        # recent attempt missed.
+        since = float(data.get("offline_since") or 0)
+        offline = bool(since) and _now() - since > OFFLINE_AFTER_SECONDS
     message = data.get("message") or ""
     if required() and data.get("valid") and not ok:
         message = ("It's been more than a week since The Edge could confirm your "

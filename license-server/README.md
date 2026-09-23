@@ -74,8 +74,11 @@ unlicensed exactly as before, so nothing breaks in the meantime.
 ## How it behaves for a customer
 
 - First launch: an activation screen asks for the key from their Whop purchase.
-- The key is rechecked every 12 hours. If the server can't be reached, the app
-  keeps working for **7 days** on the last good check.
+- The key is rechecked every 12 hours, and every 15 minutes instead while a
+  check is coming back with no answer. If the server can't be reached, the app
+  keeps working for **7 days** on the last good check, and says nothing about
+  it until the silence has lasted an hour — a single dropped request is not
+  worth a banner.
 - Cancelled, expired or unpaid (`past_due`) subscriptions lock the app at the
   next check. `canceling` (cancelled but paid through the period) keeps working,
   and so does `completed` — which is how Whop reports a one-time purchase such
