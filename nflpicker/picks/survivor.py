@@ -53,6 +53,7 @@ class SurvivorPlan:
     season: int
     week: int
     horizon: int
+    through_week: int | None = None
     path: list[SurvivorEntry] = field(default_factory=list)
     survival_prob: float = 0.0
     recommendation: SurvivorEntry | None = None
@@ -65,6 +66,7 @@ class SurvivorPlan:
             "season": self.season,
             "week": self.week,
             "horizon": self.horizon,
+            "through_week": self.through_week,
             "path": [e.to_dict() for e in self.path],
             "survival_prob": round(self.survival_prob, 4),
             "recommendation": self.recommendation.to_dict() if self.recommendation else None,
@@ -72,6 +74,13 @@ class SurvivorPlan:
             "used_teams": self.used_teams,
             "note": self.note,
         }
+
+
+# The end of the regular season. Pools that settle in week 17 set it back --
+# week 18 rests starters and is the week a projection is worth least -- but a
+# plan that stops early cannot be extended by its reader, and one that runs a
+# week long can be ignored from the row above.
+LAST_SURVIVOR_WEEK = 18
 
 
 def _solve(weeks: list[int], teams: list[str], prob: dict[tuple[int, str], float],
@@ -134,22 +143,33 @@ def plan_survivor(
     games_by_week: dict[int, list[dict]],
     *,
     used_teams: list[str] | None = None,
-    horizon: int = 6,
+    through_week: int = LAST_SURVIVOR_WEEK,
     max_alternatives: int = 4,
 ) -> SurvivorPlan:
-    """Plan the next ``horizon`` weeks.
+    """Plan from ``week`` to ``through_week`` inclusive.
 
     ``games_by_week`` maps week -> games, each with home/away/home_win_prob.
     ``used_teams`` are teams already spent in your pool.
 
-    The horizon is capped deliberately: projections five weeks out are far less
-    reliable than this week's, and planning twenty weeks ahead optimises against
-    noise.  Six weeks is enough to stop the "burned my best team early" failure
-    without pretending to know Week 17.
+    The horizon used to be "the next six weeks", on the reasoning that a
+    projection ten weeks out is mostly noise. That reasoning is sound about the
+    *projections* and wrong about the *problem*: survivor is a scheduling
+    constraint, not a forecast. Each team may be spent once, so the cost of
+    using a team this week is whichever future week wanted it -- and a planner
+    that cannot see past week six cannot see that cost. Burning the team you
+    needed in week 14 is exactly the failure survivor pools are built to
+    punish, and a six-week window walks straight into it.
+
+    Week 17 is the last week worth planning: most pools end there, and week 18
+    is where teams rest starters and a projection means least.
+
+    The far weeks are still noisy, and the plan is meant to be re-run -- what
+    it is for is spending *this* week's team knowing what it costs later.
     """
     used = [t.upper() for t in (used_teams or [])]
-    weeks = sorted(w for w in games_by_week if w >= week)[:horizon]
-    plan = SurvivorPlan(season=season, week=week, horizon=len(weeks), used_teams=used)
+    weeks = [w for w in sorted(games_by_week) if week <= w <= through_week]
+    plan = SurvivorPlan(season=season, week=week, horizon=len(weeks),
+                        through_week=weeks[-1] if weeks else None, used_teams=used)
     if not weeks:
         plan.note = "No remaining games to plan."
         return plan
@@ -185,6 +205,7 @@ def plan_survivor(
             if solution is not None:
                 weeks = weeks[:shorter]
                 plan.horizon = shorter
+                plan.through_week = weeks[-1]
                 plan.note = "Horizon shortened: not enough unused teams for a full path."
                 break
     if solution is None:
@@ -248,3 +269,128 @@ def future_value(games_by_week: dict[int, list[dict]], team: str, from_week: int
             elif game["away"] == team:
                 best = max(best, 1.0 - float(prob))
     return best
+
+
+# --------------------------------------------------------------- the tracker
+# What the plan said at the start of the season against what actually got
+# picked. A survivor pool is one long bet whose result arrives in instalments,
+# and "was the optimiser right" is not answerable from any single week: the
+# only question that settles it is which of the two runs busts first.
+
+ORIGINAL_KEY = "survivor_original_plan"
+USED_WEEKS_KEY = "survivor_used_weeks"
+
+
+def _outcome(game: dict | None, team: str) -> str:
+    """won, lost, tied, or not played yet."""
+    if not game or game.get("status") != "final":
+        return "pending"
+    home, away = game.get("home"), game.get("away")
+    hs, as_ = game.get("home_score"), game.get("away_score")
+    if hs is None or as_ is None:
+        return "pending"
+    if hs == as_:
+        return "tied"
+    winner = home if hs > as_ else away
+    return "won" if winner == team else "lost"
+
+
+def _played(games: list[dict], week: int, team: str) -> dict | None:
+    for game in games:
+        if int(game["week"]) == int(week) and team in (game["home"], game["away"]):
+            return game
+    return None
+
+
+def _walk(entries: list[dict], games: list[dict]) -> dict:
+    """One run's weeks, and the week it went out on.
+
+    A tie is survival in most pools and elimination in some. It is counted as
+    survival here and labelled, rather than quietly resolved either way: the
+    pool's rules decide, and the reader knows theirs.
+    """
+    rows = []
+    out_week = None
+    for entry in entries:
+        week, team = int(entry["week"]), entry["team"]
+        game = _played(games, week, team)
+        result = _outcome(game, team)
+        opponent = None
+        if game:
+            opponent = game["away"] if game["home"] == team else game["home"]
+        rows.append({
+            "week": week, "team": team, "opponent": opponent, "result": result,
+            "score": (None if not game or game.get("home_score") is None else
+                      f"{game['away']} {int(game['away_score'])}-"
+                      f"{int(game['home_score'])} {game['home']}"),
+        })
+        if result == "lost" and out_week is None:
+            out_week = week
+    survived = [r for r in rows if r["result"] in ("won", "tied")]
+    return {
+        "weeks": rows,
+        "out_week": out_week,
+        "alive": out_week is None,
+        "weeks_survived": len(survived),
+    }
+
+
+def elimination(used_weeks: dict, games: list[dict]) -> dict | None:
+    """The week a run ended, or None while it is still going.
+
+    Worked out from the picks every time it is asked for, and never written
+    down. A pool entry is dead because of a result, and a result is a fact
+    about one game and the team that was on it -- so correcting the pick that
+    lost is not a special case to undo, it is a different question with a
+    different answer. An elimination stored anywhere would outlive the pick
+    that caused it and have to be cleared by hand.
+    """
+    entries = sorted(
+        ({"week": int(w), "team": t} for t, w in (used_weeks or {}).items()),
+        key=lambda e: e["week"])
+    run = _walk(entries, games)
+    if run["out_week"] is None:
+        return None
+    lost = next(r for r in run["weeks"]
+                if r["week"] == run["out_week"] and r["result"] == "lost")
+    return {**lost, "weeks_survived": run["weeks_survived"]}
+
+
+def track(original: list[dict], used_weeks: dict, games: list[dict]) -> dict:
+    """The original run and the picked one, side by side.
+
+    `original` is the plan as first made -- entries with a week and a team.
+    `used_weeks` is team -> the week it was actually spent in. Both are walked
+    against the same finished games, so the comparison is between two runs and
+    not between a plan and a scoreboard.
+    """
+    mine_entries = sorted(
+        ({"week": int(w), "team": t} for t, w in (used_weeks or {}).items()),
+        key=lambda e: e["week"])
+    plan = _walk(list(original or []), games)
+    mine = _walk(mine_entries, games)
+
+    if not original:
+        verdict = "No original run saved yet — it is kept the first time a plan is made."
+    elif not mine_entries:
+        verdict = "Nothing picked yet. Mark a team used on Picks and it starts here."
+    elif plan["alive"] and mine["alive"]:
+        # Nothing to say. Both columns are headed "alive · N survived" and
+        # every row underneath is a tick, so a line announcing that neither
+        # has gone out yet is the panel repeating its own table back at the
+        # reader -- and in a panel this size it costs a row of the run.
+        verdict = ""
+    elif plan["alive"]:
+        verdict = f"You went out in week {mine['out_week']}. The original run is still alive."
+    elif mine["alive"]:
+        verdict = f"The original run went out in week {plan['out_week']}. You are still alive."
+    elif plan["out_week"] == mine["out_week"]:
+        verdict = f"Both went out in week {plan['out_week']}."
+    elif plan["out_week"] < mine["out_week"]:
+        verdict = (f"The original run went out first, in week {plan['out_week']}; "
+                   f"you lasted to week {mine['out_week']}.")
+    else:
+        verdict = (f"You went out first, in week {mine['out_week']}; the original run "
+                   f"lasted to week {plan['out_week']}.")
+
+    return {"original": plan, "mine": mine, "verdict": verdict}

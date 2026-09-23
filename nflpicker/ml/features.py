@@ -70,7 +70,32 @@ NUMERIC_FEATURES = [
     # Point differential restated as a win expectation, and decayed form.
     "pythagorean_home", "pythagorean_away", "pythagorean_diff",
     "form_home", "form_away", "form_diff",
+    # Situational rates. Rates rather than counts, because counts mostly
+    # measure how many possessions a team happened to get.
+    "third_down_home", "third_down_away", "third_down_diff",
+    "def_third_down_home", "def_third_down_away",
+    "red_zone_home", "red_zone_away", "red_zone_diff",
+    "explosive_home", "explosive_away", "explosive_diff",
+    "def_explosive_home", "def_explosive_away",
+    "sack_rate_home", "sack_rate_away",
+    "sack_forced_home", "sack_forced_away",
+    "penalty_yards_home", "penalty_yards_away",
+    # Who was actually available, from that week's injury report weighted by
+    # each player's snap share. Learned rather than applied afterwards.
+    "availability_home", "availability_away", "availability_diff",
 ]
+
+# Situational stats tracked per team: feature stem -> key in the per-game stats.
+SITUATIONAL = {
+    "third_down": "third_down_rate",
+    "def_third_down": "def_third_down_rate",
+    "red_zone": "red_zone_td_rate",
+    "explosive": "explosive_rate",
+    "def_explosive": "def_explosive_rate",
+    "sack_rate": "sack_rate",
+    "sack_forced": "sack_rate_forced",
+    "penalty_yards": "penalty_yards",
+}
 
 MARKET_FEATURES = ["spread_home", "market_total"]
 
@@ -113,7 +138,7 @@ class _TeamForm:
     """Everything tracked about one team between games."""
 
     __slots__ = ("off_adj", "def_adj", "st", "turnover_luck", "form",
-                 "points_for", "points_against", "last_qb")
+                 "points_for", "points_against", "last_qb", "situational")
 
     def __init__(self) -> None:
         self.off_adj = _Ewma()
@@ -124,12 +149,18 @@ class _TeamForm:
         self.points_for = 0.0
         self.points_against = 0.0
         self.last_qb: str | None = None
+        self.situational: dict[str, _Ewma] = {stem: _Ewma() for stem in SITUATIONAL}
 
     def new_season(self) -> None:
         for meter in (self.off_adj, self.def_adj, self.st, self.turnover_luck, self.form):
             meter.regress()
+        for meter in self.situational.values():
+            meter.regress()
         self.points_for = 0.0
         self.points_against = 0.0
+
+    def situational_value(self, stem: str) -> float:
+        return self.situational[stem].get()
 
     def pythagorean(self) -> float:
         """Win expectation implied by points scored and allowed.
@@ -195,6 +226,7 @@ def build_features(
     elo_config: EloConfig | None = None,
     epa_by_game: dict[str, dict] | None = None,
     team_game_stats: dict[str, dict] | None = None,
+    availability: dict[tuple[int, int, str], float] | None = None,
 ) -> pd.DataFrame:
     """Return one feature row per game, in chronological order.
 
@@ -205,6 +237,11 @@ def build_features(
 
     ``epa_by_game`` optionally maps game_id -> {team: {off_epa, def_epa}} so
     rolling EPA can be maintained without re-reading play-by-play here.
+
+    ``availability`` maps (season, week, team) -> points of injury cost, from
+    :func:`nflpicker.availability.historical_index`. The weekly reports are
+    published before kickoff, so using week W's report as a feature for week W
+    is legitimate rather than lookahead.
 
     ``team_game_stats`` maps game_id -> {team: per-game stats} from
     :func:`nflverse.extract_game_team_stats`, and is what powers the
@@ -342,6 +379,13 @@ def build_features(
             "pythagorean_away": away_form.pythagorean(),
             "form_home": home_form.form.get(),
             "form_away": away_form.form.get(),
+            "availability_home": (availability or {}).get((season, week, home), np.nan),
+            "availability_away": (availability or {}).get((season, week, away), np.nan),
+            **{
+                f"{stem}_{side}": form.situational_value(stem)
+                for stem in SITUATIONAL
+                for side, form in (("home", home_form), ("away", away_form))
+            },
             # ---- market
             "spread_home": _market_spread(game),
             "market_total": _f(game.get("total_line") if game.get("total_line") is not None
@@ -365,6 +409,10 @@ def build_features(
             row["turnover_luck_home"], row["turnover_luck_away"])
         row["pythagorean_diff"] = _diff(row["pythagorean_home"], row["pythagorean_away"])
         row["form_diff"] = _diff(row["form_home"], row["form_away"])
+        for stem in ("third_down", "red_zone", "explosive"):
+            row[f"{stem}_diff"] = _diff(row[f"{stem}_home"], row[f"{stem}_away"])
+        row["availability_diff"] = _diff(
+            row["availability_home"], row["availability_away"])
 
         # ---- targets (only for completed games)
         home_score, away_score = game.get("home_score"), game.get("away_score")
@@ -476,6 +524,8 @@ def _absorb(stats: dict | None, team: _TeamForm, opponent: _TeamForm,
 
     team.st.update(stats.get("st_epa"))
     team.turnover_luck.update(stats.get("turnover_luck"))
+    for stem, key in SITUATIONAL.items():
+        team.situational[stem].update(stats.get(key))
 
     # ``qb_epa`` is the team's production across every dropback in the game, so
     # crediting it to the starter reads as "the quarterback play this team got

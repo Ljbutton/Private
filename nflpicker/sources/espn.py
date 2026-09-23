@@ -7,6 +7,7 @@ missing field must degrade one game rather than kill a refresh.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from ..teams import try_resolve
@@ -18,6 +19,9 @@ SITE_V2 = "https://site.api.espn.com/apis/v2/sports/football/nfl"
 WEB = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl"
 
 SEASON_TYPES = {1: "PRE", 2: "REG", 3: "POST"}
+# What the postseason is numbered on from. Seventeen games in
+# eighteen weeks, so week 18 is the last of the regular season.
+REGULAR_SEASON_WEEKS = 18
 
 
 def _dig(obj: Any, *path, default=None):
@@ -78,7 +82,21 @@ def parse_scoreboard(payload: dict) -> list[dict]:
         season_type = SEASON_TYPES.get(
             _dig(event, "season", "type") or _dig(payload, "season", "type"), "REG"
         )
-        week = _dig(event, "week", "number") or _dig(payload, "week", "number") or 0
+        week = int(_dig(event, "week", "number")
+                   or _dig(payload, "week", "number") or 0)
+        # The postseason is numbered on from the regular season, not started
+        # again at one.
+        #
+        # The feed restarts its count in January, so a wild-card game arrives
+        # as "week 1". Stored that way it sorts alongside the opening Sunday
+        # of September in everything that orders a season by week -- which is
+        # the rolling-form window in the feature builder, the power history,
+        # and every query that asks for a week by number. Offsetting here, at
+        # the one point the feed is read, means nothing downstream has to know
+        # that January counts differently. `season_type` still says which is
+        # which for anything that cares.
+        if season_type == "POST" and week:
+            week += REGULAR_SEASON_WEEKS
         roof = _dig(comp, "venue", "indoor")
 
         game = {
@@ -101,8 +119,60 @@ def parse_scoreboard(payload: dict) -> list[dict]:
         odds = _parse_event_odds(comp, game)
         if odds:
             game["espn_odds"] = odds
+        if game["status"] == "in_progress":
+            live = _parse_live_state(comp, home["abbr"], away["abbr"])
+            if live:
+                game["live"] = live
         games.append(game)
     return games
+
+
+def _parse_live_state(comp: dict, home: str, away: str) -> dict | None:
+    """Down, distance, possession and clock for a game in progress.
+
+    Possession comes back as a team *id*, so it is resolved against this
+    event's own competitors rather than a global table — ESPN's ids are stable
+    but there is no reason to carry a second mapping when the answer is here.
+    """
+    from ..live import parse_clock, seconds_remaining
+
+    status = comp.get("status") or {}
+    period = status.get("period")
+    clock = parse_clock(status.get("displayClock")) or _num(status.get("clock"))
+
+    by_id: dict[str, str] = {}
+    for competitor in comp.get("competitors") or []:
+        team_id = str(_dig(competitor, "team", "id") or "")
+        abbr = try_resolve(_dig(competitor, "team", "abbreviation"))
+        if team_id and abbr:
+            by_id[team_id] = abbr
+
+    situation = comp.get("situation") or {}
+    possession = by_id.get(str(situation.get("possession") or ""))
+
+    return {
+        "period": int(period) if period else None,
+        "clock": status.get("displayClock"),
+        "seconds_left": seconds_remaining(int(period) if period else None, clock),
+        "possession": possession,
+        "down": _int_or_none(situation.get("down")),
+        "distance": _int_or_none(situation.get("distance")),
+        "yard_line": _int_or_none(situation.get("yardLine")),
+        "red_zone": bool(situation.get("isRedZone")),
+        "home_timeouts": _int_or_none(situation.get("homeTimeouts")),
+        "away_timeouts": _int_or_none(situation.get("awayTimeouts")),
+        "last_play": (_dig(situation, "lastPlay", "text") or "")[:300] or None,
+        "detail": _dig(status, "type", "detail"),
+        "home": home,
+        "away": away,
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_event_odds(comp: dict, game: dict) -> dict | None:
@@ -146,14 +216,26 @@ class EspnSource:
         )
         return parse_scoreboard(payload)
 
+    # The postseason, in the feed's own numbering. Week 4 is the Pro Bowl,
+    # which is not a game anything here has an opinion about and whose two
+    # "teams" do not resolve to franchises anyway; the final is week 5.
+    POSTSEASON_WEEKS = (1, 2, 3, 5)
+
     def season_schedule(self, season: int, weeks: int = 18) -> list[dict]:
-        """Full regular season.
+        """The regular season, then the postseason.
 
         Weeks are fetched independently so one bad response costs a single week
         rather than the whole schedule.  But if the first few all fail the
         problem is the connection, not the weeks — retrying the remaining
         fifteen with backoff would burn well over a minute to learn the same
         thing, so give up early and let the caller report it.
+
+        The postseason was simply never asked for, so January did not exist as
+        far as this app was concerned: no bracket to draw, and a week selector
+        that stopped at eighteen. Its rounds are requested after the regular
+        season and a failure among them is not fatal -- for most of the year
+        they are empty by definition, and an empty round is the normal answer
+        rather than a fault.
         """
         games: list[dict] = []
         consecutive_failures = 0
@@ -169,6 +251,9 @@ class EspnSource:
                         "skipping the rest of the season fetch"
                     ) from None
                 continue
+        for week in self.POSTSEASON_WEEKS:
+            with contextlib.suppress(SourceError):
+                games.extend(self.scoreboard(season, week, season_type=3))
         return games
 
     def standings(self, season: int) -> list[dict]:
@@ -200,16 +285,30 @@ class EspnSource:
         return rows
 
     def injuries(self) -> list[dict]:
+        """The league injury report, grouped by team upstream.
+
+        ``covered_teams`` is recorded alongside the rows because the two are
+        not recoverable from each other: a team with nobody hurt produces no
+        rows and is indistinguishable, from the rows alone, from a team the
+        response left out. The caller needs that distinction to decide whose
+        absence from the list means "recovered" -- see refresh_news.
+        """
+        self.covered_teams: set[str] = set()
         try:
             payload = self.http.get_json(f"{WEB}/injuries", cache_ttl=900.0)
         except SourceError:
             return []
         rows: list[dict] = []
         for group in payload.get("injuries") or []:
-            team = try_resolve(group.get("displayName") or group.get("abbreviation"))
+            team = _resolve_team(group)
+            if team:
+                self.covered_teams.add(team)
             for item in group.get("injuries") or []:
                 athlete = item.get("athlete") or {}
-                name = athlete.get("displayName") or item.get("displayName")
+                name = _first_text(athlete.get("displayName"),
+                                   athlete.get("fullName"),
+                                   athlete.get("shortName"),
+                                   item.get("displayName"))
                 if not (team and name):
                     continue
                 rows.append(
@@ -217,8 +316,10 @@ class EspnSource:
                         "team": team,
                         "player": name,
                         "position": _dig(athlete, "position", "abbreviation"),
-                        "status": item.get("status") or _dig(item, "type", "description"),
+                        "status": _injury_status(item),
                         "detail": (item.get("longComment") or item.get("shortComment") or "")[:400],
+                        "injury": _injury_label(item),
+                        "return_date": iso(_dig(item, "details", "returnDate")) or None,
                         "updated_at": iso(item.get("date")),
                     }
                 )
@@ -254,3 +355,86 @@ class EspnSource:
                 }
             )
         return items
+
+
+def _first_text(*values) -> str | None:
+    """The first of these that is actually a non-empty string."""
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _resolve_team(group: dict) -> str | None:
+    """A team from whichever of the group's names this app recognises.
+
+    Written as `try_resolve(displayName or abbreviation)`, which is not the
+    same thing: a display name that is present but unrecognised short-circuits
+    the `or` and the abbreviation is never tried, so the whole group -- every
+    injured player on that team -- was dropped without a word. A team whose
+    name upstream changes, or arrives in a form the alias table does not hold,
+    is exactly the case a fallback exists for.
+    """
+    for key in ("abbreviation", "displayName", "shortDisplayName", "name",
+                "location", "nickname"):
+        resolved = try_resolve(_first_text(group.get(key)))
+        if resolved:
+            return resolved
+    return try_resolve(_first_text(_dig(group, "team", "abbreviation"),
+                                   _dig(group, "team", "displayName")))
+
+
+# Being on the injury report is itself the information.
+#
+# The status used to be read from two fields and the player dropped when
+# neither produced one -- so anybody whose label arrived in a shape this did
+# not know about vanished from the report entirely, which is the opposite of
+# what their presence in an injury feed means. More fields are tried, the
+# nested object shape is handled, and a player whose status still cannot be
+# read is listed as such rather than deleted: the feed put them on the report,
+# and that is worth more than the label.
+INJURY_STATUS_UNKNOWN = "Listed"
+
+
+def _injury_status(item: dict) -> str:
+    status = item.get("status")
+    if isinstance(status, dict):
+        status = _first_text(status.get("name"), status.get("description"),
+                             status.get("abbreviation"))
+    return _first_text(
+        status,
+        _dig(item, "type", "description"),
+        _dig(item, "type", "name"),
+        _dig(item, "type", "abbreviation"),
+        item.get("injuryStatus"),
+        _dig(item, "details", "type"),
+    ) or INJURY_STATUS_UNKNOWN
+
+
+def _injury_label(item: dict) -> str | None:
+    """What is actually wrong, in two or three words.
+
+    The feed carries this twice: as structured fields under ``details``, and as
+    a paragraph of prose. Prefer the fields -- "Right Hamstring Strain" is a
+    column, and "Smith was limited in Wednesday's session and is considered
+    day-to-day with a hamstring issue" is not. The prose is still stored, it
+    just stops being the only place the injury is recorded.
+
+    Nothing here is guaranteed to be present, so every part is optional and an
+    entry with none of them returns None rather than an empty-looking string.
+    """
+    details = item.get("details")
+    if not isinstance(details, dict):
+        return None
+    parts = [
+        str(details.get(key)).strip()
+        for key in ("side", "location", "detail")
+        if details.get(key) and str(details.get(key)).strip().lower() != "not specified"
+    ]
+    # "Left Knee Knee" happens when location and detail agree; say it once.
+    seen: list[str] = []
+    for part in parts:
+        if part.lower() not in {p.lower() for p in seen}:
+            seen.append(part)
+    label = " ".join(seen).strip()
+    return label[:60] or None

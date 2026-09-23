@@ -1,0 +1,132 @@
+-- Shared picks. Run once against the D1 database bound as PICKS_DB:
+--
+--   npx wrangler d1 create the-edge-picks
+--   # add the returned id to wrangler.toml as the PICKS_DB binding, then
+--   npx wrangler d1 execute the-edge-picks --remote --file license-server/schema.sql
+--
+-- D1 rather than KV, which is what the rest of this Worker uses: a leaderboard
+-- is a GROUP BY, and doing that over KV means reading every key on every page
+-- load. D1's free tier covers this comfortably -- a hundred customers picking
+-- sixteen games a week is under two thousand rows a week.
+
+-- One row per picker per game per kind. A pick that changes before kickoff
+-- replaces itself; what is stored is the pick as it stands, with the line the
+-- picker actually saw when they made it.
+CREATE TABLE IF NOT EXISTS picks (
+    picker      TEXT NOT NULL,          -- 16 hex characters, see sharing.py
+    game_id     TEXT NOT NULL,
+    kind        TEXT NOT NULL,          -- winner|spread|total|survivor
+    season      INTEGER NOT NULL,
+    week        INTEGER NOT NULL,
+    side        TEXT NOT NULL,
+    line        REAL,
+    price       INTEGER,
+    total_line  REAL,
+    book_prob   REAL,
+    model_side  TEXT,                   -- what the app's own model said, then
+    picked_at   TEXT,                   -- the client's clock, untrusted
+    received_at TEXT NOT NULL,          -- ours, and the one grading believes
+    result      TEXT,                   -- win|loss|push, NULL until graded
+    graded_at   TEXT,
+    PRIMARY KEY (picker, game_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_picks_week ON picks(season, week);
+CREATE INDEX IF NOT EXISTS idx_picks_ungraded ON picks(result, season, week);
+
+-- What a picker calls themselves on the leaderboard, and when they were last
+-- heard from. Separate from picks so a rename is one row, not thousands.
+CREATE TABLE IF NOT EXISTS pickers (
+    picker    TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    first_at  TEXT NOT NULL,
+    last_at   TEXT NOT NULL
+);
+
+-- Finished games, as the grader learned them. Kept so grading is idempotent
+-- and so a pick received after kickoff can be recognised and thrown away.
+CREATE TABLE IF NOT EXISTS results (
+    game_id    TEXT PRIMARY KEY,
+    season     INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    kickoff    TEXT,
+    home       TEXT NOT NULL,
+    away       TEXT NOT NULL,
+    home_score INTEGER,
+    away_score INTEGER,
+    fetched_at TEXT NOT NULL,
+    source     TEXT                    -- espn|crowd, see result_reports
+);
+
+-- Scores customers reported, one row per picker per game.
+--
+-- ESPN answers the desktop app from a home connection and refuses this Worker
+-- from a datacentre, which left the grader with nothing to grade against. The
+-- app has the scores already, so it sends them -- but a subscriber is not a
+-- source of truth, and a leaderboard graded on one customer's word is a
+-- leaderboard that customer can write.
+--
+-- So a report is not a result. A score reaches the results table above only
+-- when RESULTS_QUORUM pickers independently report the same score *and* the
+-- same kickoff, which honest clients reading the same public scoreboard do to
+-- the character. A row there is never overwritten by a vote once ESPN itself
+-- has answered: `source` says which happened.
+--
+-- The primary key is what makes the count mean anything: one row per picker,
+-- and a picker id is a hash of a licence key the server checks, so the count
+-- is a count of live subscriptions rather than of requests.
+CREATE TABLE IF NOT EXISTS result_reports (
+    game_id     TEXT NOT NULL,
+    picker      TEXT NOT NULL,
+    season      INTEGER NOT NULL,
+    week        INTEGER NOT NULL,
+    kickoff     TEXT,                  -- the client's, and only used on quorum
+    home        TEXT NOT NULL,
+    away        TEXT NOT NULL,
+    home_score  INTEGER NOT NULL,
+    away_score  INTEGER NOT NULL,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (game_id, picker)
+);
+CREATE INDEX IF NOT EXISTS idx_result_reports_game ON result_reports(game_id);
+
+-- What the crowd said, frozen, twice per game.
+--
+-- The question this exists to answer is "would following the crowd have beaten
+-- the model", and that cannot be answered from the picks table after the fact:
+-- a pick can change right up to kickoff, so a row recomputed on Tuesday is not
+-- what anybody could have acted on come Sunday.
+--
+-- Two phases, because there are two different questions.
+--   'first'    the moment the crowd first had an opinion on this game, days
+--              out. Its avg_line is the early number, which is what a CLV
+--              figure is measured from.
+--   'prekick'  the opinion it went into the game with, captured within the
+--              hour before kickoff. Its side is what the crowd's win-loss
+--              record is graded on.
+-- Both rows coexist and neither is ever overwritten, which is why the primary
+-- key carries the phase.
+--
+-- Grading writes `result` on the prekick row and the closing-line figures on
+-- the first row. Neither touches how an individual pick is graded.
+CREATE TABLE IF NOT EXISTS consensus (
+    game_id      TEXT NOT NULL,
+    phase        TEXT NOT NULL,        -- first|prekick
+    season       INTEGER NOT NULL,
+    week         INTEGER NOT NULL,
+    side         TEXT,                 -- the side most shared picks were on
+    picks        INTEGER NOT NULL,     -- how many were on that side
+    total_picks  INTEGER NOT NULL,     -- how many there were altogether
+    proven_picks INTEGER NOT NULL,     -- of those, how many from proven pickers
+    proven_side  TEXT,                 -- and which side they were on
+    avg_line     REAL,                 -- the mean line those pickers got
+    model_side   TEXT,                 -- what the app's model said at the time
+    captured_at  TEXT NOT NULL,
+    result       TEXT,                 -- win|loss|push for `side` (prekick)
+    close_line   REAL,                 -- the last line seen before kickoff
+    clv          REAL,                 -- avg_line against it, crowd's side
+    proven_clv   REAL,                 -- the same, from the proven side
+    graded_at    TEXT,
+    PRIMARY KEY (game_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_consensus_week ON consensus(season, week);
+CREATE INDEX IF NOT EXISTS idx_consensus_phase ON consensus(phase, graded_at);

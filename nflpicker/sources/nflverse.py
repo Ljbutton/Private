@@ -23,6 +23,19 @@ PBP_URL = (
     "play_by_play_{season}.parquet"
 )
 
+# Weekly releases, each a few hundred kilobytes a season.
+RELEASE_URL = (
+    "https://github.com/nflverse/nflverse-data/releases/download/{name}/"
+    "{name}_{season}.parquet"
+)
+
+# Earliest season each release covers; asking for less is a 404.
+RELEASE_FIRST_SEASON = {
+    "injuries": 2009,
+    "depth_charts": 2009,
+    "snap_counts": 2012,
+}
+
 # Enough for efficiency ratings. The richer per-game extraction asks for more.
 PBP_BASE_COLUMNS = [
     "game_id", "season", "week", "posteam", "defteam", "home_team", "away_team",
@@ -96,6 +109,77 @@ class NflverseSource:
         except Exception:  # noqa: BLE001 - column set drifts between seasons
             df = pd.read_parquet(dest)
         return df
+
+    def weekly_release(self, name: str, season: int, *,
+                       cache_ttl: float = 43200.0) -> pd.DataFrame:
+        """One of nflverse's weekly parquet releases.
+
+        Returns an empty frame rather than raising for a season the release
+        does not cover — snap counts start in 2012, injuries in 2009, and a
+        caller building a long training frame should not have to know that.
+        """
+        first = RELEASE_FIRST_SEASON.get(name, 1999)
+        if season < first:
+            return pd.DataFrame()
+        dest = self.cache_dir / f"{name}_{season}.parquet"
+        try:
+            self.http.download(
+                RELEASE_URL.format(name=name, season=season), dest, cache_ttl=cache_ttl
+            )
+            return pd.read_parquet(dest)
+        except Exception:  # noqa: BLE001 - a missing release must not fail a build
+            return pd.DataFrame()
+
+    def injury_reports(self, season: int) -> pd.DataFrame:
+        """Weekly injury reports: who was listed, and as what.
+
+        This is the piece that lets availability be *learned* rather than
+        applied as a post-hoc correction — the reports exist per week going
+        back to 2009, so a model can see them alongside the result.
+        """
+        df = self.weekly_release("injuries", season)
+        if df.empty:
+            return df
+        keep = [c for c in ("season", "week", "team", "gsis_id", "position",
+                            "full_name", "report_status", "practice_status",
+                            "report_primary_injury") if c in df.columns]
+        df = df[keep].copy()
+        df["team"] = df["team"].map(try_resolve)
+        return df.dropna(subset=["team", "week"])
+
+    def depth_charts(self, season: int) -> pd.DataFrame:
+        """Depth charts: who is actually the backup.
+
+        Inferring a backup from who has started before fails exactly when it
+        matters — for a team whose second quarterback has never started.
+
+        Normalises two upstream layouts. Seasons through 2024 publish one row
+        per week with ``depth_team`` as the rank; 2025 onward publishes dated
+        snapshots with ``pos_rank`` and different column names throughout.
+        Returns a common shape either way: season, week, team, position, depth,
+        full_name.
+        """
+        df = self.weekly_release("depth_charts", season)
+        if df.empty:
+            return df
+        return normalise_depth_charts(df, season)
+
+    def snap_counts(self, season: int) -> pd.DataFrame:
+        """Per-game snap share, which is how important a player actually is.
+
+        A position constant says every starting receiver matters equally. Snap
+        share says how much of the game a specific player was on the field for,
+        which is the measurement that constant was standing in for.
+        """
+        df = self.weekly_release("snap_counts", season)
+        if df.empty:
+            return df
+        keep = [c for c in ("game_id", "season", "week", "player", "position",
+                            "team", "offense_pct", "defense_pct", "st_pct")
+                if c in df.columns]
+        df = df[keep].copy()
+        df["team"] = df["team"].map(try_resolve)
+        return df.dropna(subset=["team", "week"])
 
     def game_team_stats(self, season: int) -> pd.DataFrame:
         """One row per (game, team) with the raw ingredients for market-blind
@@ -175,11 +259,95 @@ GAME_STAT_COLUMNS = [
     "passer_player_name", "success", "pass", "rush", "wp",
     "interception", "fumble", "fumble_lost",
     "punt_attempt", "field_goal_attempt", "kickoff_attempt", "extra_point_attempt",
+    # Situational detail: how drives actually end, and how often a play breaks.
+    "down", "ydstogo", "first_down", "yardline_100", "touchdown", "yards_gained",
+    "sack", "penalty_yards", "penalty_team", "series_success",
 ]
+
+# A gain of at least this many yards is an "explosive" play. Explosive-play rate
+# is more stable week to week than yards per game and is one of the better
+# public predictors of scoring.
+EXPLOSIVE_YARDS = 20
+
+# Inside the opponent's twenty.
+RED_ZONE_YARDLINE = 20
 
 # League-average fumble recovery rate. Recoveries are close to a coin flip, so a
 # team's recovery share is mostly luck and should not be projected forward.
 FUMBLE_RECOVERY_RATE = 0.5
+
+
+def _rate(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    """Safe rate: no attempts means no rate, not zero."""
+    out = numerator / denominator.replace(0, np.nan)
+    return out.astype(float)
+
+
+# Columns _situational always returns, so downstream code can rely on the shape
+# rather than on a game happening to contain a third down.
+SITUATIONAL_COLUMNS = (
+    "third_down_rate", "third_down_attempts", "red_zone_td_rate",
+    "explosive_rate", "sack_rate", "penalty_yards",
+)
+
+
+def _situational(df: pd.DataFrame, scrimmage: pd.DataFrame) -> pd.DataFrame:
+    """Third-down, red-zone, explosive, sack and penalty rates per game.
+
+    These are all *rates*, deliberately. Counts are dominated by how many
+    possessions a team happened to get; rates are what carries from week to
+    week.
+
+    Every column is always present, even when nothing qualifies. Emitting a
+    column only when the play type occurred made the whole extraction fail on a
+    slice with no third downs — which a partial or in-progress file can be.
+    """
+    key = ["game_id", "posteam"]
+    if scrimmage.empty:
+        return pd.DataFrame(
+            columns=list(SITUATIONAL_COLUMNS),
+            index=pd.MultiIndex.from_arrays([[], []], names=key),
+        )
+
+    out = pd.DataFrame(index=scrimmage.groupby(key).size().index)
+    for column in SITUATIONAL_COLUMNS:
+        out[column] = np.nan
+
+    # ---- third down: attempts and conversions
+    third = scrimmage[scrimmage["down"] == 3]
+    if not third.empty:
+        attempts = third.groupby(key).size()
+        converted = third.groupby(key)["first_down"].sum()
+        out["third_down_rate"] = _rate(converted, attempts)
+        out["third_down_attempts"] = attempts
+
+    # ---- red zone: trips that end in a touchdown
+    red = scrimmage[scrimmage["yardline_100"] <= RED_ZONE_YARDLINE]
+    if not red.empty:
+        red_plays = red.groupby(key).size()
+        red_tds = red.groupby(key)["touchdown"].sum()
+        out["red_zone_td_rate"] = _rate(red_tds, red_plays)
+
+    # ---- explosives: how often a play breaks for real yardage
+    explosive = (scrimmage["yards_gained"] >= EXPLOSIVE_YARDS).astype(float)
+    out["explosive_rate"] = scrimmage.assign(_x=explosive).groupby(key)["_x"].mean()
+
+    # ---- pressure: sacks taken per dropback
+    dropbacks = df[df["qb_dropback"] == 1]
+    if not dropbacks.empty:
+        taken = dropbacks.groupby(key)["sack"].sum()
+        attempts = dropbacks.groupby(key).size()
+        out["sack_rate"] = _rate(taken, attempts)
+
+    # ---- discipline: penalty yards charged to this team, per game
+    if "penalty_team" in df.columns and "penalty_yards" in df.columns:
+        penalties = df[df["penalty_team"].notna()]
+        if not penalties.empty:
+            charged = penalties.groupby(["game_id", "penalty_team"])["penalty_yards"].sum()
+            charged.index = charged.index.set_names(key)
+            out["penalty_yards"] = charged
+
+    return out
 
 
 def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -223,6 +391,10 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
         "plays": competitive.groupby(["game_id", "posteam"]).size(),
     })
 
+    # ---- situational: third downs, red zone, explosives, sacks, penalties
+    situational = _situational(df, scrimmage)
+    stats = stats.join(situational, how="left")
+
     # ---- special teams: punts, field goals, kickoffs and extra points
     special = df[df["play_type"].isin(
         ["punt", "field_goal", "kickoff", "extra_point"]) & df["epa"].notna()]
@@ -264,7 +436,9 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     stats["is_home"] = (stats["team"] == stats["home_team"]).astype(int)
 
     mirror_cols = ["off_epa", "off_pass_epa", "off_rush_epa", "off_success",
-                   "fumbles", "fumbles_lost", "interceptions"]
+                   "fumbles", "fumbles_lost", "interceptions",
+                   "third_down_rate", "red_zone_td_rate", "explosive_rate",
+                   "sack_rate"]
     opponent_view = stats[["game_id", "team", *mirror_cols]].rename(
         columns={"team": "opponent", **{c: f"opp_{c}" for c in mirror_cols}}
     )
@@ -275,6 +449,11 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     stats["def_pass_epa"] = stats["opp_off_pass_epa"]
     stats["def_rush_epa"] = stats["opp_off_rush_epa"]
     stats["def_success"] = stats["opp_off_success"]
+    # A defence's situational numbers are what it allowed, i.e. the opponent's.
+    stats["def_third_down_rate"] = stats["opp_third_down_rate"]
+    stats["def_red_zone_td_rate"] = stats["opp_red_zone_td_rate"]
+    stats["def_explosive_rate"] = stats["opp_explosive_rate"]
+    stats["sack_rate_forced"] = stats["opp_sack_rate"]
 
     # ---- turnover margin, and how much of it was fumble luck
     stats["giveaways"] = stats["fumbles_lost"].fillna(0) + stats["interceptions"].fillna(0)
@@ -295,4 +474,52 @@ def extract_game_team_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     )
     stats["turnover_luck"] = stats["turnover_margin"] - stats["expected_turnover_margin"]
 
-    return stats.drop(columns=[c for c in stats.columns if c.startswith("opp_off_")])
+    drop = [c for c in stats.columns
+            if c.startswith("opp_off_") or c in {
+                "opp_third_down_rate", "opp_red_zone_td_rate",
+                "opp_explosive_rate", "opp_sack_rate"}]
+    return stats.drop(columns=drop)
+
+
+def normalise_depth_charts(df: pd.DataFrame, season: int) -> pd.DataFrame:
+    """Map either upstream depth-chart layout onto one shape.
+
+    Kept as a free function so both layouts can be exercised from a recorded
+    frame in tests: an upstream schema change is exactly the failure that is
+    invisible until something downstream quietly returns nothing.
+    """
+    from ..util import estimate_week, to_utc
+
+    if "depth_team" in df.columns:          # 2024 and earlier
+        out = df.rename(columns={"club_code": "team"}).copy()
+        out["depth"] = pd.to_numeric(out["depth_team"], errors="coerce")
+        keep = ["season", "week", "team", "position", "depth", "full_name"]
+        out = out[[c for c in keep if c in out.columns]]
+    elif "pos_rank" in df.columns:          # 2025 onward
+        out = df.copy()
+        out["depth"] = pd.to_numeric(out["pos_rank"], errors="coerce")
+        out["position"] = out["pos_abb"]
+        out["full_name"] = out["player_name"]
+        out["season"] = season
+        # Snapshots are dated rather than numbered; derive a week so the most
+        # recent chart can be picked out the same way for both layouts.
+        stamps = out["dt"].map(to_utc)
+        out["week"] = [
+            estimate_week(s.date(), season) if s is not None else 0 for s in stamps
+        ]
+        # Sort oldest first, which every consumer depends on and none of them
+        # can see. The release ships newest-first, and week estimation cannot
+        # separate these snapshots: a March chart and today's chart both clamp
+        # to week 1, so they collide on (season, week, team, position, depth)
+        # and whichever lands last wins. Unsorted, that is the *offseason*
+        # chart — which is how a team's starter came back as a quarterback who
+        # had long since fallen down the depth chart.
+        out["_ts"] = stamps
+        out = out.sort_values("_ts", kind="stable", na_position="first")
+        out = out[["season", "week", "team", "position", "depth", "full_name"]]
+    else:
+        return pd.DataFrame()
+
+    out["team"] = out["team"].map(try_resolve)
+    out["week"] = pd.to_numeric(out.get("week"), errors="coerce")
+    return out.dropna(subset=["team", "depth"])

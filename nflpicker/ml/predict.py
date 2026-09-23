@@ -23,6 +23,7 @@ and the raw disagreement is kept beside it as a diagnostic.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +54,9 @@ UNTRAINED_SD = 14.5
 # on.  Before that, ratings are still close to their priors, so any apparent
 # disagreement with the market is the model's ignorance rather than an edge.
 INFORMATION_FULL_AT = 5.0
+
+
+log = logging.getLogger("nflpicker.predict")
 
 
 @dataclass
@@ -130,6 +134,7 @@ class Predictor:
         power: PowerRatings | None = None,
         *,
         market_weight: float | None = None,
+        adjustments: dict[str, float] | None = None,
     ) -> list[GamePrediction]:
         market_weight = self.market_weight if market_weight is None else market_weight
         total_weight = (
@@ -174,6 +179,22 @@ class Predictor:
         )
         model_margin = np.nan_to_num(model_margin, nan=0.0)
         model_total = np.where(np.isnan(model_total), 44.0, model_total)
+
+        # Availability adjustment. Injury reports are not in the training data,
+        # so this is applied to the projection rather than learned. It mostly
+        # *removes* false disagreement: a model that has not noticed a
+        # ruled-out starter will claim its largest edge on the game it
+        # understands least.
+        if adjustments:
+            home_adj = np.array(
+                [adjustments.get(r["home"], 0.0) for r in frame.to_dict("records")],
+                dtype=float,
+            )
+            away_adj = np.array(
+                [adjustments.get(r["away"], 0.0) for r in frame.to_dict("records")],
+                dtype=float,
+            )
+            model_margin = model_margin + home_adj - away_adj
 
         # How much has actually been observed about these two teams?  Both the
         # games they have played and whether a trained model exists count.
@@ -271,6 +292,10 @@ class Predictor:
                         "raw_win_prob": _opt(raw_prob[i]),
                         "market_weight": round(float(effective_weight[i]), 3)
                         if spread is not None else 0.0,
+                        "availability_home": round(
+                            float((adjustments or {}).get(row["home"], 0.0)), 2),
+                        "availability_away": round(
+                            float((adjustments or {}).get(row["away"], 0.0)), 2),
                         "source": "model" if self.trained else FALLBACK_NOTE,
                     },
                 )
@@ -302,14 +327,25 @@ def _opt(value) -> float | None:
 
 
 def load_bundle(model_dir: Path | None = None) -> dict | None:
-    path = (Path(model_dir) if model_dir else get_config().model_dir) / "models.joblib"
-    if not path.exists():
+    candidates = ([Path(model_dir)] if model_dir else get_config().model_dirs)
+    path = next((d / "models.joblib" for d in candidates
+                 if (d / "models.joblib").exists()), None)
+    if path is None:
         return None
     try:
         import joblib
 
         return joblib.load(path)
-    except Exception:  # noqa: BLE001 - a corrupt/stale artifact must not brick the app
+    except Exception as exc:  # noqa: BLE001 - a stale artifact must not brick the app
+        # Falling back to power ratings is right; doing it silently is not. A
+        # bundle pickled under a different scikit-learn is the likely cause, and
+        # the only symptom would otherwise be the sidebar quietly reading
+        # "power-only" with no way to tell that from never having trained.
+        log.warning(
+            "could not load %s (%s: %s) — falling back to power ratings; "
+            "retrain with `nflpicker train` to rebuild it for this environment",
+            path, type(exc).__name__, exc,
+        )
         return None
 
 

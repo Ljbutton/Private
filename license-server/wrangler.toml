@@ -1,0 +1,37 @@
+name = "the-edge-license"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Fill these in (or set them in the Cloudflare dashboard instead).
+WHOP_PRODUCT_ID = "prod_VwekdA5QArKis"
+MAX_MACHINES = "2"
+# `completed` is how Whop reports a paid one-time purchase, which is what the
+# season pass is -- it means paid in full, not lapsed.
+ALLOWED_STATUSES = "active,trialing,canceling,completed"
+GITHUB_REPO = "Ljbutton/Private"
+# The grader identifies itself to ESPN as the desktop app does. Uncomment to
+# try a different string against a live refusal without touching the code;
+# leave it off and worker.js keeps the two in step.
+# SCOREBOARD_USER_AGENT = ""
+RELEASE_TAG = "latest"
+DOWNLOAD_PAGE = "https://whop.com/the-edge-ab78/the-edge-fd-e121"
+
+# Grading runs on a timer: hourly is plenty for a sport that plays three days
+# a week, and it keeps the leaderboard current without making whoever opens it
+# wait for ESPN.
+[triggers]
+crons = ["17 * * * *"]
+
+# The shared-picks database. Create it and paste the id in:
+#   npx wrangler d1 create the-edge-picks
+#   npx wrangler d1 execute the-edge-picks --remote --file license-server/schema.sql
+# [[d1_databases]]
+# binding = "PICKS_DB"
+# database_name = "the-edge-picks"
+# database_id = "paste-the-id-here"
+
+# Secrets are never written here. Set them with:
+#   npx wrangler secret put WHOP_API_KEY
+#   npx wrangler secret put GITHUB_TOKEN     (only once the repo is private)
+#   npx wrangler secret put DASHBOARD_TOKEN  (guards /v1/dashboard — make it long)
