@@ -128,6 +128,46 @@ server not answering reads "Can't reach the license server", while a server
 that answered but could not reach Whop says so, and quotes what Whop said.
 Either way a key that checked out in the last 7 days keeps working.
 
+## Game ids
+
+One game has two spellings. The app writes ESPN's event id behind a prefix
+that records where it came from — `espn-401671789`, in
+`nflpicker/sources/espn.py` — and this server writes the bare `401671789`.
+Both are the same `event.id` from the same scoreboard.
+
+They were stored as they arrived, so `picks` and `results` joined to nothing:
+five shared picks and sixteen games on file, no overlap, nothing graded and
+every split empty. **The server normalises**, in `canonicalGameId()`, as a
+pick or a reported score comes in.
+
+Normalising here rather than changing the app is deliberate. Neither spelling
+is more durable — both are ESPN's event id, which survives a postponement (the
+date moves, the id does not). What differs is reach: the app's `game_id` keys
+its whole local database, so changing it would rekey every customer's picks,
+predictions and odds, and any copy that did not update would go on missing for
+the rest of the season. Doing it at this boundary fixes every client at once,
+including ones that never update, and it is idempotent — a client that one day
+sends the bare id already works.
+
+Only `espn-` followed by digits and nothing else is touched. Anything odder is
+left exactly as sent, so it surfaces as unmatched rather than being rewritten
+into a near-miss.
+
+Rows stored before this are renamed by `ensureSchema` on the next scheduled
+run, across `picks`, `consensus`, `result_reports` and `results`. Nothing to
+run by hand.
+
+**A pick that matches nothing is never silent again.** It is still stored —
+throwing it away would make it unrecoverable — but the run logs it:
+
+```
+picks: game ids match no game on file {"count":1,"ids":["nfl-9999"]}
+```
+
+and the week's dashboard page counts it above the games, naming the ids. The
+count only appears once that week's games are on file, because a pick made a
+fortnight early matches nothing for a good reason.
+
 ## When nothing is being graded
 
 The hourly run logs `picks: scoreboard refused` with the status and the first

@@ -4,9 +4,9 @@ import { test } from "node:test";
 
 import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
   captureConsensus, captureFirst, crowdClv, ensureSchema, gradeCrowd,
-  RESULTS_QUORUM, cleanResult, gradePick, gradeWeek, health, leaderboard,
-  nflWeek, promoteResults, resultsQuorum, scoreboardHeaders, support, validate,
-  weeksToGrade }
+  RESULTS_QUORUM, canonicalGameId, cleanResult, dropIdPrefix, fetchResults,
+  gradePick, gradeWeek, health, leaderboard, nflWeek, promoteResults,
+  resultsQuorum, scoreboardHeaders, support, validate, weeksToGrade }
   from "./worker.js";
 import worker from "./worker.js";
 
@@ -383,11 +383,16 @@ test("a rate limiter that is down does not take reporting down with it", async (
 // bind what they say they bind; the SQL itself is D1's problem.
 function fakeD1() {
   const calls = [];
+  // Every prepare, bound or not. `calls` only records statements that go
+  // through bind(), and a statement with no parameters never does.
+  const prepared = [];
   const rows = { picks: [], results: [] };
   const db = {
     calls,
+    prepared,
     rows,
     prepare(sql) {
+      prepared.push(sql);
       const stmt = {
         sql,
         args: [],
@@ -2327,4 +2332,194 @@ test("a score ESPN gave us carries no marker", async () => {
     await dashHtml("&week=5&season=2026",
                    { PICKS_DB: fakeDash(legacy), DASHBOARD_TOKEN: TOKEN }),
     /class="src"/);
+});
+
+
+// ------------------------------------------------- one game, one id
+//
+// The app writes ESPN's event id behind an "espn-" prefix that records where
+// it came from; this server writes the bare id. Five picks and sixteen games
+// sat in the same database joining to nothing.
+//
+// EVENT_ID is ESPN's own, copied from the recorded scoreboard payload in the
+// app's test suite (tests/test_source_parsers.py) rather than invented here,
+// so both spellings below are the ones the two programs really produce.
+const EVENT_ID = "401671789";
+const APP_ID = `espn-${EVENT_ID}`;
+
+test("the two spellings of one game come from the same event", async () => {
+  // The server's own parser, over ESPN's shape, produces the bare id...
+  const espn = async () => new Response(JSON.stringify({
+    events: [{
+      id: EVENT_ID, date: "2025-09-21T17:00Z",
+      competitions: [{
+        status: { type: { completed: true } },
+        competitors: [
+          { homeAway: "home", score: "27", team: { abbreviation: "KC" } },
+          { homeAway: "away", score: "20", team: { abbreviation: "DEN" } },
+        ],
+      }],
+    }],
+  }), { status: 200 });
+  const [game] = await fetchResults(2025, 3, espn);
+  assert.equal(game.game_id, EVENT_ID);
+  // ...and the app's id is that, prefixed. Which is the whole bug.
+  assert.equal(APP_ID, `espn-${game.game_id}`);
+  assert.notEqual(APP_ID, game.game_id);
+});
+
+test("the prefix is taken off, and only where it is a prefix", () => {
+  assert.equal(canonicalGameId(APP_ID), EVENT_ID);
+  assert.equal(canonicalGameId("ESPN-401671789"), EVENT_ID, "case does not matter");
+  assert.equal(canonicalGameId(` ${APP_ID} `), EVENT_ID);
+  // Idempotent: a client that one day sends the bare id already works.
+  assert.equal(canonicalGameId(EVENT_ID), EVENT_ID);
+  assert.equal(canonicalGameId(canonicalGameId(APP_ID)), EVENT_ID);
+  // Anything that is not the prefix followed by digits is left exactly alone,
+  // so it shows up as unmatched rather than being mangled into a near-miss.
+  for (const odd of ["espn-", "espn-abc", "espn-401a", "espnx-401", "demo-1",
+                     "401671789-espn", "", "  "]) {
+    assert.equal(canonicalGameId(odd), odd.trim(), JSON.stringify(odd));
+  }
+  assert.equal(canonicalGameId(null), "");
+  assert.equal(canonicalGameId(undefined), "");
+});
+
+test("a pick sent with the app's id is stored against the ESPN row", async () => {
+  const PICKS_DB = fakeD1();
+  const key = "KEY-GAMEID-0001";
+  fakeWhop({ ...live });
+  const res = await worker.fetch(picksPost({
+    picker: await pickerIdFor(key),
+    license_key: key,
+    picks: [{ game_id: APP_ID, kind: "winner", side: "KC", season: 2025, week: 3 }],
+  }), picksEnv(PICKS_DB));
+  assert.equal(res.status, 200);
+
+  const insert = PICKS_DB.calls.find((c) => /INSERT INTO picks/.test(c.sql));
+  assert.equal(insert.args[1], EVENT_ID, "stored bare, so it joins the results row");
+});
+
+test("a reported score sent with the app's id is stored the same way", () => {
+  // The app reports from its own games table, so these arrive prefixed too --
+  // and a prefixed result row would clash with the one ESPN wrote.
+  const r = cleanResult({
+    game_id: APP_ID, season: 2025, week: 3, home: "KC", away: "DEN",
+    home_score: 27, away_score: 20, kickoff: "2025-09-21T17:00:00Z",
+  }, Date.parse("2025-09-22T00:00:00Z"));
+  assert.equal(r.game_id, EVENT_ID);
+});
+
+// ------------------------------------------------ the rows already stored
+
+test("picks already stored are renamed, across every table that holds an id", async () => {
+  const db = fakeD1();
+  const moved = await dropIdPrefix({ PICKS_DB: db });
+
+  const updates = db.prepared.filter((sql) => /UPDATE OR IGNORE/.test(sql));
+  assert.deepEqual(updates.map((sql) => /UPDATE OR IGNORE (\w+)/.exec(sql)[1]),
+                   ["picks", "consensus", "result_reports", "results"]);
+  for (const u of updates.map((sql) => ({ sql }))) {
+    assert.match(u.sql, /SET game_id = substr\(game_id, 6\)/);
+    // Only "espn-" followed by digits and nothing else. A prefix on something
+    // odder is left alone to be counted as unmatched, not silently rewritten.
+    assert.match(u.sql, /game_id LIKE 'espn-%'/);
+    assert.match(u.sql, /length\(game_id\) > 5/);
+    assert.match(u.sql, /substr\(game_id, 6\) NOT GLOB '\*\[\^0-9\]\*'/);
+  }
+  // fakeD1 reports 7 changes per statement, so every table is counted.
+  assert.deepEqual(moved, { picks: 7, consensus: 7, result_reports: 7, results: 7 });
+});
+
+test("the rename is reported, and a clean database says nothing", async () => {
+  const quiet = fakeD1();
+  quiet.prepare = (sql) => ({
+    sql, args: [], bind(...a) { this.args = a; return this; },
+    async run() { return { meta: { changes: 0 } }; },
+    async all() { return { results: [] }; },
+  });
+  const { lines } = await capturingLogs(() => dropIdPrefix({ PICKS_DB: quiet }));
+  assert.ok(!lines.some((l) => l.includes("normalised game ids")),
+            "nothing to say when nothing moved");
+
+  const dirty = await capturingLogs(() => dropIdPrefix({ PICKS_DB: fakeD1() }));
+  assert.match(dirty.lines.find((l) => l.includes("normalised game ids")),
+               /"picks":7/);
+});
+
+// ------------------------------------------- never silent again
+
+test("a pick that matches no game on file is logged", async () => {
+  const db = fakeD1();
+  // The week's card is on file, and this pick is not on it.
+  db.rows.results = [{ game_id: EVENT_ID, season: 2025, week: 3 }];
+  const key = "KEY-GAMEID-0002";
+  fakeWhop({ ...live });
+  const picker = await pickerIdFor(key);
+  const { lines } = await capturingLogs(() => worker.fetch(picksPost({
+    picker,
+    license_key: key,
+    picks: [{ game_id: "nfl-9999", kind: "winner", side: "KC",
+              season: 2025, week: 3 }],
+  }), picksEnv(db)));
+
+  const said = lines.find((l) => l.includes("match no game on file"));
+  assert.ok(said, `nothing logged; got ${JSON.stringify(lines)}`);
+  assert.match(said, /"count":1/);
+  assert.match(said, /nfl-9999/);
+});
+
+test("a pick is stored even when it matches nothing", async () => {
+  // Counted and complained about, never dropped: a pick thrown away is a
+  // pick that cannot be recovered once the ids are reconciled.
+  const db = fakeD1();
+  db.rows.results = [{ game_id: EVENT_ID, season: 2025, week: 3 }];
+  const key = "KEY-GAMEID-0003";
+  fakeWhop({ ...live });
+  const res = await worker.fetch(picksPost({
+    picker: await pickerIdFor(key), license_key: key,
+    picks: [{ game_id: "nfl-9999", kind: "winner", side: "KC", season: 2025, week: 3 }],
+  }), picksEnv(db));
+  assert.equal((await res.json()).stored, 1);
+  assert.ok(db.calls.some((c) => /INSERT INTO picks/.test(c.sql)));
+});
+
+test("an early pick on a week with no card yet is not called unmatched", async () => {
+  const db = fakeD1();
+  db.rows.results = [];                       // that week never fetched yet
+  const key = "KEY-GAMEID-0004";
+  fakeWhop({ ...live });
+  const picker = await pickerIdFor(key);
+  const { lines } = await capturingLogs(() => worker.fetch(picksPost({
+    picker, license_key: key,
+    picks: [{ game_id: EVENT_ID, kind: "winner", side: "KC",
+              season: 2025, week: 18 }],
+  }), picksEnv(db)));
+  assert.ok(!lines.some((l) => l.includes("match no game on file")),
+            "a fortnight-early pick is not a mismatch");
+});
+
+test("the dashboard counts unmatched picks for the week", async () => {
+  const tables = {
+    results: [{ game_id: EVENT_ID, season: 2025, week: 3, home: "KC",
+                away: "DEN", kickoff: "2025-09-21T17:00:00Z",
+                home_score: 27, away_score: 20 }],
+    picks: [
+      { picker: "a".repeat(16), game_id: EVENT_ID, kind: "winner", side: "KC",
+        season: 2025, week: 3, received_at: "2025-09-21T12:00:00Z" },
+      { picker: "a".repeat(16), game_id: APP_ID, kind: "winner", side: "KC",
+        season: 2025, week: 3, received_at: "2025-09-21T12:00:00Z" },
+    ],
+  };
+  const html = await dashHtml("&week=3&season=2025",
+                              { PICKS_DB: fakeDash(tables), DASHBOARD_TOKEN: TOKEN });
+  assert.match(html, /1 pick matched no game on this week's card/);
+  assert.match(html, /espn-401671789/, "and says which id");
+
+  // The matched one alone leaves no warning at all.
+  const clean = { ...tables, picks: [tables.picks[0]] };
+  assert.doesNotMatch(
+    await dashHtml("&week=3&season=2025",
+                   { PICKS_DB: fakeDash(clean), DASHBOARD_TOKEN: TOKEN }),
+    /matched no game/);
 });

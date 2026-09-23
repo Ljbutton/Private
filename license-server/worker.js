@@ -507,10 +507,33 @@ async function pickerFor(key) {
     .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, PICK_ID_CHARS);
 }
 
+// One game, one id, whichever side is speaking.
+//
+// The app stores ESPN's event id behind an "espn-" prefix that records where
+// it came from (nflpicker/sources/espn.py: `f"espn-{event['id']}"`); this
+// server stores the bare id (`String(event.id)` in fetchResults). Same number,
+// two spellings, and picks therefore joined to nothing at all: five picks in
+// the database, sixteen games on file, no overlap, no grading, no splits.
+//
+// Normalising here rather than changing the app is deliberate. Neither
+// spelling is more durable -- both are ESPN's event id, which survives a
+// postponement (the date moves, the id does not), so on the stated tie-break
+// they are equal. What is not equal is the blast radius: the app's game_id is
+// the key its whole local database is built on, and changing it would rekey
+// every customer's picks, predictions and odds, while any copy that did not
+// update would go on missing for the rest of the season. Doing it at this
+// boundary fixes every client at once, including the ones that never update,
+// and it is idempotent -- a future client sending the bare id already works.
+export function canonicalGameId(raw) {
+  const id = String(raw === null || raw === undefined ? "" : raw).trim();
+  const m = /^espn-(\d+)$/i.exec(id);
+  return m ? m[1] : id;
+}
+
 function cleanPick(raw) {
   if (!raw || typeof raw !== "object") return null;
   const kind = String(raw.kind || "").toLowerCase();
-  const gameId = String(raw.game_id || "").slice(0, 64);
+  const gameId = canonicalGameId(String(raw.game_id || "").slice(0, 64));
   const side = String(raw.side || "").toUpperCase().slice(0, 8);
   if (!PICK_KINDS.has(kind) || !gameId || !side) return null;
   const num = (v) => (v === null || v === undefined || v === "" || Number.isNaN(Number(v))
@@ -657,6 +680,8 @@ async function picksRoute(request, env) {
     console.log("picks: store failed", String(err && err.message || err));
     return json({ ok: false, reason: "store_failed" }, 502);
   }
+
+  await warnUnmatched(env, picks);
   return json(degraded
     ? { ok: true, stored: picks.length, unchecked: true }
     : { ok: true, stored: picks.length });
@@ -671,7 +696,9 @@ async function picksRoute(request, env) {
 // stops a report from voiding honest picks as "late".
 export function cleanResult(raw, now = Date.now()) {
   if (!raw || typeof raw !== "object") return null;
-  const gameId = String(raw.game_id || "").slice(0, 64);
+  // Reported scores come from the app's own games table, so they arrive
+  // prefixed exactly as picks do.
+  const gameId = canonicalGameId(String(raw.game_id || "").slice(0, 64));
   if (!/^[A-Za-z0-9._-]+$/.test(gameId)) return null;
   const home = String(raw.home || "").toUpperCase().slice(0, 8);
   const away = String(raw.away || "").toUpperCase().slice(0, 8);
@@ -795,6 +822,51 @@ export async function promoteResults(env, gameIds, stamp, quorum = null) {
   console.log("results: agreed", JSON.stringify(
     { games: agreed.length, quorum: need }));
   return agreed.length;
+}
+
+// A pick that landed on no game, said out loud when it happens.
+//
+// The id mismatch hid for a day because a join that matches nothing looks
+// exactly like a quiet week. It cannot hide again: an id that matches no known
+// game gets a log line here and a count on the dashboard.
+//
+// Only for weeks whose games are on file. A pick can be made a fortnight out,
+// before the grader has ever fetched that week, and an unmatched count that
+// fires on every early pick is a warning nobody reads.
+//
+// One query. Seasons and weeks are taken as two lists rather than as pairs,
+// which over-fetches slightly when a batch spans both -- a season-week is
+// about sixteen rows, so the cross product is still tiny.
+async function warnUnmatched(env, picks) {
+  const seasons = [...new Set(picks.map((p) => p.season))];
+  const weeks = [...new Set(picks.map((p) => p.week))];
+  if (!seasons.length || !weeks.length) return 0;
+  let rows;
+  try {
+    rows = await env.PICKS_DB.prepare(
+      "SELECT game_id, season, week FROM results"
+      + ` WHERE season IN (${seasons.map(() => "?").join(",")})`   // eslint-disable-line
+      + ` AND week IN (${weeks.map(() => "?").join(",")})`,        // eslint-disable-line
+    ).bind(...seasons, ...weeks).all();
+  } catch (err) {
+    console.log("picks: could not check ids against the schedule",
+                String(err && err.message || err));
+    return 0;
+  }
+  const known = new Set();
+  const weeksOnFile = new Set();
+  for (const r of rows.results || []) {
+    known.add(r.game_id);
+    weeksOnFile.add(`${r.season}:${r.week}`);
+  }
+  const orphans = [...new Set(picks
+    .filter((p) => weeksOnFile.has(`${p.season}:${p.week}`) && !known.has(p.game_id))
+    .map((p) => p.game_id))];
+  if (orphans.length) {
+    console.log("picks: game ids match no game on file", JSON.stringify(
+      { count: orphans.length, ids: orphans.slice(0, 5) }));
+  }
+  return orphans.length;
 }
 
 async function picksDeleteRoute(request, env) {
@@ -1117,6 +1189,43 @@ export const REPORTS_DDL =
   + "home_score INTEGER NOT NULL, away_score INTEGER NOT NULL, "
   + "reported_at TEXT NOT NULL, PRIMARY KEY (game_id, picker))";
 
+// Rows stored before the ids were reconciled, brought to the same spelling.
+//
+// This is a rename, not a guess: both sides read the same ESPN scoreboard and
+// take the same `event.id`, so "espn-401671789" and "401671789" are the same
+// game by construction. Only a prefix followed by digits and nothing else is
+// touched; anything odder is left alone to be counted as unmatched, where it
+// can be seen.
+//
+// OR IGNORE rather than OR REPLACE: if a picker somehow holds both spellings
+// of one game, the canonical row wins and the odd one stays put and visible.
+// Losing a row quietly is the failure this whole change exists to stop.
+//
+// Runs every scheduled run and matches nothing once it is done, because the
+// boundary now normalises and no prefixed row can arrive again.
+export async function dropIdPrefix(env) {
+  const DIGITS = "game_id LIKE 'espn-%' AND length(game_id) > 5"
+    + " AND substr(game_id, 6) NOT GLOB '*[^0-9]*'";
+  const moved = {};
+  for (const table of ["picks", "consensus", "result_reports", "results"]) {
+    try {
+      const out = await env.PICKS_DB.prepare(
+        `UPDATE OR IGNORE ${table} SET game_id = substr(game_id, 6) WHERE ${DIGITS}`,
+      ).run();                                                  // eslint-disable-line
+      const n = (out && out.meta && out.meta.changes) || 0;
+      if (n) moved[table] = n;
+    } catch (err) {
+      // A table that is not there yet on a fresh database, most likely.
+      console.log(`picks: could not normalise ids in ${table}`,
+                  String(err && err.message || err));
+    }
+  }
+  if (Object.keys(moved).length) {
+    console.log("picks: normalised game ids", JSON.stringify(moved));
+  }
+  return moved;
+}
+
 export async function ensureSchema(env) {
   if (!env.PICKS_DB) return false;
   try {
@@ -1147,6 +1256,8 @@ export async function ensureSchema(env) {
     // Likewise. Where it says 'crowd' the score came from agreeing customers
     // rather than from ESPN, which is worth being able to tell apart later.
   }
+
+  await dropIdPrefix(env);
 
   // The one thing this cannot do for itself. CREATE TABLE IF NOT EXISTS is a
   // no-op against a table that already exists in the older single-row shape,
@@ -1552,6 +1663,11 @@ td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
 /* The standing note when the agreement rule is switched off. Not a tooltip:
    at a quorum of one this is a caveat on every number below it. */
 .alone { display:block; margin-top:3px; font-size:11px; color:var(--warn); }
+/* A pick that joined to nothing. Loud on purpose: the whole reason this
+   exists is that the silent version of it hid for a day. */
+.warn-row { border-color:var(--warn); color:var(--warn); text-align:left; }
+.warn-row code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+                 font-size:11px; }
 /* The split bar. Width is the share; the count sits beside it in words,
    because a bar on two picks is a picture of nothing. */
 .split { display:flex; align-items:center; gap:8px; }
@@ -1668,6 +1784,27 @@ async function weekView(env, season, week) {
     byGame.get(p.game_id).push(p);
     sharers.add(p.picker);
   }
+
+  // Picks that landed on no game on this week's card. Counted only once the
+  // week's games are on file, because before that every pick is trivially
+  // unmatched and the number would mean nothing.
+  //
+  // This is the number that would have shown the id mismatch on day one:
+  // "5 picks this week" beside "no picks" on all sixteen games is only a
+  // contradiction if something says so.
+  const onFile = new Set((games.results || []).map((g) => g.game_id));
+  const orphans = onFile.size
+    ? (picks.results || []).filter((p) => !onFile.has(p.game_id))
+    : [];
+  const orphanIds = [...new Set(orphans.map((p) => p.game_id))];
+  const unmatchedNote = orphans.length
+    ? `<div class="empty warn-row"><b>${orphans.length} pick${
+      orphans.length === 1 ? "" : "s"} matched no game on this week's card.</b>
+      Their game ids are not ids this server knows: ${
+        orphanIds.slice(0, 3).map((id) => `<code>${escapeHtml(id)}</code>`).join(", ")
+      }${orphanIds.length > 3 ? ` and ${orphanIds.length - 3} more` : ""}.
+      Those picks cannot be graded or counted in a split until the ids agree.</div>`
+    : "";
   const subs = await activeSubscriptions(env);
   const knownCount = ((known.results || [])[0] || {}).n || 0;
 
@@ -1769,6 +1906,7 @@ async function weekView(env, season, week) {
       <div class="tile"><div class="label">Picks this week</div>
         <div class="value">${(picks.results || []).length}</div></div>
     </div>
+    ${unmatchedNote}
     ${rows || '<div class="empty">No games on file for this week yet. The '
       + 'grader fills these in from the scoreboard on its hourly run.</div>'}
   </div>
