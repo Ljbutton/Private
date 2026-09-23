@@ -5,7 +5,8 @@ import { test } from "node:test";
 import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
   captureConsensus, captureFirst, crowdClv, ensureSchema, gradeCrowd,
   RESULTS_QUORUM, cleanResult, gradePick, gradeWeek, health, leaderboard,
-  nflWeek, promoteResults, scoreboardHeaders, support, validate, weeksToGrade }
+  nflWeek, promoteResults, resultsQuorum, scoreboardHeaders, support, validate,
+  weeksToGrade }
   from "./worker.js";
 import worker from "./worker.js";
 
@@ -2166,4 +2167,164 @@ test("a batch is capped and an empty one is refused", async () => {
     picker: await pickerIdFor(key), license_key: key, results: many,
   }), picksEnv(db));
   assert.equal((await res.json()).reported, 64);
+});
+
+
+// ------------------------------------------------------ a settable quorum
+//
+// Three is right for a customer base and impossible for one person, and a
+// fallback that cannot fire is not a fallback.
+
+test("the quorum comes from the environment when it is set", () => {
+  assert.equal(resultsQuorum({ RESULTS_QUORUM: "1" }), 1);
+  assert.equal(resultsQuorum({ RESULTS_QUORUM: "2" }), 2);
+  assert.equal(resultsQuorum({ RESULTS_QUORUM: "10" }), 10);
+  // A dashboard field is a string with whatever whitespace was pasted in.
+  assert.equal(resultsQuorum({ RESULTS_QUORUM: " 4 " }), 4);
+  assert.equal(resultsQuorum({ RESULTS_QUORUM: 2 }), 2, "a number works too");
+});
+
+test("anything that is not a positive whole number falls back to the default", () => {
+  // Ignored rather than interpreted: a typo must not quietly switch off the
+  // agreement rule, which is the only thing between the leaderboard and one
+  // client's word.
+  for (const bad of ["0", "-1", "", "   ", "two", "1.5", "1e3", "abc", "3x",
+                     null, undefined, {}, [], true, NaN]) {
+    assert.equal(resultsQuorum({ RESULTS_QUORUM: bad }), RESULTS_QUORUM,
+                 `${JSON.stringify(String(bad))} should fall back`);
+  }
+  assert.equal(resultsQuorum({}), RESULTS_QUORUM, "unset");
+  assert.equal(resultsQuorum(), RESULTS_QUORUM, "no env at all");
+});
+
+test("quorum 1 promotes a single report", async () => {
+  const db = fakeD1();
+  db.rows.agreed = [{ ...FINAL, reporters: 1 }];
+  const written = await promoteResults({ PICKS_DB: db, RESULTS_QUORUM: "1" },
+                                       ["401"], "2026-10-11T22:00:00Z");
+  assert.equal(written, 1);
+  const q = db.calls.find((c) => /FROM result_reports/.test(c.sql));
+  assert.equal(q.args[q.args.length - 1], 1, "one report is enough");
+  assert.ok(db.calls.some((c) => /INSERT INTO results/.test(c.sql)));
+});
+
+test("quorum 3 still needs three matching reports", async () => {
+  const db = fakeD1();
+  // The HAVING does the counting, so what the test pins is the number that
+  // reaches it -- and that an unset variable does not lower it.
+  await promoteResults({ PICKS_DB: db }, ["401"], "2026-10-11T22:00:00Z");
+  let q = db.calls.find((c) => /FROM result_reports/.test(c.sql));
+  assert.equal(q.args[q.args.length - 1], 3);
+
+  const bad = fakeD1();
+  await promoteResults({ PICKS_DB: bad, RESULTS_QUORUM: "0" }, ["401"], "x");
+  q = bad.calls.find((c) => /FROM result_reports/.test(c.sql));
+  assert.equal(q.args[q.args.length - 1], 3, "zero does not mean zero");
+
+  // And two reports on a three-quorum deployment promote nothing.
+  const two = fakeD1();
+  two.rows.agreed = [];                       // the HAVING matched nothing
+  assert.equal(await promoteResults({ PICKS_DB: two }, ["401"], "x"), 0);
+  assert.ok(!two.calls.some((c) => /INSERT INTO results/.test(c.sql)));
+});
+
+test("the scheduled run says which quorum is in force", async () => {
+  const db = fakeD1();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = A_403;
+  try {
+    for (const [env, expect] of [
+      [{ PICKS_DB: db }, { quorum: 3, configured: false, shouts: false }],
+      [{ PICKS_DB: db, RESULTS_QUORUM: "1" }, { quorum: 1, configured: true, shouts: true }],
+      [{ PICKS_DB: db, RESULTS_QUORUM: "5" }, { quorum: 5, configured: true, shouts: false }],
+    ]) {
+      const waits = [];
+      const { lines } = await capturingLogs(async () => {
+        await worker.scheduled({}, env, { waitUntil: (p) => waits.push(p) });
+        await Promise.all(waits);
+      });
+      const said = lines.find((l) => l.includes("quorum in effect"));
+      assert.ok(said, "the run states the quorum");
+      assert.match(said, new RegExp(`"quorum":${expect.quorum}`));
+      assert.match(said, new RegExp(`"configured":${expect.configured}`));
+      assert.equal(lines.some((l) => l.includes("QUORUM IS 1")), expect.shouts,
+                   `a quorum of ${expect.quorum} should${
+                     expect.shouts ? "" : " not"} be shouted about`);
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ------------------------------------------- saying so on the dashboard
+
+const CROWD_GAME = {
+  game_id: "401", season: 2026, week: 5, kickoff: "2026-10-11T17:00:00Z",
+  home: "KC", away: "DEN", home_score: 27, away_score: 20, source: "crowd",
+};
+
+async function dashHtml(query, env) {
+  const res = await worker.fetch(
+    new Request(`https://edge.example/v1/dashboard?token=${TOKEN}${query}`), env);
+  assert.equal(res.status, 200);
+  return res.text();
+}
+
+test("the single-reporter warning shows only at a quorum of 1", async () => {
+  const db = () => fakeDash({
+    results: [CROWD_GAME],
+    consensus: [{ game_id: "401", phase: "prekick", season: 2026, week: 5,
+                  side: "KC", result: "win", graded_at: "2026-10-12T00:00:00Z" }],
+  });
+  const WARNING = /single reporter/;
+
+  const alone = await dashHtml("&view=board",
+                               { PICKS_DB: db(), DASHBOARD_TOKEN: TOKEN,
+                                 RESULTS_QUORUM: "1" });
+  assert.match(alone, WARNING);
+  assert.match(alone, /RESULTS_QUORUM = 1/);
+  // Beside the crowd's record, not tucked in a corner of the page.
+  assert.ok(alone.indexOf("single reporter") > alone.indexOf("The crowd"),
+            "the note sits inside the crowd row");
+
+  for (const env of [
+    { PICKS_DB: db(), DASHBOARD_TOKEN: TOKEN },                   // default 3
+    { PICKS_DB: db(), DASHBOARD_TOKEN: TOKEN, RESULTS_QUORUM: "3" },
+    { PICKS_DB: db(), DASHBOARD_TOKEN: TOKEN, RESULTS_QUORUM: "0" }, // → 3
+  ]) {
+    assert.doesNotMatch(await dashHtml("&view=board", env), WARNING);
+  }
+});
+
+test("a score that came from a vote is marked wherever it is shown", async () => {
+  const picker = "a".repeat(16);
+  const tables = {
+    results: [CROWD_GAME],
+    pickers: [{ picker, name: "Me", first_at: "2026-10-01T00:00:00Z",
+                last_at: "2026-10-11T00:00:00Z" }],
+    picks: [{ picker, game_id: "401", kind: "winner", side: "KC", season: 2026,
+              week: 5, result: "win", received_at: "2026-10-11T12:00:00Z" }],
+  };
+  const env = () => ({ PICKS_DB: fakeDash(tables), DASHBOARD_TOKEN: TOKEN });
+
+  const week = await dashHtml("&week=5&season=2026", env());
+  assert.match(week, /class="src"/, "this week marks it");
+  assert.match(week, /reported/);
+
+  const page = await dashHtml(`&picker=${picker}`, env());
+  assert.match(page, /class="src"/, "the picker page marks it too");
+});
+
+test("a score ESPN gave us carries no marker", async () => {
+  const tables = { results: [{ ...CROWD_GAME, source: "espn" }] };
+  const html = await dashHtml("&week=5&season=2026",
+                              { PICKS_DB: fakeDash(tables), DASHBOARD_TOKEN: TOKEN });
+  assert.doesNotMatch(html, /class="src"/);
+
+  // Nor does a row written before the column existed. It is not a vote either.
+  const legacy = { results: [{ ...CROWD_GAME, source: null }] };
+  assert.doesNotMatch(
+    await dashHtml("&week=5&season=2026",
+                   { PICKS_DB: fakeDash(legacy), DASHBOARD_TOKEN: TOKEN }),
+    /class="src"/);
 });

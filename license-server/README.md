@@ -175,6 +175,52 @@ Reporting rides the pick-sharing switch. A game score is nobody's personal
 data, but somebody who turned sharing off turned off talking to this server,
 and that answer is not ours to reinterpret.
 
+#### Setting the quorum
+
+`RESULTS_QUORUM` is a variable in the Cloudflare dashboard (Workers &amp; Pages
+→ the Worker → Settings → Variables). It is a plain number as text:
+
+```
+RESULTS_QUORUM = 2
+```
+
+Unset, it is **3**. That is the default because three independent reports of
+the same score is the smallest number that survives one wrong or dishonest
+client: a liar has to find two more live subscriptions willing to send the
+same wrong number for the same game, and each of those is a paid account that
+can be cancelled.
+
+Anything that is not a positive whole number is ignored and the default
+applies — `0`, ``, `two` and `1.5` all mean 3. A typo in a dashboard field
+must not quietly switch off the agreement rule.
+
+**`RESULTS_QUORUM = 1` means trusting a single machine's word.** There is no
+second opinion: whatever that one client reports becomes the score every
+record on the dashboard is graded on. It is the right setting while one person
+is sharing and the fallback would otherwise never fire at all — but raise it
+as soon as there are three people, because at 1 the leaderboard is exactly as
+honest as one app on one computer.
+
+Two things make that hard to forget:
+
+- The scheduled run logs the number in force every hour, and shouts at 1:
+
+  ```
+  results: quorum in effect {"quorum":1,"configured":true}
+  results: QUORUM IS 1 -- a reported score is taken from a single reporter…
+  ```
+
+- The leaderboard says it beside the crowd's own record, on every visit, for
+  as long as the setting stands.
+
+#### Telling a vote from a fact
+
+Wherever a score is shown — the week's games, and each row on a picker's page
+— one that came from agreeing customers carries a **reported** marker.
+Scores fetched from ESPN carry nothing, and neither do rows written before
+`results.source` existed; neither of those is a vote, and a badge on every row
+is a badge nobody reads.
+
 ## Test
 
 ```bash

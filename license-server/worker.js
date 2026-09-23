@@ -68,6 +68,19 @@ export default {
       const now = new Date();
       const { season, week } = nflWeek(now);
 
+      // Which number is in force, every run, so `wrangler tail` answers it
+      // without anyone opening the dashboard to guess. At one it is said
+      // twice, and loudly: that is not a quorum, it is a single machine's
+      // word, and it should never be the thing nobody noticed.
+      const quorum = resultsQuorum(env);
+      console.log("results: quorum in effect", JSON.stringify(
+        { quorum, configured: Boolean(env.RESULTS_QUORUM) }));
+      if (quorum === 1) {
+        console.log("results: QUORUM IS 1 -- a reported score is taken from a "
+          + "single reporter, with no second opinion. Raise RESULTS_QUORUM "
+          + "once more than one person is sharing.");
+      }
+
       // Freeze what the crowd is saying about anything kicking off within the
       // hour, before grading, because after kickoff it is no longer a
       // prediction -- and this run is the last chance to catch it.
@@ -410,6 +423,28 @@ export const PICKS_RATE = 60;
 // ungraded until enough people have seen it, which is the right way round.
 // And it never overwrites what the grader got from ESPN itself.
 export const RESULTS_QUORUM = 3;
+
+// ...and the number actually in force, which is a dashboard variable because
+// three is right for a customer base and impossible for one.
+//
+// A fallback that cannot fire is not a fallback: with a single person sharing,
+// three independent reports never arrive and the season stays ungraded no
+// matter how well the rest of this works. Set RESULTS_QUORUM in the Cloudflare
+// dashboard to lower it, and raise it again as people join.
+//
+// Anything that is not a positive whole number is ignored rather than
+// interpreted. "0", "", "two" and "1.5" all mean the default: a typo in a
+// dashboard field must not silently switch off the agreement rule, which is
+// the only thing standing between the leaderboard and one client's word.
+export function resultsQuorum(env = {}) {
+  const raw = env && env.RESULTS_QUORUM;
+  if (raw === null || raw === undefined) return RESULTS_QUORUM;
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return RESULTS_QUORUM;
+  const n = Number(text);
+  return Number.isInteger(n) && n >= 1 ? n : RESULTS_QUORUM;
+}
+
 export const RESULTS_MAX = 64;                 // a week's slate, with room
 export const RESULTS_RATE = 30;                // batches per key per hour
 
@@ -724,7 +759,9 @@ async function resultsRoute(request, env) {
 // score *and* the kickoff match exactly, so two people saying 27-20 and two
 // saying 28-20 is four reports and no quorum. Honest clients read the same
 // public scoreboard and agree to the character.
-export async function promoteResults(env, gameIds, stamp, quorum = RESULTS_QUORUM) {
+export async function promoteResults(env, gameIds, stamp, quorum = null) {
+  // The argument is for tests; production reads the deployment's setting.
+  const need = quorum === null || quorum === undefined ? resultsQuorum(env) : quorum;
   const ids = [...new Set(gameIds)].filter(Boolean);
   if (!ids.length) return 0;
   const holes = ids.map(() => "?").join(",");
@@ -736,7 +773,7 @@ export async function promoteResults(env, gameIds, stamp, quorum = RESULTS_QUORU
       + ` WHERE game_id IN (${holes})`                            // eslint-disable-line
       + " GROUP BY game_id, kickoff, home, away, home_score, away_score"
       + " HAVING reporters >= ?",
-    ).bind(...ids, quorum).all();
+    ).bind(...ids, need).all();
   } catch (err) {
     console.log("results: could not count reports", String(err && err.message || err));
     return 0;
@@ -756,7 +793,7 @@ export async function promoteResults(env, gameIds, stamp, quorum = RESULTS_QUORU
   ).bind(r.game_id, r.season, r.week, r.kickoff, r.home, r.away,
          r.home_score, r.away_score, stamp)));
   console.log("results: agreed", JSON.stringify(
-    { games: agreed.length, quorum }));
+    { games: agreed.length, quorum: need }));
   return agreed.length;
 }
 
@@ -1506,6 +1543,15 @@ td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
                margin-top:2px; }
 .tile .value .sub { font-size:12px; font-weight:400; color:var(--dim); }
 .win { color:var(--good); } .loss { color:var(--bad); } .late { color:var(--warn); }
+/* Where a score came from. Only ever drawn on a score that came from agreeing
+   customers rather than from ESPN: the vote is the thing worth marking, and
+   marking both would make the page noisier without making it clearer. */
+.src { font-size:10px; letter-spacing:.04em; text-transform:uppercase;
+       color:var(--warn); border:1px solid var(--warn); border-radius:3px;
+       padding:0 4px; margin-left:6px; white-space:nowrap; vertical-align:1px; }
+/* The standing note when the agreement rule is switched off. Not a tooltip:
+   at a quorum of one this is a caveat on every number below it. */
+.alone { display:block; margin-top:3px; font-size:11px; color:var(--warn); }
 /* The split bar. Width is the share; the count sits beside it in words,
    because a bar on two picks is a picture of nothing. */
 .split { display:flex; align-items:center; gap:8px; }
@@ -1592,13 +1638,14 @@ async function activeSubscriptions(env) {
 // ------------------------------------------------------------- view: week
 
 async function weekView(env, season, week) {
+  const quorum = resultsQuorum(env);
   // Four queries, whatever the size of the slate.
   //   games    one row per game this week            (~16)
   //   picks    one row per shared pick this week     (pickers x 16)
   //   career   one row per picker who has ever won   (tens)
   //   known    one row                               (1)
   const games = await env.PICKS_DB.prepare(
-    "SELECT game_id, home, away, kickoff, home_score, away_score"
+    "SELECT game_id, home, away, kickoff, home_score, away_score, source"
     + " FROM results WHERE season = ? AND week = ? ORDER BY kickoff",
   ).bind(season, week).all();
 
@@ -1687,7 +1734,8 @@ async function weekView(env, season, week) {
     return `<div class="game">
       <div class="grow">
         <div>
-          <div class="match">${escapeHtml(g.away)} at ${escapeHtml(g.home)}</div>
+          <div class="match">${escapeHtml(g.away)} at ${escapeHtml(g.home)}${
+            sourceNote(g.source, quorum)}</div>
           <div class="kick" data-kick="${escapeHtml(g.kickoff || "")}">${
             escapeHtml(String(g.kickoff || "").replace("T", " ").slice(0, 16))}</div>
         </div>
@@ -1836,6 +1884,15 @@ function crowdRecords(rows) {
   return { crowd, provenOnly, model, byTeam };
 }
 
+// A score that a vote put there, marked as one. ESPN's own scores and rows
+// written before this column existed carry nothing: neither is a vote, and a
+// badge on every row is a badge nobody reads.
+const sourceNote = (source, quorum) => (source === "crowd"
+  ? `<span class="src" title="Reported by ${quorum} agreeing subscriber${
+    quorum === 1 ? "" : "s"} rather than fetched from ESPN.">reported${
+    quorum === 1 ? " · 1" : ""}</span>`
+  : "");
+
 const recordCell = (r) => {
   const decided = r.wins + r.losses;
   return `<td class="n">${r.wins}-${r.losses}${r.pushes ? `-${r.pushes}` : ""}</td>
@@ -1843,6 +1900,7 @@ const recordCell = (r) => {
 };
 
 async function boardView(env, season, query) {
+  const quorum = resultsQuorum(env);
   // Three queries.
   //   board     one row per picker this season          (tens)
   //   frozen    one row per captured game this season   (~270 at most)
@@ -1897,10 +1955,20 @@ async function boardView(env, season, query) {
       r.clv > 0 ? "+" : ""}${r.clv.toFixed(2)}<span class="mono"> of ${
       r.clv_n}</span></td>`);
 
+  // At a quorum of one there is no agreement rule left: whatever the single
+  // reporting client says becomes the score every row below is graded on. That
+  // belongs beside the record it qualifies, on every visit, rather than in a
+  // setting somebody remembers three weeks later.
+  const aloneNote = quorum === 1
+    ? '<span class="alone">Results are being taken from a single reporter '
+      + '(RESULTS_QUORUM = 1) — no second opinion, so these records are only '
+      + 'as honest as that one client.</span>'
+    : "";
+
   const crowdRows = `<tr class="dim">
       <td class="n">—</td><td><b>The crowd</b><span class="mono under">the frozen
         pre-kickoff side on every captured game, and the first number it had
-        against the close</span></td>
+        against the close</span>${aloneNote}</td>
       ${recordCell(crowd)}${clvCell(crowd)}<td class="n">—</td><td class="n">—</td><td>—</td></tr>
     <tr class="dim">
       <td class="n">—</td><td><b>Proven pickers only</b><span class="mono under">the
@@ -1986,6 +2054,7 @@ document.querySelectorAll("table.sortable").forEach(function (table) {
 // ------------------------------------------------------------ view: picker
 
 async function pickerView(env, picker, query) {
+  const quorum = resultsQuorum(env);
   // Three queries.
   //   who     one row                                       (1)
   //   picks   one row per pick this picker has ever shared  (hundreds)
@@ -1999,7 +2068,8 @@ async function pickerView(env, picker, query) {
   const rows = await env.PICKS_DB.prepare(
     "SELECT p.season, p.week, p.game_id, p.kind, p.side, p.line, p.price,"
     + " p.received_at, p.result, r.home, r.away, r.home_score, r.away_score,"
-    + " r.kickoff FROM picks p LEFT JOIN results r ON r.game_id = p.game_id"
+    + " r.kickoff, r.source"
+    + " FROM picks p LEFT JOIN results r ON r.game_id = p.game_id"
     + " WHERE p.picker = ? ORDER BY p.season DESC, p.week DESC, r.kickoff",
   ).bind(picker).all();
   const picks = rows.results || [];
@@ -2083,7 +2153,8 @@ async function pickerView(env, picker, query) {
               : '<span class="dim">pending</span>';
       const score = (g.home_score === null || g.home_score === undefined)
         ? '<span class="dim">pending</span>'
-        : `${escapeHtml(g.away)} ${g.away_score} – ${escapeHtml(g.home)} ${g.home_score}`;
+        : `${escapeHtml(g.away)} ${g.away_score} – ${escapeHtml(g.home)} ${
+          g.home_score}${sourceNote(g.source, quorum)}`;
       return `<tr>
         <td class="side">${escapeHtml(g.side)}</td>
         <td class="dim">${escapeHtml(g.kind)}</td>
