@@ -622,7 +622,17 @@ async function paintLicense() {
   if (lic.offline && lic.grace_days_left !== null) {
     line.className = "license-line warn";
     const days = Math.max(0, Math.floor(lic.grace_days_left));
-    warn = `Can't reach the license server. The Edge keeps working offline for ${days} more day${days === 1 ? "" : "s"}.`;
+    /* "Can't reach the license server" is only one of the ways a check comes
+       back without a verdict, and it is the one that sends people to their
+       router. When the server answered and it was Whop that wouldn't, say so
+       and pass on what it said -- that detail is the whole of what support
+       needs, and it stops a working connection being blamed for an outage
+       two hops away. */
+    const why = lic.offline_reason === "upstream"
+      ? `The license server can't confirm your subscription with Whop right now${
+          lic.offline_message ? ` (${lic.offline_message.replace(/\.$/, "")})` : ""}.`
+      : "Can't reach the license server.";
+    warn = `${why} The Edge keeps working offline for ${days} more day${days === 1 ? "" : "s"}.`;
   } else if (lic.status === "canceling") {
     warn = lic.message || "Your subscription ends at the close of this billing period.";
   }

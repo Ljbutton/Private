@@ -186,9 +186,26 @@ def _apply(key: str, verdict: dict) -> dict:
         data.pop("last_ok", None)
     else:
         # No answer: keep the last verdict, remember why this one failed.
+        # The *why* matters as much as the fact: "no answer" covers a dead
+        # connection and a license server that answered perfectly well but
+        # could not get a word out of Whop, and those want opposite advice.
         data["offline_message"] = verdict.get("message", "")
+        data["offline_reason"] = verdict.get("reason", "") or "offline"
     _save(data)
     return data
+
+
+def _no_answer(verdict: dict) -> str:
+    """What to tell someone when the check produced no verdict at all."""
+    detail = verdict.get("message", "")
+    if verdict.get("reason") == "upstream":
+        # The server is up and talking to us; it is Whop that would not
+        # answer it. Nothing the customer can do, and nothing they broke.
+        return (f"The license server couldn't confirm your subscription with "
+                f"Whop just now ({detail.rstrip('.')}). That's on our side, "
+                f"not yours -- try again in a few minutes, and use Contact "
+                f"support below if it keeps happening.")
+    return f"{detail} Check your internet connection and try again."
 
 
 def activate(key: str) -> dict:
@@ -199,8 +216,10 @@ def activate(key: str) -> dict:
     verdict = _ask_server(key)
     if verdict["valid"] is None:
         # A first activation cannot fall back on a grace period it never had.
-        return status() | {"message": verdict["message"] +
-                           " Check your internet connection and try again."}
+        # Only send someone to their router when the server really did not
+        # answer: "check your connection" is worse than useless advice to a
+        # customer whose connection is fine and whose key is fine.
+        return status() | {"message": _no_answer(verdict)}
     if verdict["valid"] is False:
         # A mistyped *new* key must not knock out one that is working; a "no"
         # about the key already in use is final.
@@ -283,6 +302,7 @@ def status() -> dict:
         "message": message,
         "offline": offline,
         "offline_message": data.get("offline_message") if offline else "",
+        "offline_reason": (data.get("offline_reason") or "offline") if offline else "",
         "grace_days_left": round(grace_left, 1) if grace_left is not None else None,
         "last_ok": _iso(last_ok),
         "store_url": store_url(),

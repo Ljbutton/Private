@@ -16,6 +16,7 @@ It does three things:
 | `POST /v1/validate` | Is this key active? Registers the computer (up to `MAX_MACHINES`). |
 | `GET /v1/latest` | Newest build, read from `version.json` on the GitHub release. Drives the update notice. |
 | `GET /v1/download?key=…&asset=…` | Sends a paying customer straight to the installer. |
+| `GET /v1/health?token=…` | What this deployment is missing. Same token as the dashboard. |
 
 Cloudflare's free plan (100k requests/day) is far more than this needs.
 
@@ -50,6 +51,10 @@ npx wrangler deploy
 Wrangler prints the Worker's address, e.g.
 `https://the-edge-license.<you>.workers.dev`. Open it: it should say `ok`.
 
+That only proves the Worker is deployed. Once `DASHBOARD_TOKEN` is set,
+`…/v1/health?token=YOUR_TOKEN` proves the rest — see
+[When the app says it can't reach the license server](#when-the-app-says-it-cant-reach-the-license-server).
+
 When the GitHub repo goes private, also run
 `npx wrangler secret put GITHUB_TOKEN` with a fine-grained token that has
 **Contents: read** on this repo, or the update notice and downloads stop.
@@ -77,8 +82,47 @@ unlicensed exactly as before, so nothing breaks in the meantime.
   as the season pass once it is paid, rather than one that has run out.
 - One key works on up to `MAX_MACHINES` computers (default 2). To move a
   customer to a new computer, clear `edge_machines` in that membership's
-  metadata on Whop.
+  metadata on Whop. Recording the computer is bookkeeping, not the verdict: if
+  Whop refuses the write, an active subscription is still let in and the seat
+  goes unrecorded until a later check writes it.
 - The demo season (`NFLPICKER_DEMO=1`) and source checkouts never ask for a key.
+
+## When the app says it can't reach the license server
+
+The app shows that whenever a check comes back with no verdict, and there are
+three quite different ways to get there. Work through them in order.
+
+**1. Is the Worker deployed, at the address the app was built with?**
+Open the Worker's root in a browser — it answers `ok`. Then check the app is
+pointed at that same address: it is the `LICENSE_SERVER_URL` repository
+variable (GitHub → Settings → Secrets and variables → Actions → Variables),
+stamped into the build. A blank or stale variable means installers are asking
+an address that never answers, and only a new build fixes it.
+
+**2. Ask the Worker what it is missing.**
+
+```
+https://the-edge-license.<you>.workers.dev/v1/health?token=YOUR_DASHBOARD_TOKEN
+```
+
+It reports whether each secret and binding is set, and the status code Whop
+gives the API key right now — no secret's value, ever. `"ok": true` means the
+Worker can do its job. Anything else comes with a `notes` line saying what to
+run. The usual answers:
+
+| What it says | What it means |
+|---|---|
+| `whop_api_key: false` | The secret was never set: `npx wrangler secret put WHOP_API_KEY` |
+| `whop: { status: 401 }` or `403` | The key is wrong, revoked, or from another company. Make a new one and set it again. |
+| `whop: { status: 404 }` | Healthy. 404 is the *right* answer for the made-up membership id it probes with. |
+
+An API key also needs `member:manage`, not just the read scopes — without it
+Whop refuses to record which computer a key is running on.
+
+**3. It really is the customer's connection.** The banner says which: the
+server not answering reads "Can't reach the license server", while a server
+that answered but could not reach Whop says so, and quotes what Whop said.
+Either way a key that checked out in the last 7 days keeps working.
 
 ## Test
 

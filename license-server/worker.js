@@ -120,6 +120,9 @@ export default {
       if (url.pathname === "/v1/validate" && request.method === "POST") {
         return json(await validate(await request.json().catch(() => ({})), env));
       }
+      if (url.pathname === "/v1/health" && request.method === "GET") {
+        return await healthRoute(url, env);
+      }
       if (url.pathname === "/v1/latest" && request.method === "GET") {
         return json(await latest(env, url));
       }
@@ -1884,6 +1887,75 @@ async function dashboardRoute(url, env) {
                     await weekView(env, season, week)));
 }
 
+// -------------------------------------------------------------------- health
+
+// What this deployment is actually missing, in one page.
+//
+// "Can't reach the license server" is what the app shows for every check that
+// comes back without a verdict, and from the outside those look alike: a
+// Worker that was never deployed, an API key Whop rejects, a binding that was
+// never made. Opening the root only rules out the first. This rules out the
+// rest, and it reports presence and status codes -- never a secret's value,
+// and never a license key.
+//
+// Behind DASHBOARD_TOKEN because what it lists is a map of the deployment.
+export async function health(env) {
+  const out = {
+    ok: true,
+    whop_api_key: Boolean(env.WHOP_API_KEY),
+    whop_product_id: Boolean(env.WHOP_PRODUCT_ID),
+    picks_db: Boolean(env.PICKS_DB),
+    support_rl: Boolean(env.SUPPORT_RL),
+    picks_rl: Boolean(env.PICKS_RL),
+    resend_api_key: Boolean(env.RESEND_API_KEY),
+    support_email_to: Boolean(env.SUPPORT_EMAIL_TO),
+    github_repo: env.GITHUB_REPO || null,
+    whop: null,
+    notes: [],
+  };
+
+  if (!env.WHOP_API_KEY) {
+    out.ok = false;
+    out.notes.push("WHOP_API_KEY is not set, so every validate answers "
+      + "\"upstream\" and the app reports the license server as unreachable. "
+      + "Set it with: npx wrangler secret put WHOP_API_KEY");
+  } else {
+    // A membership id that cannot exist. An authorised key gets 404 back; an
+    // unauthorised one gets 401 or 403 without the id mattering at all.
+    let status = null;
+    try {
+      const res = await whop(env, "/memberships/mem_healthcheck_does_not_exist");
+      status = res.status;
+    } catch (err) {
+      out.whop = { reachable: false, error: String(err && err.message || err) };
+      out.ok = false;
+      out.notes.push("Could not reach api.whop.com at all.");
+    }
+    if (status !== null) {
+      out.whop = { reachable: true, status };
+      if (status === 401 || status === 403) {
+        out.ok = false;
+        out.notes.push(`Whop rejected the API key (${status}). It is wrong, `
+          + "revoked, or from a different company. Replace it with: "
+          + "npx wrangler secret put WHOP_API_KEY");
+      } else if (status !== 404 && status >= 400) {
+        out.ok = false;
+        out.notes.push(`Whop answered ${status} to a plain read.`);
+      }
+    }
+  }
+
+  if (!env.PICKS_DB) out.notes.push("No PICKS_DB binding: pick sharing and the dashboard are off.");
+  if (!env.RESEND_API_KEY || !env.SUPPORT_EMAIL_TO) out.notes.push("Support email is not configured.");
+  return out;
+}
+
+async function healthRoute(url, env) {
+  const token = url.searchParams.get("token") || "";
+  if (!env.DASHBOARD_TOKEN || token !== env.DASHBOARD_TOKEN) return notFound();
+  return json(await health(env));
+}
+
 // ------------------------------------------------------------------ validate
 
 export async function validate(body, env) {
@@ -1936,7 +2008,14 @@ export async function validate(body, env) {
         method: "PATCH", body: JSON.stringify({ metadata: meta }),
       });
       if (!upd.ok) {
-        return { valid: null, reason: "upstream", message: `Could not register this computer (${upd.status}).` };
+        // Whop has already told us this subscription is active -- that is the
+        // question the customer asked. Recording which computer they are on is
+        // our bookkeeping, and failing bookkeeping must not lock out somebody
+        // who paid: an API key without write scope would otherwise make every
+        // new install look like a dead license server. The seat simply goes
+        // unrecorded and is counted on a later check that does succeed.
+        console.log("validate: could not record the machine",
+                    JSON.stringify({ status: upd.status }));
       }
     }
   }

@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { IMAGE_BYTES_MAX, IMAGE_MAX, PICKS_RATE, SUPPORT_MAX, SUPPORT_RATE,
   captureConsensus, captureFirst, crowdClv, ensureSchema, gradeCrowd,
-  gradePick, gradeWeek, leaderboard, nflWeek, support, validate }
+  gradePick, gradeWeek, health, leaderboard, nflWeek, support, validate }
   from "./worker.js";
 import worker from "./worker.js";
 
@@ -52,6 +52,17 @@ test("existing metadata is kept when a machine is added", async () => {
   await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
   const patch = calls.find((c) => c.method === "PATCH");
   assert.deepEqual(JSON.parse(patch.body).metadata, { note: "vip", edge_machines: "m1" });
+});
+
+test("a seat that cannot be recorded does not lock out a paid key", async () => {
+  // The bug this covers: an API key that can read but not write turned every
+  // first run on a new computer into "Can't reach the license server", for a
+  // subscription Whop had just confirmed as active. Bookkeeping is ours; the
+  // verdict is the customer's.
+  fakeWhop(base, { patchStatus: 403 });
+  const out = await validate({ license_key: "ABC-123", machine_id: "m1" }, env);
+  assert.equal(out.valid, true);
+  assert.equal(out.reason, "ok");
 });
 
 test("canceled subscription is refused with a readable message", async () => {
@@ -1686,4 +1697,56 @@ test("the leaderboard says so rather than 500ing before the migration", async ()
   }
   assert.equal(res.status, 200, "the page still renders");
   assert.match(await res.text(), /still needs its migration/);
+});
+
+
+// --------------------------------------------------------------- health
+
+test("health names the missing key rather than just failing", async () => {
+  const out = await health({});
+  assert.equal(out.ok, false);
+  assert.equal(out.whop_api_key, false);
+  assert.equal(out.whop, null);
+  assert.match(out.notes.join(" "), /WHOP_API_KEY is not set/);
+});
+
+test("health tells a rejected key apart from a working one", async () => {
+  fakeWhop(null, { status: 401 });
+  const bad = await health({ WHOP_API_KEY: "k" });
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.whop, { reachable: true, status: 401 });
+  assert.match(bad.notes.join(" "), /rejected the API key \(401\)/);
+
+  // 404 for a membership id that cannot exist is the *good* answer: the key
+  // was accepted and the id simply is not there.
+  fakeWhop(null, { status: 404 });
+  const good = await health({ WHOP_API_KEY: "k" });
+  assert.equal(good.ok, true);
+  assert.deepEqual(good.whop, { reachable: true, status: 404 });
+});
+
+test("health never reports a secret's value", async () => {
+  fakeWhop(null, { status: 404 });
+  const out = await health({
+    WHOP_API_KEY: "sk_live_do_not_print_me", DASHBOARD_TOKEN: "tok_secret",
+    RESEND_API_KEY: "re_secret", SUPPORT_EMAIL_TO: "me@example.com",
+  });
+  const text = JSON.stringify(out);
+  for (const secret of ["sk_live_do_not_print_me", "tok_secret", "re_secret",
+                        "me@example.com"]) {
+    assert.ok(!text.includes(secret), `health leaked ${secret}`);
+  }
+});
+
+test("health is not readable without the dashboard token", async () => {
+  const e = { DASHBOARD_TOKEN: "tok", WHOP_API_KEY: "k" };
+  const miss = await worker.fetch(new Request("https://x/v1/health"), e);
+  assert.equal(miss.status, 404);
+  const wrong = await worker.fetch(new Request("https://x/v1/health?token=nope"), e);
+  assert.equal(wrong.status, 404);
+
+  fakeWhop(null, { status: 404 });
+  const ok = await worker.fetch(new Request("https://x/v1/health?token=tok"), e);
+  assert.equal(ok.status, 200);
+  assert.equal((await ok.json()).ok, true);
 });

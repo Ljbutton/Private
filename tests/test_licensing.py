@@ -105,6 +105,37 @@ def test_first_activation_offline_is_not_accepted(licensed):
     assert "internet" in out["message"]
 
 
+def test_a_server_that_cannot_reach_whop_is_not_the_customers_connection(licensed):
+    # The one failure that looked exactly like a dead server from the app's
+    # side, and sent people to check a connection that was working.
+    licensing, server = licensed
+    server["answer"] = {"valid": None, "reason": "upstream",
+                        "message": "Whop answered 401."}
+    out = licensing.activate("ABC-123")
+    assert out["valid"] is False
+    assert "internet" not in out["message"]
+    assert "Whop answered 401" in out["message"]
+    assert "our side" in out["message"]
+
+
+def test_the_banner_is_told_which_kind_of_silence_it_is(licensed, monkeypatch):
+    licensing, server = licensed
+    licensing.activate("ABC-123")
+    clock = [licensing._now() + 3 * 86400]
+    monkeypatch.setattr(licensing, "_now", lambda: clock[0])
+
+    server["answer"] = {"valid": None, "reason": "upstream",
+                        "message": "Whop answered 401."}
+    st = licensing.recheck(force=True)
+    assert st["offline"] is True
+    assert st["offline_reason"] == "upstream"
+    assert st["offline_message"] == "Whop answered 401."
+
+    server["down"] = True                       # a real network failure
+    st = licensing.recheck(force=True)
+    assert st["offline_reason"] == "offline"
+
+
 def test_offline_within_grace_keeps_working(licensed, monkeypatch):
     licensing, server = licensed
     licensing.activate("ABC-123")
@@ -160,7 +191,8 @@ def test_license_file_holds_no_more_than_it_needs(licensed):
     licensing.activate("ABC-123")
     data = json.loads(licensing._path().read_text())
     assert set(data) <= {"key", "valid", "last_ok", "last_attempt", "reason",
-                         "message", "status", "offline_message"}
+                         "message", "status", "offline_message",
+                         "offline_reason"}
 
 
 # ------------------------------------------------------------------ updates
